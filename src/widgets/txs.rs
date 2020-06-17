@@ -5,7 +5,7 @@ use tui::style::Style;
 use tui::symbols::Marker;
 use tui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
 use web3::futures::Future;
-use web3::transports::Http;
+use web3::transports::{EventLoopHandle, Http};
 use web3::types::{Block, BlockId, H256, U64};
 
 use crate::update::UpdatableWidget;
@@ -14,7 +14,9 @@ use crate::widgets::block;
 pub struct TxsWidget {
     title: String,
     update_interval: Ratio<u64>,
-    url: String,
+
+    eloop: EventLoopHandle,
+    web3: web3::Web3<Http>,
 
     update_count: u64,
     cur_num: u64,
@@ -27,13 +29,16 @@ impl TxsWidget {
     pub fn new(update_interval: Ratio<u64>, url: &str) -> TxsWidget {
         let update_count = 0;
 
-        //let (_eloop, transport) = web3::transports::Http::new(url).unwrap();
-        //let web3 = web3::Web3::new(transport);
+        let (eloop, transport) = web3::transports::Http::new(url).unwrap();
+        let web3 = web3::Web3::new(transport);
 
         let mut txs_widgets = TxsWidget {
             title: " Block Transactions ".to_string(),
             update_interval,
-            url: url.to_string(),
+
+            eloop: eloop,
+            web3: web3,
+
             update_count,
             cur_num: 0,
             cur_txs: 0,
@@ -48,9 +53,7 @@ impl TxsWidget {
 impl UpdatableWidget for TxsWidget {
     fn update(&mut self) {
         self.update_count += 1;
-        let (_eloop, transport) = web3::transports::Http::new(self.url.as_str()).unwrap();
-        let web3 = web3::Web3::new(transport);
-        let platon = web3.platon();
+        let platon = self.web3.platon();
         if self.cur_num == 0 {
             let block_num = platon.block_number().wait().unwrap();
 
@@ -123,14 +126,21 @@ impl Widget for &TxsWidget {
         buf.set_string(
             area.x + 3,
             area.y + 1,
-            format!("CUR {}", self.cur_txs),
+            format!("CUR   {}", self.cur_txs),
             Style::default(),
         );
 
         buf.set_string(
             area.x + 3,
             area.y + 2,
-            format!("MAX {}", self.max),
+            format!("MAX   {}", self.max),
+            Style::default(),
+        );
+
+        buf.set_string(
+            area.x + 3,
+            area.y + 3,
+            format!("BLOCK {}", self.cur_num),
             Style::default(),
         );
     }
