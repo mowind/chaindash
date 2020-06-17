@@ -1,13 +1,21 @@
+mod draw;
+mod opts;
+
 use std::io::{self, Write};
 use std::panic;
+use std::thread;
 
+use clap::derive::Clap;
+use crossbeam_channel::{select, tick, unbounded, Receiver};
 use crossterm::cursor;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal;
 use tui::backend::CrosstermBackend;
-use tui::layout::{Constraint, Direction, Layout};
-use tui::widgets::{Block, Borders, Widget};
 use tui::Terminal;
+
+use draw::*;
+use opts::Opts;
 
 fn setup_terminal() {
     let mut stdout = io::stdout();
@@ -32,6 +40,26 @@ fn cleanup_terminal() {
     terminal::disable_raw_mode().unwrap();
 }
 
+fn setup_ui_events() -> Receiver<Event> {
+    let (sender, receiver) = unbounded();
+    thread::spawn(move || loop {
+        sender.send(crossterm::event::read().unwrap()).unwrap();
+    });
+
+    receiver
+}
+
+fn setup_ctrl_c() -> Receiver<()> {
+    let (sender, receiver) = unbounded();
+    ctrlc::set_handler(move || {
+        println!("press C-c");
+        sender.send(()).unwrap();
+    })
+    .unwrap();
+
+    receiver
+}
+
 fn setup_panci_hook() {
     panic::set_hook(Box::new(|panic_info| {
         cleanup_terminal();
@@ -42,6 +70,13 @@ fn setup_panci_hook() {
 fn main() {
     better_panic::install();
 
+    let opts: Opts = Opts::parse();
+    let urls: Vec<&str> = opts.url.as_str().split(',').collect();
+    if urls.len() == 0 {
+        println!("must set url");
+        return;
+    }
+
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -49,26 +84,44 @@ fn main() {
     setup_panci_hook();
     setup_terminal();
 
-    terminal
-        .draw(|mut f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints(
-                    [
-                        Constraint::Percentage(10),
-                        Constraint::Percentage(80),
-                        Constraint::Percentage(10),
-                    ]
-                    .as_ref(),
-                )
-                .split(f.size());
-            let block = Block::default().title("Block").borders(Borders::ALL);
-            f.render_widget(block, chunks[0]);
-            let block = Block::default().title("Block 2").borders(Borders::ALL);
-            f.render_widget(block, chunks[1]);
-        })
-        .unwrap();
+    let ui_event_receiver = setup_ui_events();
+    let ctrl_c_events = setup_ctrl_c();
+
+    draw(&mut terminal);
+
+    loop {
+        select! {
+            recv(ctrl_c_events) -> _ => {
+                break;
+            }
+            recv(ui_event_receiver) -> message => {
+                match message.unwrap() {
+                    Event::Key(key_event) => {
+                        if key_event.modifiers.is_empty() {
+                            match key_event.code {
+                                KeyCode::Char('q') => {
+                                    break
+                                }
+                                _ => {}
+                            }
+                        } else if key_event.modifiers == KeyModifiers::CONTROL {
+                            match key_event.code {
+                                KeyCode::Char('c') => {
+                                    break
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    Event::Resize(_width, _height) => {
+                        draw(&mut terminal);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 
     cleanup_terminal();
 }
