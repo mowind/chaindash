@@ -13,4 +13,5 @@ crossbeam-channel = "0.4.2"
 web3 = { git = "https://github.com/mowind/rust-web3", branch= "platon" }
 clap = "3.0.0-beta.1"
 crossterm = "0.17"
+num-rational = "0.2.4"
 tui = { version = "0.9", default-features = false, features = ['crossterm'] }

@@ -1,9 +1,13 @@
+mod app;
 mod draw;
 mod opts;
+mod update;
+mod widgets;
 
 use std::io::{self, Write};
 use std::panic;
 use std::thread;
+use std::time::Duration;
 
 use clap::derive::Clap;
 use crossbeam_channel::{select, tick, unbounded, Receiver};
@@ -11,11 +15,16 @@ use crossterm::cursor;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal;
+use num_rational::Ratio;
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
 
+use app::*;
 use draw::*;
 use opts::Opts;
+use update::*;
+
+const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 
 fn setup_terminal() {
     let mut stdout = io::stdout();
@@ -72,10 +81,8 @@ fn main() {
 
     let opts: Opts = Opts::parse();
     let urls: Vec<&str> = opts.url.as_str().split(',').collect();
-    if urls.len() == 0 {
-        println!("must set url");
-        return;
-    }
+
+    let mut app = setup_app(&opts, PROGRAM_NAME);
 
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -84,15 +91,29 @@ fn main() {
     setup_panci_hook();
     setup_terminal();
 
+    let draw_interval = Ratio::from_integer(1);
+
+    let ticker = tick(Duration::from_secs_f64(
+        *draw_interval.numer() as f64 / *draw_interval.denom() as f64,
+    ));
+
     let ui_event_receiver = setup_ui_events();
     let ctrl_c_events = setup_ctrl_c();
 
-    draw(&mut terminal);
+    let mut update_seconds = Ratio::from_integer(0);
+
+    update_widgets(&mut app.widgets, update_seconds);
+    draw(&mut terminal, &mut app);
 
     loop {
         select! {
             recv(ctrl_c_events) -> _ => {
                 break;
+            }
+            recv(ticker)->_ => {
+                update_seconds = (update_seconds+draw_interval) % Ratio::from_integer(60);
+                update_widgets(&mut app.widgets, update_seconds);
+                draw(&mut terminal, &mut app);
             }
             recv(ui_event_receiver) -> message => {
                 match message.unwrap() {
@@ -115,7 +136,7 @@ fn main() {
                     }
 
                     Event::Resize(_width, _height) => {
-                        draw(&mut terminal);
+                        draw(&mut terminal, &mut app);
                     }
                     _ => {}
                 }
