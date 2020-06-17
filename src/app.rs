@@ -9,13 +9,15 @@ pub struct App {
 
 pub struct Widgets {
     pub txs: TxsWidget,
+    pub time: TimeWidget,
 }
 
 pub fn setup_app(opts: &Opts, program_name: &str) -> App {
     let interval = Ratio::from_integer(1);
     let txs = TxsWidget::new(interval, opts.url.as_str());
+    let time = TimeWidget::new(interval, opts.url.as_str());
 
     App {
-        widgets: Widgets { txs },
+        widgets: Widgets { txs, time },
     }
 }

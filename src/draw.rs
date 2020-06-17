@@ -31,11 +31,7 @@ pub fn draw_top_row<B: Backend>(frame: &mut Frame<B>, widgets: &mut Widgets, are
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
         .split(area);
 
-    let block = Block::default()
-        .title("Block Interval")
-        .borders(Borders::ALL);
-    frame.render_widget(block, horizontal_chunks[0]);
-
+    frame.render_widget(&widgets.time, horizontal_chunks[0]);
     frame.render_widget(&widgets.txs, horizontal_chunks[1]);
 }
 
