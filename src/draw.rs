@@ -40,6 +40,6 @@ pub fn draw_bottom_row<B: Backend>(frame: &mut Frame<B>, widgets: &mut Widgets, 
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(100)].as_ref())
         .split(area);
-    let block = Block::default().title("Node Status").borders(Borders::ALL);
-    frame.render_widget(block, horizontal_chunks[0]);
+
+    frame.render_widget(&widgets.node, horizontal_chunks[0]);
 }
