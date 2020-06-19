@@ -1400,9 +1400,9 @@ checksum = "2579985fda508104f7587689507983eadd6a6e84dd35d6d115361f530916fa0d"
 
 [[package]]
 name = "signal-hook"
-version = "0.1.15"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ff2db2112d6c761e12522c65f7768548bd6e8cd23d2a9dae162520626629bd6"
+checksum = "604508c1418b99dfe1925ca9224829bb2a8a9a04dda655cc01fcad46f4ab05ed"
 dependencies = [
  "libc",
  "mio",
@@ -1976,7 +1976,7 @@ checksum = "cccddf32554fecc6acb585f82a32a72e28b48f8c4c1883ddfeeeaa96f7d8e519"
 [[package]]
 name = "web3"
 version = "0.11.0"
-source = "git+https://github.com/mowind/rust-web3?branch=platon#fa0398666f2cb76063d5b552bb746637e47f1389"
+source = "git+https://github.com/mowind/rust-web3?branch=platon#574e68eb0321986b811ad858a3005a2fe9a36a1b"
 dependencies = [
  "arrayvec",
  "base64 0.12.2",

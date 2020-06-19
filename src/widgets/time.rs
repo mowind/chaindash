@@ -120,21 +120,21 @@ impl Widget for &TimeWidget {
             .render(area, buf);
 
         buf.set_string(
-            area.x + 3,
+            area.x + 2,
             area.y + 1,
             format!("CUR   {}", self.cur_time),
             Style::default(),
         );
 
         buf.set_string(
-            area.x + 3,
+            area.x + 2,
             area.y + 2,
             format!("MAX   {}", self.max_time),
             Style::default(),
         );
 
         buf.set_string(
-            area.x + 3,
+            area.x + 2,
             area.y + 3,
             format!("BLOCK {}", self.cur_num),
             Style::default(),
