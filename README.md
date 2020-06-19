@@ -3,6 +3,6 @@ Chain dashboard for PlatON
 
 ## TODOs
 
-* [] Asynchronous update data
+* [ ] Asynchronous update data
 
-* [] Colorscheme
+* [ ] Colorscheme
