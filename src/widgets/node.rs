@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use num_rational::Ratio;
 use tui::buffer::Buffer;
 use tui::layout::{Constraint, Rect};
-use tui::style::Modifier;
+use tui::style::{Color, Modifier, Style};
 use tui::widgets::{Row, Table, Widget};
 use web3::futures::Future;
 use web3::transports::{EventLoopHandle, Http};
@@ -70,7 +70,7 @@ impl NodeWidget {
             epoch: status.state.view.epoch,
             view_number: status.state.view.view,
             committed: status.state.committed.number,
-            locked: status.state.committed.number,
+            locked: status.state.locked.number,
             qc: status.state.qc.number,
             validator: status.validator,
         }
@@ -114,7 +114,7 @@ impl Widget for &NodeWidget {
         Table::new(
             header.iter(),
             nodes.into_iter().map(|node| {
-                Row::Data(
+                Row::StyledData(
                     vec![
                         format!(" {}", node.name),
                         format!("{}", node.block_number),
@@ -126,10 +126,19 @@ impl Widget for &NodeWidget {
                         format!("{}", node.validator),
                     ]
                     .into_iter(),
+                    Style::default()
+                        .fg(Color::Indexed(249 as u8))
+                        .bg(Color::Reset),
                 )
             }),
         )
         .block(block::new(&self.title))
+        .header_style(
+            Style::default()
+                .fg(Color::Indexed(249 as u8))
+                .bg(Color::Reset)
+                .modifier(Modifier::BOLD),
+        )
         .widths(&[
             Constraint::Length(20),
             Constraint::Length(u16::max((area.width as i16 - 2 - 80 - 8) as u16, 10)),
