@@ -1,7 +1,7 @@
 use num_rational::Ratio;
 use tui::buffer::Buffer;
 use tui::layout::Rect;
-use tui::style::Style;
+use tui::style::{Color, Style};
 use tui::symbols::Marker;
 use tui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
 use web3::futures::Future;
@@ -110,6 +110,7 @@ impl Widget for &TxsWidget {
             Dataset::default()
                 .marker(Marker::Braille)
                 .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Indexed(81)))
                 .data(&self.data),
         );
 
@@ -127,21 +128,21 @@ impl Widget for &TxsWidget {
             area.x + 2,
             area.y + 1,
             format!("CUR   {}", self.cur_txs),
-            Style::default(),
+            Style::default().fg(Color::Indexed(81 as u8)),
         );
 
         buf.set_string(
             area.x + 2,
             area.y + 2,
             format!("MAX   {}", self.max),
-            Style::default(),
+            Style::default().fg(Color::Indexed(141 as u8)),
         );
 
         buf.set_string(
             area.x + 2,
             area.y + 3,
             format!("BLOCK {}", self.cur_num),
-            Style::default(),
+            Style::default().fg(Color::Indexed(208 as u8)),
         );
     }
 }
