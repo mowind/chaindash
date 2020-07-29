@@ -117,12 +117,13 @@ impl Collector {
     }
 }
 
+/*
 impl Drop for Collector {
     fn drop(&mut self) {
         self.sender.send(()).unwrap();
         self.handle.take().map(|h| h.join().unwrap()).unwrap();
     }
-}
+}*/
 
 pub struct NodeWidget {
     title: String,

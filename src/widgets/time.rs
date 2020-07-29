@@ -81,7 +81,7 @@ impl UpdatableWidget for TimeWidget {
                 if let Some(block) = block {
                     self.cur_time = block.timestamp.as_u64() - self.prev_timestamp;
                     self.prev_timestamp = block.timestamp.as_u64();
-                    self.cur_num = block_num.as_u64();
+                    self.cur_num = block.number.unwrap().as_u64();
                 }
             }
         }
@@ -116,7 +116,7 @@ impl Widget for &TimeWidget {
                 self.update_count as f64 - 25.0,
                 self.update_count as f64 + 1.0,
             ]))
-            .y_axis(Axis::default().bounds([0.0, 10000.0]))
+            .y_axis(Axis::default().bounds([0.0, 20000.0]))
             .datasets(&dataset)
             .render(area, buf);
 
