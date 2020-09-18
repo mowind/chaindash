@@ -86,16 +86,19 @@ impl Collector {
                             let debug = ep.web3.debug();
                             let status = debug.consensus_status().wait().unwrap();
 
+                            let name = ep.url.clone();
+                            let name = name.replace("http://", "");
+
                             nodes.push(Node {
-                                name: ep.url.clone(),
+                                name: name.clone(),
                                 block_number: block_number.as_u64(),
                                 epoch: status.state.view.epoch,
-                                view_number: status.state.view.view,
-                                committed: status.state.committed.number,
-                                locked: status.state.locked.number,
-                                qc: status.state.qc.number,
-                                validator: status.validator,
-                            });
+                                    view_number: status.state.view.view,
+                                    committed: status.state.committed.number,
+                                    locked: status.state.locked.number,
+                                    qc: status.state.qc.number,
+                                    validator: status.validator,
+                                });
                         }
 
                         let collector = collector.upgrade().unwrap();
@@ -119,9 +122,9 @@ impl Collector {
 
 /*
 impl Drop for Collector {
-    fn drop(&mut self) {
-        self.sender.send(()).unwrap();
-        self.handle.take().map(|h| h.join().unwrap()).unwrap();
+fn drop(&mut self) {
+self.sender.send(()).unwrap();
+self.handle.take().map(|h| h.join().unwrap()).unwrap();
     }
 }*/
 
