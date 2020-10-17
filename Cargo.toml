@@ -10,8 +10,13 @@ edition = "2018"
 better-panic = "0.2.0"
 ctrlc = { version = "3.1.4", features = ["termination"]}
 crossbeam-channel = "0.4.2"
-web3 = { git = "https://github.com/mowind/rust-web3", branch= "platon" }
+web3 = { git = "https://github.com/mowind/rust-web3", branch= "platone-expiration" }
 clap = "3.0.0-beta.1"
 crossterm = "0.17"
 num-rational = "0.2.4"
 tui = { version = "0.9", default-features = false, features = ['crossterm'] }
+tokio = { version = "0.2", features = ["full"] }
+futures = "0.3.6"
+fern = "0.6"
+log = "0.4"
+chrono = "0.4"

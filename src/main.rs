@@ -1,11 +1,14 @@
 mod app;
+mod collect;
 mod draw;
 mod opts;
 mod update;
 mod widgets;
 
+use std::fs;
 use std::io::{self, Write};
 use std::panic;
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
@@ -69,6 +72,30 @@ fn setup_ctrl_c() -> Receiver<()> {
     receiver
 }
 
+fn setup_logfile(logfile_path: &Path) {
+    fs::create_dir_all(logfile_path.parent().unwrap()).unwrap();
+    let logfile = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(logfile_path)
+        .unwrap();
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{}[{}][{}]: {}",
+                chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .chain(logfile)
+        .level_for("mio", log::LevelFilter::Debug)
+        .apply()
+        .unwrap();
+}
+
 fn setup_panci_hook() {
     panic::set_hook(Box::new(|panic_info| {
         cleanup_terminal();
@@ -76,13 +103,14 @@ fn setup_panci_hook() {
     }));
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     better_panic::install();
 
     let opts: Opts = Opts::parse();
-    let urls: Vec<&str> = opts.url.as_str().split(',').collect();
 
     let mut app = setup_app(&opts, PROGRAM_NAME);
+    //setup_logfile(Path::new("./errors.log"));
 
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -101,6 +129,9 @@ fn main() {
     let ctrl_c_events = setup_ctrl_c();
 
     let mut update_seconds = Ratio::from_integer(0);
+
+    let collector = collect::Collector::new(app.urls.clone(), app.data.clone());
+    tokio::spawn(collect::run(collector));
 
     update_widgets(&mut app.widgets, update_seconds);
     draw(&mut terminal, &mut app);
