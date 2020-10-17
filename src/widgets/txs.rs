@@ -4,10 +4,8 @@ use tui::layout::Rect;
 use tui::style::{Color, Style};
 use tui::symbols::Marker;
 use tui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
-use web3::futures::Future;
-use web3::transports::{EventLoopHandle, Http};
-use web3::types::{Block, BlockId, H256, U64};
 
+use crate::collect::{Data, SharedData};
 use crate::update::UpdatableWidget;
 use crate::widgets::block;
 
@@ -15,8 +13,7 @@ pub struct TxsWidget {
     title: String,
     update_interval: Ratio<u64>,
 
-    eloop: EventLoopHandle,
-    web3: web3::Web3<Http>,
+    collect_data: SharedData,
 
     update_count: u64,
     cur_num: u64,
@@ -26,18 +23,14 @@ pub struct TxsWidget {
 }
 
 impl TxsWidget {
-    pub fn new(update_interval: Ratio<u64>, url: &str) -> TxsWidget {
+    pub fn new(update_interval: Ratio<u64>, collect_data: SharedData) -> TxsWidget {
         let update_count = 0;
-
-        let (eloop, transport) = web3::transports::Http::new(url).unwrap();
-        let web3 = web3::Web3::new(transport);
 
         let mut txs_widgets = TxsWidget {
             title: " Block Transactions ".to_string(),
             update_interval,
 
-            eloop: eloop,
-            web3: web3,
+            collect_data,
 
             update_count,
             cur_num: 0,
@@ -52,49 +45,15 @@ impl TxsWidget {
 
 impl UpdatableWidget for TxsWidget {
     fn update(&mut self) {
-        self.update_count += 1;
-        let platon = self.web3.platon();
-        if self.cur_num == 0 {
-            let block_num = platon.block_number().wait().unwrap();
+        let mut collect_data = self.collect_data.lock().unwrap();
+        self.cur_num = collect_data.cur_block_number();
+        self.cur_txs = collect_data.cur_txs();
+        self.max = collect_data.max_txs();
+        let data = collect_data.txns_and_clear();
 
-            if block_num.as_u64() == 0 {
-                self.data.push((self.update_count as f64, 0.0));
-                return;
-            }
-            self.cur_num = block_num.as_u64();
-
-            let txs_count = platon
-                .block_transaction_count(BlockId::from(block_num))
-                .wait()
-                .unwrap();
-            match txs_count {
-                Some(txs_count) => {
-                    self.cur_txs = txs_count.as_u64();
-                }
-                _ => self.cur_txs = 0,
-            }
-        } else {
-            let block_num = platon.block_number().wait().unwrap();
-
-            if block_num.as_u64() > self.cur_num {
-                let txs_count = platon
-                    .block_transaction_count(BlockId::from(U64::from(self.cur_num + 1)))
-                    .wait()
-                    .unwrap();
-                match txs_count {
-                    Some(txs_count) => {
-                        self.cur_txs = txs_count.as_u64();
-                        self.cur_num += 1
-                    }
-                    _ => self.cur_txs = 0,
-                }
-            }
-
-            if self.cur_txs > self.max {
-                self.max = self.cur_txs
-            }
-            self.data
-                .push((self.update_count as f64, self.cur_txs as f64));
+        for txs in data {
+            self.data.push((self.update_count as f64, txs as f64));
+            self.update_count += 1;
         }
     }
 
