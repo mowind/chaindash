@@ -19,9 +19,8 @@ pub struct Widgets {
 pub fn setup_app(opts: &Opts, _program_name: &str) -> App {
     let urls: Vec<&str> = opts.url.as_str().split(",").collect();
     let data = Data::new();
-    let interval = Ratio::from_integer(1);
-    let txs = TxsWidget::new(interval, data.clone());
-    let time = TimeWidget::new(interval, data.clone());
+    let txs = TxsWidget::new(opts.interval, data.clone());
+    let time = TimeWidget::new(opts.interval, data.clone());
     let node = NodeWidget::new(data.clone());
 
     let s_urls = urls.into_iter().map(|url| String::from(url)).collect();

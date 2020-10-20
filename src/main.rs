@@ -67,7 +67,7 @@ fn setup_ctrl_c() -> Receiver<()> {
         println!("press C-c");
         sender.send(()).unwrap();
     })
-    .unwrap();
+        .unwrap();
 
     receiver
 }
@@ -112,14 +112,14 @@ async fn main() {
     let mut app = setup_app(&opts, PROGRAM_NAME);
     //setup_logfile(Path::new("./errors.log"));
 
+    let draw_interval = Ratio::min(Ratio::from_integer(1), opts.interval);
+
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
 
     setup_panci_hook();
     setup_terminal();
-
-    let draw_interval = Ratio::from_integer(1);
 
     let ticker = tick(Duration::from_secs_f64(
         *draw_interval.numer() as f64 / *draw_interval.denom() as f64,
