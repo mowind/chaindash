@@ -604,13 +604,11 @@ fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
         Some(networks) => {
             let mut rx: u64 = 0;
             let mut tx: u64 = 0;
-            let _v: Vec<_> = networks
-                .iter()
-                .map(|(_, net)| {
-                    rx += net.rx_bytes;
-                    tx += net.tx_bytes;
-                })
-                .collect();
+            networks.iter().for_each(|(_, net)| {
+                rx += net.rx_bytes;
+                tx += net.tx_bytes;
+            });
+
             (rx, tx)
         }
         None => return (0, 0),
@@ -622,17 +620,14 @@ fn get_blk(stats: &Stats) -> (u64, u64) {
         Some(blk) => {
             let mut read: u64 = 0;
             let mut write: u64 = 0;
-            let _v: Vec<_> = blk
-                .io_service_bytes_recursive
-                .iter()
-                .map(|entry| {
-                    if entry.op == "Read" {
-                        read += entry.value;
-                    } else if entry.op == "Write" {
-                        write += entry.value;
-                    }
-                })
-                .collect();
+            blk.io_service_bytes_recursive.iter().for_each(|entry| {
+                if entry.op == "Read" {
+                    read += entry.value;
+                } else if entry.op == "Write" {
+                    write += entry.value;
+                }
+            });
+
             (read, write)
         }
         None => (0, 0),
