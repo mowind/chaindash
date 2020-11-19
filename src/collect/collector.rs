@@ -503,8 +503,8 @@ async fn get_container_id(host: String, name: String) -> Result<String> {
             let cc: Vec<_> = c
                 .names
                 .iter()
-                .filter(|name| {
-                    if name.contains(name.as_str()) {
+                .filter(|cname| {
+                    if cname.contains(name.as_str()) {
                         true
                     } else {
                         false
