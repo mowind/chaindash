@@ -79,7 +79,7 @@ impl Widget for &TxsWidget {
                 self.update_count as f64 - 25.0,
                 self.update_count as f64 + 1.0,
             ]))
-            .y_axis(Axis::default().bounds([0.0, 25000.0]))
+            .y_axis(Axis::default().bounds([0.0, 50000.0]))
             .datasets(&datasets)
             .render(area, buf);
 

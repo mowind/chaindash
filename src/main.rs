@@ -18,6 +18,7 @@ use crossterm::cursor;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal;
+//use log::{debug, info};
 use num_rational::Ratio;
 use tui::backend::CrosstermBackend;
 use tui::Terminal;
@@ -67,7 +68,7 @@ fn setup_ctrl_c() -> Receiver<()> {
         println!("press C-c");
         sender.send(()).unwrap();
     })
-        .unwrap();
+    .unwrap();
 
     receiver
 }
@@ -110,7 +111,10 @@ async fn main() {
     let opts: Opts = Opts::parse();
 
     let mut app = setup_app(&opts, PROGRAM_NAME);
-    //setup_logfile(Path::new("./errors.log"));
+
+    if opts.debug {
+        setup_logfile(Path::new("./errors.log"));
+    }
 
     let draw_interval = Ratio::min(Ratio::from_integer(1), opts.interval);
 
@@ -130,7 +134,7 @@ async fn main() {
 
     let mut update_seconds = Ratio::from_integer(0);
 
-    let collector = collect::Collector::new(app.urls.clone(), app.data.clone());
+    let collector = collect::Collector::new(&opts, app.data.clone());
     tokio::spawn(collect::run(collector));
 
     update_widgets(&mut app.widgets, update_seconds);

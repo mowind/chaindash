@@ -1,14 +1,220 @@
 use std::collections::HashMap;
 
+use hyper::body::Buf;
+use hyper::body::HttpBody as _;
+use hyper::Client;
 use log::{debug, error, info, trace, warn};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::time::{self, Duration};
-use web3::futures::{self, Future, StreamExt};
-use web3::transports::{self, Http, WebSocket};
+use web3::futures::StreamExt;
+use web3::transports::WebSocket;
 use web3::types::BlockId;
+
+use crate::Opts;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Deserialize, Serialize, Debug)]
+struct Container {
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(rename = "Names")]
+    names: Vec<String>,
+    #[serde(rename = "Image")]
+    image: String,
+    #[serde(rename = "ImageID")]
+    image_id: String,
+    #[serde(rename = "Command")]
+    command: String,
+    #[serde(rename = "Created")]
+    created: u64,
+    #[serde(rename = "State")]
+    state: String,
+    #[serde(rename = "Status")]
+    status: String,
+    //#[serde(rename = "Ports")]
+    //ports: Vec<>,
+    #[serde(rename = "Labels")]
+    labels: HashMap<String, String>,
+    #[serde(rename = "SizeRw")]
+    size_rw: Option<u64>,
+    #[serde(rename = "SizeRootFs")]
+    size_root_fs: Option<u64>,
+    #[serde(rename = "HostConfig")]
+    host_config: HashMap<String, String>,
+}
+
+type ContainerList = Vec<Container>;
+
+/// `NetworkStats` aggregates the network stats of one container
+#[derive(Serialize, Debug, Deserialize)]
+struct NetworkStats {
+    // Bytes received. Windows and Linux.
+    rx_bytes: u64,
+    // Packets received. Windows and Linux.
+    rx_packets: Option<u64>,
+    // Received errors. Not used on Windows.
+    rx_errors: u64,
+    // Incoming packets dropped. Windows and Linux.
+    rx_dropped: u64,
+    // Bytes sent. Windows and Linux.
+    tx_bytes: u64,
+    // Packets sent. Windows and Linux.
+    tx_packets: Option<u64>,
+    // Sent errors. Not used on Windows.
+    tx_errors: u64,
+    // Outgoing packets dropped. Windows and Linux.
+    tx_dropped: u64,
+    // Endpoint ID. Not used on Linux.
+    endpoint_id: Option<String>,
+    // Instance ID. Not used on Linux.
+    instance_id: Option<String>,
+}
+
+/// `PidsStats` contains the stats of a container's pids
+#[derive(Serialize, Deserialize, Debug)]
+struct PidsStats {
+    current: Option<u64>,
+    limit: Option<u64>,
+}
+
+/// `BlkioStatEntry` is one small entity to store a piece of Blkio stats.
+/// Not used on Windows.
+#[derive(Serialize, Deserialize, Debug)]
+struct BlkioStatEntry {
+    major: u64,
+    minor: u64,
+    op: String,
+    value: u64,
+}
+
+/// `BlkioStats` stores All IO service stats for data read and write.
+/// This is a Linux speicfic structure as the differences between expressing
+/// block I/O on Windows and Linux are sufficiently significant to make little
+/// sense attempting to morph into a combined structure.
+#[derive(Serialize, Deserialize, Debug)]
+struct BlkioStats {
+    // number of bytes transferred to and from the block device.
+    io_service_bytes_recursive: Vec<BlkioStatEntry>,
+    io_serviced_recursive: Vec<BlkioStatEntry>,
+    io_queue_recursive: Vec<BlkioStatEntry>,
+    io_wait_time_recursive: Vec<BlkioStatEntry>,
+    io_merged_recursive: Vec<BlkioStatEntry>,
+    io_time_recursive: Vec<BlkioStatEntry>,
+    sectors_recursive: Vec<BlkioStatEntry>,
+}
+
+/// `StorageStats` is the disk I/O stats for read/write on Windows.
+#[derive(Serialize, Deserialize, Debug)]
+struct StorageStats {
+    read_count_normalized: Option<u64>,
+    read_size_bytes: Option<u64>,
+    write_count_normalized: Option<u64>,
+    write_size_bytes: Option<u64>,
+}
+
+/// `CPUUsage` stores **All CPU** stats aggregated since container inception.
+#[derive(Serialize, Deserialize, Debug)]
+struct CPUUsage {
+    // Total CPU time consumed.
+    // Units: nanoseconds (Linux)
+    // Units: 100's of nanoseconds (Windows)
+    total_usage: u64,
+
+    // Total CPU time consumed per core (Linux). Not used on Windows.
+    // Units: nanoseconds.
+    percpu_usage: Option<Vec<u64>>,
+
+    // Time spent by tasks of the cgroup in kernel mode (Linux).
+    // Time spent by all container processes in kernel mod (Windows).
+    // Units: nanoseconds (Linux).
+    // Units: 100's of nanoseconds (Windows). Not populated for Hyper-V containers.
+    usage_in_kernelmode: u64,
+
+    // Time spent by tasks of the cgroup in user mode (Linux).
+    // Time spent by all container processes in user mode (Windows).
+    // Units: nanoseconds (Linux).
+    // Units: 100's of nanoseconds (Windows). Not populated for Hyper-V Containers
+    usage_in_usermode: u64,
+}
+
+/// `ThrottlingData` stores CPU throttling stats of one running container.
+/// Not used on Windows.
+#[derive(Serialize, Deserialize, Debug)]
+struct ThrottlingData {
+    // Number of periods with throttling active.
+    periods: u64,
+    throttled_periods: u64,
+    throtted_time: Option<u64>,
+}
+
+/// `CPUStats` aggregated and wraps all CPU related info of container.
+#[derive(Serialize, Deserialize, Debug)]
+struct CPUStats {
+    // CPU Usages. Linux and Windows.
+    cpu_usage: CPUUsage,
+
+    // System Usage. Linux only.
+    system_cpu_usage: Option<u64>,
+
+    // Online CPUs. Linux only.
+    online_cups: Option<u32>,
+
+    // Throttling Data. Linux only.
+    throttling_data: Option<ThrottlingData>,
+}
+
+/// `MemoryStats` aggregates all memory stats since container inception on Linux.
+/// Windows returns stats for commit and private working set only.
+#[derive(Serialize, Deserialize, Debug)]
+struct MemoryStats {
+    // current res_counter usage of memory.
+    usage: u64,
+    // maximum usage ever recorded.
+    max_usage: u64,
+    // all the stats exported via memory.stat.
+    stats: HashMap<String, u64>,
+    // number of times memory usage hits limits.
+    failcnt: Option<u64>,
+    limit: u64,
+
+    // committed bytes
+    commit: Option<u64>,
+    // peak committed bytes
+    #[serde(rename = "commitpeakbytes")]
+    commit_peak_bytes: Option<u64>,
+    // private working set
+    #[serde(rename = "privatedworkingset")]
+    privated_working_set: Option<u64>,
+}
+
+/// `Stats` is Ultimate struct aggregating all types of states of one container.
+#[derive(Serialize, Deserialize, Debug)]
+struct Stats {
+    name: Option<String>,
+    id: Option<String>,
+
+    // Common stats
+    read: String,
+    preread: String,
+
+    // Linux specific stats, not populated on Windows
+    pids_stats: Option<PidsStats>,
+    blkio_stats: Option<BlkioStats>,
+
+    // Windwos specific stats, not populated on Linux.
+    num_procs: Option<u32>,
+    storage_stats: Option<StorageStats>,
+
+    // Shared stats
+    cpu_stats: CPUStats,
+    precpu_stats: CPUStats,
+    memory_stats: MemoryStats,
+
+    networks: Option<HashMap<String, NetworkStats>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ConsensusState {
@@ -20,6 +226,33 @@ pub struct ConsensusState {
     pub locked: u64,
     pub qc: u64,
     pub validator: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeStats {
+    pub cpu_percent: f64,
+    pub mem: u64,
+    pub mem_percent: f64,
+    pub mem_limit: u64,
+    pub network_rx: u64,
+    pub network_tx: u64,
+    pub blk_read: u64,
+    pub blk_write: u64,
+}
+
+impl Default for &NodeStats {
+    fn default() -> Self {
+        &NodeStats {
+            cpu_percent: 0.0,
+            mem: 0,
+            mem_percent: 0.0,
+            mem_limit: 0,
+            network_rx: 0,
+            network_tx: 0,
+            blk_read: 0,
+            blk_write: 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -37,6 +270,7 @@ pub struct Data {
     max_interval: u64,
 
     states: HashMap<String, ConsensusState>,
+    stats: HashMap<String, NodeStats>,
 }
 
 pub type SharedData = Arc<Mutex<Data>>;
@@ -45,6 +279,8 @@ pub type SharedData = Arc<Mutex<Data>>;
 pub struct Collector {
     data: SharedData,
     urls: Vec<String>,
+    enable_docker_stats: bool,
+    docker_port: u16,
 }
 
 pub async fn run(collector: Collector) -> Result<()> {
@@ -83,6 +319,7 @@ impl Default for Data {
             cur_interval: 0,
             max_interval: 0,
             states: HashMap::new(),
+            stats: HashMap::new(),
         }
     }
 }
@@ -136,11 +373,26 @@ impl Data {
         let states: Vec<ConsensusState> = self.states.iter().map(|(_, val)| val.clone()).collect();
         states
     }
+
+    pub fn stats(&self) -> HashMap<String, NodeStats> {
+        let stats = self.stats.clone();
+        stats
+    }
 }
 
 impl Collector {
-    pub fn new(urls: Vec<String>, data: SharedData) -> Self {
-        Collector { data, urls }
+    pub fn new(opts: &Opts, data: SharedData) -> Self {
+        let urls: Vec<&str> = opts.url.as_str().split(",").collect();
+        let urls = urls.into_iter().map(|url| String::from(url)).collect();
+        let enable_docker_stats = opts.enable_docker_stats;
+        let docker_port = opts.docker_port;
+
+        Collector {
+            data,
+            urls,
+            enable_docker_stats,
+            docker_port,
+        }
     }
 
     pub(crate) async fn run(&self) -> Result<()> {
@@ -152,7 +404,21 @@ impl Collector {
         let _: Vec<_> = urls
             .into_iter()
             .map(|url| {
-                tokio::spawn(collect_node_state(url.clone(), self.data.clone()));
+                let name = url.clone().replace("ws://", "");
+                tokio::spawn(collect_node_state(
+                    name.clone(),
+                    url.clone(),
+                    self.data.clone(),
+                ));
+
+                debug!("enable_docker_stats: {}", self.enable_docker_stats);
+                if self.enable_docker_stats {
+                    debug!("enable_docker_stats: {}", self.enable_docker_stats);
+                    let host = name.clone();
+                    let ip_port: Vec<&str> = host.as_str().split(":").collect();
+                    let host = format!("http://{}:{}", ip_port[0], self.docker_port);
+                    tokio::spawn(collect_node_stats(name.clone(), host, self.data.clone()));
+                }
             })
             .collect();
 
@@ -192,15 +458,13 @@ impl Collector {
     }
 }
 
-async fn collect_node_state(url: String, data: SharedData) -> Result<()> {
+async fn collect_node_state(name: String, url: String, data: SharedData) -> Result<()> {
     let ws = WebSocket::new(url.as_str()).await?;
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
     let platon = web3.platon();
 
     let mut interval = time::interval(Duration::from_secs(1));
-
-    let name = url.replace("ws://", "");
 
     loop {
         tokio::select! {
@@ -222,5 +486,155 @@ async fn collect_node_state(url: String, data: SharedData) -> Result<()> {
                 data.states.insert(name.clone(), node);
             }
         }
+    }
+}
+
+async fn get_container_id(host: String, name: String) -> Result<String> {
+    let client = Client::new();
+    let uri = format!("{}/containers/json", host).parse()?;
+    let resp = client.get(uri).await?;
+    let body = hyper::body::to_bytes(resp.into_body()).await?;
+
+    let container_list: ContainerList = serde_json::from_slice(body.as_ref()).unwrap();
+
+    let v: Vec<String> = container_list
+        .into_iter()
+        .filter(|c| {
+            let cc: Vec<_> = c
+                .names
+                .iter()
+                .filter(|name| {
+                    if name.contains(name.as_str()) {
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            cc.len() > 0
+        })
+        .map(|c| c.id.clone())
+        .collect();
+    if v.len() > 0 {
+        Ok(v[0].clone())
+    } else {
+        Err("not found".into())
+    }
+}
+
+async fn collect_node_stats(name: String, host: String, data: SharedData) -> Result<()> {
+    debug!("name: {}, host: {}", name, host);
+    let id = get_container_id(host.clone(), String::from("platone")).await?;
+
+    let client = Client::new();
+    let uri = format!("{}/containers/{}/stats", host, id).parse()?;
+    debug!("uri: {:?}", uri);
+
+    let mut resp = client.get(uri).await?;
+    debug!("status: {:?}", resp.status());
+    debug!("headers: {:#?}", resp.headers());
+
+    let mut bufs: Vec<u8> = Vec::new();
+
+    loop {
+        tokio::select! {
+            Some(chunk) = resp.body_mut().data() => {
+                let chunk = chunk?;
+                if chunk.has_remaining() {
+                    bufs.append(&mut chunk.to_vec().clone());
+                    let stats: Stats = match serde_json::from_slice(bufs.as_ref()) {
+                        Err(_) => continue,
+                        Ok(stats) => stats,
+                    };
+                    debug!("stats: {:#?}", stats);
+                    bufs.clear();
+
+                    update_node_stats(name.as_str(), data.clone(), &stats);
+                }
+            }
+        }
+    }
+}
+
+fn update_node_stats(name: &str, data: SharedData, stats: &Stats) {
+    let (mem, mem_usage) = calc_mem_usage(&stats);
+
+    let (rx, tx) = get_network_rx_tx(&stats);
+    let (blk_read, blk_write) = get_blk(&stats);
+
+    let node_stats = NodeStats {
+        cpu_percent: calc_cpu_usage(&stats),
+        mem,
+        mem_percent: mem_usage,
+        mem_limit: stats.memory_stats.limit,
+        network_rx: rx,
+        network_tx: tx,
+        blk_read,
+        blk_write,
+    };
+
+    let mut data = data.lock().unwrap();
+    data.stats.insert(name.to_string(), node_stats);
+}
+
+fn calc_cpu_usage(stats: &Stats) -> f64 {
+    let cpu_usage = &stats.cpu_stats.cpu_usage;
+    let precpu_usage = &stats.precpu_stats.cpu_usage;
+    let cpu_delta = cpu_usage.total_usage - precpu_usage.total_usage;
+    let precpu_system_cpu_usage = stats.precpu_stats.system_cpu_usage.unwrap_or(0);
+    let system_cpu_delta = stats.cpu_stats.system_cpu_usage.unwrap() - precpu_system_cpu_usage;
+    let num_cpus = cpu_usage.percpu_usage.clone().unwrap().len();
+
+    (cpu_delta as f64 / system_cpu_delta as f64) * num_cpus as f64 * 100.0
+}
+
+fn calc_mem_usage(stats: &Stats) -> (u64, f64) {
+    let memory_stat = &stats.memory_stats;
+    let cache = memory_stat.stats.get("cache").unwrap();
+    let used_memory = memory_stat.usage - cache;
+    let avaliable_memory = memory_stat.limit;
+    (
+        used_memory,
+        (used_memory as f64 / avaliable_memory as f64) * 100.0,
+    )
+}
+
+fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
+    match &stats.networks {
+        Some(networks) => {
+            let mut rx: u64 = 0;
+            let mut tx: u64 = 0;
+            let _v: Vec<_> = networks
+                .iter()
+                .map(|(_, net)| {
+                    rx += net.rx_bytes;
+                    tx += net.tx_bytes;
+                })
+                .collect();
+            (rx, tx)
+        }
+        None => return (0, 0),
+    }
+}
+
+fn get_blk(stats: &Stats) -> (u64, u64) {
+    match &stats.blkio_stats {
+        Some(blk) => {
+            let mut read: u64 = 0;
+            let mut write: u64 = 0;
+            let _v: Vec<_> = blk
+                .io_service_bytes_recursive
+                .iter()
+                .map(|entry| {
+                    if entry.op == "Read" {
+                        read += entry.value;
+                    } else if entry.op == "Write" {
+                        write += entry.value;
+                    }
+                })
+                .collect();
+            (read, write)
+        }
+        None => (0, 0),
     }
 }
