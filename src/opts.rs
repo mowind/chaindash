@@ -11,4 +11,16 @@ pub struct Opts {
     /// Render interval
     #[clap(long, default_value = "1")]
     pub interval: Ratio<u64>,
+
+    /// Enable docker stats
+    #[clap(long)]
+    pub enable_docker_stats: bool,
+
+    /// Docker service port
+    #[clap(long, default_value = "2375")]
+    pub docker_port: u16,
+
+    /// Enable debug log
+    #[clap(long)]
+    pub debug: bool,
 }

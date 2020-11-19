@@ -3,5 +3,7 @@ Chain dashboard for PlatON
 
 ## TODOs
 
-* [ ] Asynchronous update data
-* [ ] Colorscheme
+* [x] Asynchronous update data
+* [x] Colorscheme
+* [x] Show node stats (need run in docker)
+* [ ] Single node mod
