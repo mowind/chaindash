@@ -547,11 +547,12 @@ async fn collect_node_stats(name: String, host: String, data: SharedData) -> Res
                         Ok(stats) => stats,
                     };
                     debug!("stats: {:#?}", stats);
-                    bufs.clear();
+                    //bufs.clear();
+                    let _ = std::mem::replace(&mut bufs, Default::default());
 
                     update_node_stats(name.as_str(), data.clone(), &stats);
                 }
-            }
+        }
         }
     }
 }
