@@ -36,6 +36,7 @@ impl NodeWidget {
     fn render_without_stats(&self, area: Rect, buf: &mut Buffer) {
         let header = [
             " Name",
+            "Host",
             "Block",
             "Epoch",
             "View",
@@ -53,6 +54,7 @@ impl NodeWidget {
                 Row::StyledData(
                     vec![
                         format!(" {}", node.name),
+                        format!("{}", node.host),
                         format!("{}", node.current_number),
                         format!("{}", node.epoch),
                         format!("{}", node.view),
@@ -77,7 +79,8 @@ impl NodeWidget {
         )
         .widths(&[
             Constraint::Length(20),
-            Constraint::Length(u16::max((area.width as i16 - 2 - 80 - 8) as u16, 10)),
+            Constraint::Length(20),
+            Constraint::Length(u16::max((area.width as i16 - 2 - 100 - 8) as u16, 10)),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -93,6 +96,7 @@ impl NodeWidget {
     fn render_with_stats(&self, area: Rect, buf: &mut Buffer, stats: &HashMap<String, NodeStats>) {
         let header = [
             " Name",
+            "Host",
             "Block",
             "Epoch",
             "View",
@@ -123,6 +127,7 @@ impl NodeWidget {
                 Row::StyledData(
                     vec![
                         format!(" {}", node.name),
+                        format!("{}", node.host),
                         format!("{}", node.current_number),
                         format!("{}", node.epoch),
                         format!("{}", node.view),
@@ -153,13 +158,14 @@ impl NodeWidget {
         )
         .widths(&[
             Constraint::Length(20),
+            Constraint::Length(20),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(u16::max((area.width as i16 - 2 - 164 - 6) as u16, 10)),
+            Constraint::Length(u16::max((area.width as i16 - 2 - 184 - 7) as u16, 10)),
             Constraint::Length(10),
             Constraint::Length(25),
             Constraint::Length(10),
