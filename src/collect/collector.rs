@@ -1,3 +1,4 @@
+#[warn(dead_code)]
 use std::collections::HashMap;
 
 use hyper::body::Buf;
@@ -219,6 +220,7 @@ struct Stats {
 #[derive(Debug, Clone)]
 pub struct ConsensusState {
     pub name: String,
+    pub host: String,
     pub current_number: u64,
     pub epoch: u64,
     pub view: u64,
@@ -278,7 +280,7 @@ pub type SharedData = Arc<Mutex<Data>>;
 #[derive(Debug)]
 pub struct Collector {
     data: SharedData,
-    urls: Vec<String>,
+    urls: Vec<(String, String)>,
     enable_docker_stats: bool,
     docker_port: u16,
 }
@@ -295,6 +297,7 @@ impl Default for ConsensusState {
     fn default() -> Self {
         ConsensusState {
             name: String::from(""),
+            host: String::default(),
             current_number: 0,
             epoch: 0,
             view: 0,
@@ -383,7 +386,16 @@ impl Data {
 impl Collector {
     pub fn new(opts: &Opts, data: SharedData) -> Self {
         let urls: Vec<&str> = opts.url.as_str().split(",").collect();
-        let urls = urls.into_iter().map(|url| String::from(url)).collect();
+        let urls: Vec<(String, String)> = urls
+            .into_iter()
+            .map(|url| {
+                let v: Vec<&str> = url.split("@").collect();
+                if v.len() < 2 {
+                    panic!("invalid url");
+                }
+                (v[0].into(), v[1].into())
+            })
+            .collect();
         let enable_docker_stats = opts.enable_docker_stats;
         let docker_port = opts.docker_port;
 
@@ -396,7 +408,7 @@ impl Collector {
     }
 
     pub(crate) async fn run(&self) -> Result<()> {
-        let ws = WebSocket::new(self.urls[0].as_str()).await?;
+        let ws = WebSocket::new(self.urls[0].1.as_str()).await?;
         let web3 = web3::Web3::new(ws.clone());
         let mut sub = web3.platon_subscribe().subscribe_new_heads().await?;
 
@@ -404,17 +416,18 @@ impl Collector {
         let _: Vec<_> = urls
             .into_iter()
             .map(|url| {
-                let name = url.clone().replace("ws://", "");
+                let name = url.0.clone();
                 tokio::spawn(collect_node_state(
                     name.clone(),
-                    url.clone(),
+                    url.1.clone(),
                     self.data.clone(),
                 ));
 
                 debug!("enable_docker_stats: {}", self.enable_docker_stats);
                 if self.enable_docker_stats {
                     debug!("enable_docker_stats: {}", self.enable_docker_stats);
-                    let host = name.clone();
+                    let host = url.1.clone();
+                    let host = host.replace("ws://", "");
                     let ip_port: Vec<&str> = host.as_str().split(":").collect();
                     let host = format!("http://{}:{}", ip_port[0], self.docker_port);
                     tokio::spawn(collect_node_stats(name.clone(), host, self.data.clone()));
@@ -463,6 +476,7 @@ async fn collect_node_state(name: String, url: String, data: SharedData) -> Resu
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
     let platon = web3.platon();
+    let host = url.replace("ws://", "");
 
     let mut interval = time::interval(Duration::from_secs(1));
 
@@ -473,6 +487,7 @@ async fn collect_node_state(name: String, url: String, data: SharedData) -> Resu
                 let cur_number = platon.block_number().await?;
                 let node = ConsensusState{
                     name: name.clone(),
+                    host: host.clone(),
                     current_number: cur_number.as_u64(),
                     epoch: state.state.view.epoch,
                     view: state.state.view.view,
@@ -524,10 +539,10 @@ async fn get_container_id(host: String, name: String) -> Result<String> {
 
 async fn collect_node_stats(name: String, host: String, data: SharedData) -> Result<()> {
     debug!("name: {}, host: {}", name, host);
-    let id = get_container_id(host.clone(), String::from("platone")).await?;
+    //let id = get_container_id(host.clone(), name.clone()).await?;
 
     let client = Client::new();
-    let uri = format!("{}/containers/{}/stats", host, id).parse()?;
+    let uri = format!("{}/containers/{}/stats", host, name).parse()?;
     debug!("uri: {:?}", uri);
 
     let mut resp = client.get(uri).await?;
@@ -552,7 +567,7 @@ async fn collect_node_stats(name: String, host: String, data: SharedData) -> Res
 
                     update_node_stats(name.as_str(), data.clone(), &stats);
                 }
-        }
+            }
         }
     }
 }
