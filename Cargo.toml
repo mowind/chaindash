@@ -10,7 +10,7 @@ edition = "2018"
 better-panic = "0.2.0"
 ctrlc = { version = "3.1.4", features = ["termination"]}
 crossbeam-channel = "0.4.2"
-web3 = { git = "https://github.com/mowind/rust-web3", branch= "platone-expiration" }
+web3 = { git = "https://github.com/mowind/rust-web3", branch= "multiledgers" }
 clap = "3.0.0-beta.1"
 crossterm = "0.17"
 num-rational = "0.2.4"
