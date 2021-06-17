@@ -23,4 +23,8 @@ pub struct Opts {
     /// Enable debug log
     #[clap(long)]
     pub debug: bool,
+
+    /// Ledger name
+    #[clap(long)]
+    pub ledger_name: String,
 }

@@ -17,8 +17,6 @@ use crate::Opts;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
-const LEDGER_NAME: &str = "sys";
-
 #[derive(Deserialize, Serialize, Debug)]
 struct Container {
     #[serde(rename = "Id")]
@@ -221,6 +219,7 @@ struct Stats {
 
 #[derive(Debug, Clone)]
 pub struct ConsensusState {
+    pub ledger_name: String,
     pub name: String,
     pub host: String,
     pub current_number: u64,
@@ -285,6 +284,7 @@ pub struct Collector {
     urls: Vec<(String, String)>,
     enable_docker_stats: bool,
     docker_port: u16,
+    ledger_name: String,
 }
 
 pub async fn run(collector: Collector) -> Result<()> {
@@ -298,6 +298,7 @@ pub async fn run(collector: Collector) -> Result<()> {
 impl Default for ConsensusState {
     fn default() -> Self {
         ConsensusState {
+            ledger_name: String::from(""),
             name: String::from(""),
             host: String::default(),
             current_number: 0,
@@ -406,6 +407,7 @@ impl Collector {
             urls,
             enable_docker_stats,
             docker_port,
+            ledger_name: opts.ledger_name.clone(),
         }
     }
 
@@ -414,7 +416,7 @@ impl Collector {
         let web3 = web3::Web3::new(ws.clone());
         let mut sub = web3
             .platon_subscribe()
-            .subscribe_new_heads(&LEDGER_NAME.to_string())
+            .subscribe_new_heads(&self.ledger_name)
             .await?;
 
         let urls = self.urls.clone();
@@ -426,6 +428,7 @@ impl Collector {
                     name.clone(),
                     url.1.clone(),
                     self.data.clone(),
+                    self.ledger_name.clone(),
                 ));
 
                 debug!("enable_docker_stats: {}", self.enable_docker_stats);
@@ -446,7 +449,7 @@ impl Collector {
                     let head = head.unwrap();
                     let number = head.number.unwrap();
                     let number = BlockId::from(number);
-                    let txs = web3.platon().block_transaction_count(&LEDGER_NAME.to_string(),number).await?;
+                    let txs = web3.platon().block_transaction_count(&self.ledger_name,number).await?;
                     let txs = txs.unwrap().as_u64();
 
                     let mut data = self.data.lock().unwrap();
@@ -476,7 +479,12 @@ impl Collector {
     }
 }
 
-async fn collect_node_state(name: String, url: String, data: SharedData) -> Result<()> {
+async fn collect_node_state(
+    name: String,
+    url: String,
+    data: SharedData,
+    ledger_name: String,
+) -> Result<()> {
     let ws = WebSocket::new(url.as_str()).await?;
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
@@ -488,9 +496,10 @@ async fn collect_node_state(name: String, url: String, data: SharedData) -> Resu
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let state = debug.consensus_status(&LEDGER_NAME.to_string()).await?;
-                let cur_number = platon.block_number(&LEDGER_NAME.to_string()).await?;
+                let state = debug.consensus_status(&ledger_name).await?;
+                let cur_number = platon.block_number(&ledger_name).await?;
                 let node = ConsensusState{
+                    ledger_name: ledger_name.clone(),
                     name: name.clone(),
                     host: host.clone(),
                     current_number: cur_number.as_u64(),

@@ -35,7 +35,8 @@ impl NodeWidget {
 
     fn render_without_stats(&self, area: Rect, buf: &mut Buffer) {
         let header = [
-            " Name",
+            " Ledger",
+            "Name",
             "Host",
             "Block",
             "Epoch",
@@ -53,7 +54,8 @@ impl NodeWidget {
             nodes.into_iter().map(|node| {
                 Row::StyledData(
                     vec![
-                        format!(" {}", node.name),
+                        format!(" {}", node.ledger_name),
+                        format!("{}", node.name),
                         format!("{}", node.host),
                         format!("{}", node.current_number),
                         format!("{}", node.epoch),
@@ -78,9 +80,10 @@ impl NodeWidget {
                 .modifier(Modifier::BOLD),
         )
         .widths(&[
+            Constraint::Length(10),
             Constraint::Length(20),
             Constraint::Length(20),
-            Constraint::Length(u16::max((area.width as i16 - 2 - 100 - 8) as u16, 10)),
+            Constraint::Length(u16::max((area.width as i16 - 121) as u16, 10)),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -95,7 +98,8 @@ impl NodeWidget {
 
     fn render_with_stats(&self, area: Rect, buf: &mut Buffer, stats: &HashMap<String, NodeStats>) {
         let header = [
-            " Name",
+            " Ledger",
+            "Name",
             "Host",
             "Block",
             "Epoch",
@@ -126,7 +130,8 @@ impl NodeWidget {
                 let tx = stat.network_tx as f64 / 1024.0 / 1024.0 / 1024.0;
                 Row::StyledData(
                     vec![
-                        format!(" {}", node.name),
+                        format!(" {}", node.ledger_name),
+                        format!("{}", node.name),
                         format!("{}", node.host),
                         format!("{}", node.current_number),
                         format!("{}", node.epoch),
@@ -157,15 +162,16 @@ impl NodeWidget {
                 .modifier(Modifier::BOLD),
         )
         .widths(&[
+            Constraint::Length(10),
             Constraint::Length(20),
             Constraint::Length(20),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(u16::max((area.width as i16 - 2 - 184 - 7) as u16, 10)),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(u16::max((area.width as i16 - 192) as u16, 10)),
             Constraint::Length(10),
             Constraint::Length(25),
             Constraint::Length(10),
