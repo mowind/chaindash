@@ -410,7 +410,7 @@ impl Collector {
     pub(crate) async fn run(&self) -> Result<()> {
         let ws = WebSocket::new(self.urls[0].1.as_str()).await?;
         let web3 = web3::Web3::new(ws.clone());
-        let mut sub = web3.platon_subscribe().subscribe_new_heads().await?;
+        let mut sub = web3.juice_subscribe().subscribe_new_heads().await?;
 
         let urls = self.urls.clone();
         let _: Vec<_> = urls
@@ -441,7 +441,7 @@ impl Collector {
                     let head = head.unwrap();
                     let number = head.number.unwrap();
                     let number = BlockId::from(number);
-                    let txs = web3.platon().block_transaction_count(number).await?;
+                    let txs = web3.juice().block_transaction_count(number).await?;
                     let txs = txs.unwrap().as_u64();
 
                     let mut data = self.data.lock().unwrap();
@@ -475,7 +475,7 @@ async fn collect_node_state(name: String, url: String, data: SharedData) -> Resu
     let ws = WebSocket::new(url.as_str()).await?;
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
-    let platon = web3.platon();
+    let juice = web3.juice();
     let host = url.replace("ws://", "");
 
     let mut interval = time::interval(Duration::from_secs(1));
@@ -484,7 +484,7 @@ async fn collect_node_state(name: String, url: String, data: SharedData) -> Resu
         tokio::select! {
             _ = interval.tick() => {
                 let state = debug.consensus_status().await?;
-                let cur_number = platon.block_number().await?;
+                let cur_number = juice.block_number().await?;
                 let node = ConsensusState{
                     name: name.clone(),
                     host: host.clone(),
