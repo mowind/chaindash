@@ -415,7 +415,7 @@ impl Collector {
         let ws = WebSocket::new(self.urls[0].1.as_str()).await?;
         let web3 = web3::Web3::new(ws.clone());
         let mut sub = web3
-            .platon_subscribe()
+            .juice_subscribe()
             .subscribe_new_heads(&self.ledger_name)
             .await?;
 
@@ -449,7 +449,7 @@ impl Collector {
                     let head = head.unwrap();
                     let number = head.number.unwrap();
                     let number = BlockId::from(number);
-                    let txs = web3.platon().block_transaction_count(&self.ledger_name,number).await?;
+                    let txs = web3.juice().block_transaction_count(&self.ledger_name,number).await?;
                     let txs = txs.unwrap().as_u64();
 
                     let mut data = self.data.lock().unwrap();
@@ -488,7 +488,7 @@ async fn collect_node_state(
     let ws = WebSocket::new(url.as_str()).await?;
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
-    let platon = web3.platon();
+    let juice = web3.juice();
     let host = url.replace("ws://", "");
 
     let mut interval = time::interval(Duration::from_secs(1));
@@ -497,7 +497,7 @@ async fn collect_node_state(
         tokio::select! {
             _ = interval.tick() => {
                 let state = debug.consensus_status(&ledger_name).await?;
-                let cur_number = platon.block_number(&ledger_name).await?;
+                let cur_number = juice.block_number(&ledger_name).await?;
                 let node = ConsensusState{
                     ledger_name: ledger_name.clone(),
                     name: name.clone(),
