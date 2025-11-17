@@ -12,7 +12,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use clap::derive::Clap;
+use clap::Parser;
 use crossbeam_channel::{select, tick, unbounded, Receiver};
 use crossterm::cursor;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};

@@ -264,6 +264,7 @@ pub struct Data {
     prev_block_time: u64,
     cur_txs: u64,
     max_txs: u64,
+    max_txs_block_number: u64,
 
     txns: Vec<u64>,
     intervals: Vec<u64>,
@@ -317,6 +318,7 @@ impl Default for Data {
             prev_block_time: 0,
             cur_txs: 0,
             max_txs: 0,
+            max_txs_block_number: 0,
             txns: vec![0],
             intervals: vec![0],
             cur_interval: 0,
@@ -352,6 +354,10 @@ impl Data {
         self.max_txs
     }
 
+    pub fn max_txs_block_number(&self) -> u64 {
+        self.max_txs_block_number
+    }
+
     pub fn txns_and_clear(&mut self) -> Vec<u64> {
         let txns = self.txns.clone();
         self.txns.clear();
@@ -377,10 +383,10 @@ impl Data {
         states
     }
 
-    pub fn stats(&self) -> HashMap<String, NodeStats> {
-        let stats = self.stats.clone();
-        stats
-    }
+        pub fn stats(&self) -> HashMap<String, NodeStats> {
+            let stats = self.stats.clone();
+            stats
+        }
 }
 
 impl Collector {
@@ -453,7 +459,8 @@ impl Collector {
                     data.cur_txs = txs;
 
                     if txs > data.max_txs {
-                        data.max_txs = txs
+                        data.max_txs = txs;
+                        data.max_txs_block_number = head.number.unwrap().as_u64();
                     }
 
                     data.txns.push(txs);

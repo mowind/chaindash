@@ -1,0 +1,83 @@
+# Rustfmt configuration for chaindash project
+# Generated based on existing code style
+
+edition = "2021"
+
+# Basic formatting
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+
+# Imports and modules
+imports_granularity = "Crate"
+imports_layout = "Vertical"
+reorder_imports = true
+reorder_modules = true
+
+# Function formatting
+fn_params_layout = "Vertical"
+fn_call_width = 100
+
+# Control flow
+control_brace_style = "AlwaysSameLine"
+where_single_line = false
+
+# Struct and enum formatting
+struct_lit_single_line = true
+struct_variant_width = 100
+
+# Match formatting
+match_arm_blocks = true
+match_block_trailing_comma = true
+
+# Comments
+wrap_comments = false
+comment_width = 100
+
+# Other settings
+max_width = 100
+use_small_heuristics = "Default"
+use_field_init_shorthand = true
+
+# Chain formatting
+chain_width = 100
+
+# Array/vector formatting
+array_width = 100
+
+# Error handling
+format_strings = true
+
+# Documentation
+normalize_doc_attributes = false
+
+# Advanced settings
+merge_derives = true
+use_try_shorthand = true
+
+# Spacing
+space_before_colon = false
+space_after_colon = true
+spaces_around_ranges = false
+
+# Brace placement
+brace_style = "SameLineWhere"
+
+# Trailing commas
+trailing_comma = "Vertical"
+
+# Blank lines
+blank_lines_upper_bound = 1
+blank_lines_lower_bound = 0
+
+# Group imports
+group_imports = "StdExternalCrate"
+
+# Format code in #[macro_use] extern crate
+format_macro_matchers = true
+
+# Don't format generated files
+ignore = [
+    "target/",
+    "*.rs.bk"
+]

@@ -19,6 +19,7 @@ pub struct TxsWidget {
     cur_num: u64,
     cur_txs: u64,
     max: u64,
+    max_block_number: u64,
     data: Vec<(f64, f64)>,
 }
 
@@ -36,6 +37,7 @@ impl TxsWidget {
             cur_num: 0,
             cur_txs: 0,
             max: 0,
+            max_block_number: 0,
             data: vec![(0.0, 0.0)],
         };
 
@@ -49,6 +51,7 @@ impl UpdatableWidget for TxsWidget {
         self.cur_num = collect_data.cur_block_number();
         self.cur_txs = collect_data.cur_txs();
         self.max = collect_data.max_txs();
+        self.max_block_number = collect_data.max_txs_block_number();
         let data = collect_data.txns_and_clear();
 
         for txs in data {
@@ -93,7 +96,7 @@ impl Widget for &TxsWidget {
         buf.set_string(
             area.x + 2,
             area.y + 2,
-            format!("MAX   {}", self.max),
+            format!("MAX   {}({})", self.max, self.max_block_number),
             Style::default().fg(Color::Indexed(141 as u8)),
         );
 
