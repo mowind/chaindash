@@ -8,7 +8,7 @@ pub trait UpdatableWidget {
 }
 
 pub fn update_widgets(widgets: &mut Widgets, seconds: Ratio<u64>) {
-    let mut widgets_to_update: Vec<&mut (dyn UpdatableWidget)> =
+    let mut widgets_to_update: Vec<&mut dyn UpdatableWidget > =
         vec![&mut widgets.txs, &mut widgets.time, &mut widgets.node];
 
     #[cfg(target_family = "unix")]

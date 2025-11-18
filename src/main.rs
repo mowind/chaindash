@@ -15,7 +15,7 @@ use std::time::Duration;
 use clap::Parser;
 use crossbeam_channel::{select, tick, unbounded, Receiver};
 use crossterm::cursor;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal;
 //use log::{debug, info};
