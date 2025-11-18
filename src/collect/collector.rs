@@ -14,9 +14,6 @@ use hyper::{
 };
 use log::{
     debug,
-    error,
-    info,
-    trace,
     warn,
 };
 use serde::{
