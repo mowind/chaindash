@@ -34,7 +34,10 @@ use web3::{
 };
 
 #[cfg(target_family = "unix")]
-use sysinfo::System;
+use sysinfo::{
+    System,
+    Disks,
+};
 
 use crate::Opts;
 
@@ -311,6 +314,10 @@ pub struct SystemStats {
     pub memory_usage_percent: f32,
     pub network_rx: u64,
     pub network_tx: u64,
+    pub disk_used: u64,
+    pub disk_total: u64,
+    pub disk_available: u64,
+    pub disk_usage_percent: f32,
 }
 
 #[cfg(target_family = "unix")]
@@ -323,6 +330,10 @@ impl Default for SystemStats {
             memory_usage_percent: 0.0,
             network_rx: 0,
             network_tx: 0,
+            disk_used: 0,
+            disk_total: 0,
+            disk_available: 0,
+            disk_usage_percent: 0.0,
         }
     }
 }
@@ -773,6 +784,29 @@ async fn collect_system_stats(data: SharedData) -> Result<()> {
                 prev_network_rx = network_rx;
                 prev_network_tx = network_tx;
 
+                // 获取磁盘使用情况
+                let disks = Disks::new_with_refreshed_list();
+                let mut disk_used: u64 = 0;
+                let mut disk_total: u64 = 0;
+                let mut disk_available: u64 = 0;
+
+                for disk in disks.list() {
+                    // 只统计根分区和主要分区，避免重复计算
+                    let mount_point = disk.mount_point().to_string_lossy();
+                    if mount_point == "/" || mount_point.starts_with("/home") || mount_point.starts_with("/var") {
+                        disk_total += disk.total_space();
+                        disk_available += disk.available_space();
+                    }
+                }
+
+                // 计算已使用空间和使用百分比
+                disk_used = disk_total.saturating_sub(disk_available);
+                let disk_usage_percent = if disk_total > 0 {
+                    (disk_used as f32 / disk_total as f32) * 100.0
+                } else {
+                    0.0
+                };
+
                 // 更新系统统计
                 let system_stats = SystemStats {
                     cpu_usage,
@@ -781,6 +815,10 @@ async fn collect_system_stats(data: SharedData) -> Result<()> {
                     memory_usage_percent,
                     network_rx: network_rx_rate,
                     network_tx: network_tx_rate,
+                    disk_used,
+                    disk_total,
+                    disk_available,
+                    disk_usage_percent,
                 };
 
                 let mut data = data.lock().unwrap();

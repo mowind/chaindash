@@ -66,13 +66,15 @@ impl Widget for &SystemWidget {
         }
 
         let header =
-            [" CPU Usage", "Memory Usage", "Memory Used/Total", "Network RX", "Network TX"];
+            [" CPU Usage", "Memory Usage", "Memory Used/Total", "Disk Usage", "Disk Used/Total", "Network RX", "Network TX"];
 
         let stats = &self.system_stats;
 
         // 格式化数据
         let memory_used_gb = stats.memory_used as f64 / 1024.0 / 1024.0 / 1024.0;
         let memory_total_gb = stats.memory_total as f64 / 1024.0 / 1024.0 / 1024.0;
+        let disk_used_gb = stats.disk_used as f64 / 1024.0 / 1024.0 / 1024.0;
+        let disk_total_gb = stats.disk_total as f64 / 1024.0 / 1024.0 / 1024.0;
         let network_rx_mb = stats.network_rx as f64 / 1024.0 / 1024.0;
         let network_tx_mb = stats.network_tx as f64 / 1024.0 / 1024.0;
 
@@ -81,6 +83,8 @@ impl Widget for &SystemWidget {
                 format!(" \u{f0ee0} {:.2}%", stats.cpu_usage),
                 format!("\u{f035b} {:.2}%", stats.memory_usage_percent),
                 format!(" {:.2}GB / {:.2}GB", memory_used_gb, memory_total_gb),
+                format!("\u{f1c0} {:.2}%", stats.disk_usage_percent),
+                format!(" {:.2}GB / {:.2}GB", disk_used_gb, disk_total_gb),
                 format!("\u{f0045} {:.2} MB/s", network_rx_mb),
                 format!("\u{f005d} {:.2} MB/s", network_tx_mb),
             ]
@@ -98,6 +102,8 @@ impl Widget for &SystemWidget {
             )
             .widths(&[
                 Constraint::Length(15),
+                Constraint::Length(15),
+                Constraint::Length(25),
                 Constraint::Length(15),
                 Constraint::Length(25),
                 Constraint::Length(15),
