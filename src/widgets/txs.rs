@@ -1,13 +1,26 @@
 use num_rational::Ratio;
-use tui::buffer::Buffer;
-use tui::layout::Rect;
-use tui::style::{Color, Style};
-use tui::symbols::Marker;
-use tui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
+use tui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{
+        Color,
+        Style,
+    },
+    symbols::Marker,
+    widgets::{
+        Axis,
+        Chart,
+        Dataset,
+        GraphType,
+        Widget,
+    },
+};
 
-use crate::collect::{Data, SharedData};
-use crate::update::UpdatableWidget;
-use crate::widgets::block;
+use crate::{
+    collect::SharedData,
+    update::UpdatableWidget,
+    widgets::block,
+};
 
 pub struct TxsWidget {
     title: String,
@@ -24,10 +37,13 @@ pub struct TxsWidget {
 }
 
 impl TxsWidget {
-    pub fn new(update_interval: Ratio<u64>, collect_data: SharedData) -> TxsWidget {
+    pub fn new(
+        update_interval: Ratio<u64>,
+        collect_data: SharedData,
+    ) -> TxsWidget {
         let update_count = 0;
 
-        let mut txs_widgets = TxsWidget {
+        let txs_widgets = TxsWidget {
             title: " Block Transactions ".to_string(),
             update_interval,
 
@@ -66,7 +82,11 @@ impl UpdatableWidget for TxsWidget {
 }
 
 impl Widget for &TxsWidget {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    fn render(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         let mut datasets = Vec::new();
         datasets.push(
             Dataset::default()
@@ -78,10 +98,10 @@ impl Widget for &TxsWidget {
 
         Chart::<String, String>::default()
             .block(block::new(&self.title))
-            .x_axis(Axis::default().bounds([
-                self.update_count as f64 - 25.0,
-                self.update_count as f64 + 1.0,
-            ]))
+            .x_axis(
+                Axis::default()
+                    .bounds([self.update_count as f64 - 25.0, self.update_count as f64 + 1.0]),
+            )
             .y_axis(Axis::default().bounds([0.0, 50000.0]))
             .datasets(&datasets)
             .render(area, buf);
@@ -96,7 +116,7 @@ impl Widget for &TxsWidget {
         buf.set_string(
             area.x + 2,
             area.y + 2,
-            format!("MAX   {}({})", self.max, self.max_block_number),
+            format!("MAX   {} #{}", self.max, self.max_block_number),
             Style::default().fg(Color::Indexed(141 as u8)),
         );
 
