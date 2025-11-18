@@ -1,16 +1,37 @@
 #[warn(dead_code)]
 use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
-use hyper::body::Buf;
-use hyper::body::HttpBody as _;
-use hyper::Client;
-use log::{debug, error, info, trace, warn};
-use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
-use tokio::time::{self, Duration};
-use web3::futures::StreamExt;
-use web3::transports::WebSocket;
-use web3::types::BlockId;
+use hyper::{
+    body::{
+        Buf,
+        HttpBody as _,
+    },
+    Client,
+};
+use log::{
+    debug,
+    error,
+    info,
+    trace,
+    warn,
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use tokio::time::{
+    self,
+    Duration,
+};
+use web3::{
+    futures::StreamExt,
+    transports::WebSocket,
+    types::BlockId,
+};
 
 use crate::Opts;
 
@@ -383,14 +404,17 @@ impl Data {
         states
     }
 
-        pub fn stats(&self) -> HashMap<String, NodeStats> {
-            let stats = self.stats.clone();
-            stats
-        }
+    pub fn stats(&self) -> HashMap<String, NodeStats> {
+        let stats = self.stats.clone();
+        stats
+    }
 }
 
 impl Collector {
-    pub fn new(opts: &Opts, data: SharedData) -> Self {
+    pub fn new(
+        opts: &Opts,
+        data: SharedData,
+    ) -> Self {
         let urls: Vec<&str> = opts.url.as_str().split(",").collect();
         let urls: Vec<(String, String)> = urls
             .into_iter()
@@ -423,11 +447,7 @@ impl Collector {
             .into_iter()
             .map(|url| {
                 let name = url.0.clone();
-                tokio::spawn(collect_node_state(
-                    name.clone(),
-                    url.1.clone(),
-                    self.data.clone(),
-                ));
+                tokio::spawn(collect_node_state(name.clone(), url.1.clone(), self.data.clone()));
 
                 debug!("enable_docker_stats: {}", self.enable_docker_stats);
                 if self.enable_docker_stats {
@@ -478,7 +498,11 @@ impl Collector {
     }
 }
 
-async fn collect_node_state(name: String, url: String, data: SharedData) -> Result<()> {
+async fn collect_node_state(
+    name: String,
+    url: String,
+    data: SharedData,
+) -> Result<()> {
     let ws = WebSocket::new(url.as_str()).await?;
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
@@ -511,7 +535,10 @@ async fn collect_node_state(name: String, url: String, data: SharedData) -> Resu
     }
 }
 
-async fn get_container_id(host: String, name: String) -> Result<String> {
+async fn get_container_id(
+    host: String,
+    name: String,
+) -> Result<String> {
     let client = Client::new();
     let uri = format!("{}/containers/json", host).parse()?;
     let resp = client.get(uri).await?;
@@ -544,7 +571,11 @@ async fn get_container_id(host: String, name: String) -> Result<String> {
     }
 }
 
-async fn collect_node_stats(name: String, host: String, data: SharedData) -> Result<()> {
+async fn collect_node_stats(
+    name: String,
+    host: String,
+    data: SharedData,
+) -> Result<()> {
     debug!("name: {}, host: {}", name, host);
     //let id = get_container_id(host.clone(), name.clone()).await?;
 
@@ -579,7 +610,11 @@ async fn collect_node_stats(name: String, host: String, data: SharedData) -> Res
     }
 }
 
-fn update_node_stats(name: &str, data: SharedData, stats: &Stats) {
+fn update_node_stats(
+    name: &str,
+    data: SharedData,
+    stats: &Stats,
+) {
     let (mem, mem_usage) = calc_mem_usage(&stats);
 
     let (rx, tx) = get_network_rx_tx(&stats);
@@ -616,10 +651,7 @@ fn calc_mem_usage(stats: &Stats) -> (u64, f64) {
     let cache = memory_stat.stats.get("cache").unwrap();
     let used_memory = memory_stat.usage - cache;
     let avaliable_memory = memory_stat.limit;
-    (
-        used_memory,
-        (used_memory as f64 / avaliable_memory as f64) * 100.0,
-    )
+    (used_memory, (used_memory as f64 / avaliable_memory as f64) * 100.0)
 }
 
 fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
@@ -633,7 +665,7 @@ fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
             });
 
             (rx, tx)
-        }
+        },
         None => return (0, 0),
     }
 }
@@ -652,7 +684,7 @@ fn get_blk(stats: &Stats) -> (u64, u64) {
             });
 
             (read, write)
-        }
+        },
         None => (0, 0),
     }
 }
