@@ -87,7 +87,7 @@ impl Widget for &SystemWidget {
 
         let rows = vec![Row::StyledData(
             vec![
-                format!(" \u{f085} {:.2}%", stats.cpu_usage),
+                format!(" \u{f085}  {:.2}%", stats.cpu_usage),
                 format!("\u{f233} {:.2}%", stats.memory_usage_percent),
                 format!("\u{f02a1} {:.2}GB / {:.2}GB", memory_used_gb, memory_total_gb),
                 format!("\u{f1c0} {:.2}%", stats.disk_usage_percent),
