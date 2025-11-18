@@ -33,6 +33,9 @@ use web3::{
     types::BlockId,
 };
 
+#[cfg(target_family = "unix")]
+use sysinfo::System;
+
 use crate::Opts;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -295,6 +298,33 @@ pub struct Data {
 
     states: HashMap<String, ConsensusState>,
     stats: HashMap<String, NodeStats>,
+    #[cfg(target_family = "unix")]
+    system_stats: SystemStats,
+}
+
+#[cfg(target_family = "unix")]
+#[derive(Debug, Clone)]
+pub struct SystemStats {
+    pub cpu_usage: f32,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub memory_usage_percent: f32,
+    pub network_rx: u64,
+    pub network_tx: u64,
+}
+
+#[cfg(target_family = "unix")]
+impl Default for SystemStats {
+    fn default() -> Self {
+        SystemStats {
+            cpu_usage: 0.0,
+            memory_used: 0,
+            memory_total: 0,
+            memory_usage_percent: 0.0,
+            network_rx: 0,
+            network_tx: 0,
+        }
+    }
 }
 
 pub type SharedData = Arc<Mutex<Data>>;
@@ -346,6 +376,8 @@ impl Default for Data {
             max_interval: 0,
             states: HashMap::new(),
             stats: HashMap::new(),
+            #[cfg(target_family = "unix")]
+            system_stats: SystemStats::default(),
         }
     }
 }
@@ -408,6 +440,11 @@ impl Data {
         let stats = self.stats.clone();
         stats
     }
+
+    #[cfg(target_family = "unix")]
+    pub fn system_stats(&self) -> SystemStats {
+        self.system_stats.clone()
+    }
 }
 
 impl Collector {
@@ -460,6 +497,10 @@ impl Collector {
                 }
             })
             .collect();
+
+        // 启动本机系统监控
+        #[cfg(target_family = "unix")]
+        tokio::spawn(collect_system_stats(self.data.clone()));
 
         loop {
             tokio::select! {
@@ -686,5 +727,65 @@ fn get_blk(stats: &Stats) -> (u64, u64) {
             (read, write)
         },
         None => (0, 0),
+    }
+}
+
+#[cfg(target_family = "unix")]
+async fn collect_system_stats(data: SharedData) -> Result<()> {
+    let mut system = System::new_all();
+    let mut interval = time::interval(Duration::from_secs(2));
+
+    let mut prev_network_rx: u64 = 0;
+    let mut prev_network_tx: u64 = 0;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                // 刷新系统信息
+                system.refresh_all();
+
+                // 获取CPU使用率
+                let cpu_usage = system.global_cpu_info().cpu_usage();
+
+                // 获取内存使用情况
+                let memory_used = system.used_memory();
+                let memory_total = system.total_memory();
+                let memory_usage_percent = if memory_total > 0 {
+                    (memory_used as f32 / memory_total as f32) * 100.0
+                } else {
+                    0.0
+                };
+
+                // 获取网络使用情况
+                let networks = sysinfo::Networks::new_with_refreshed_list();
+                let mut network_rx: u64 = 0;
+                let mut network_tx: u64 = 0;
+
+                for (_, network) in &networks {
+                    network_rx += network.total_received();
+                    network_tx += network.total_transmitted();
+                }
+
+                // 计算网络速率（字节/秒）
+                let network_rx_rate = network_rx.saturating_sub(prev_network_rx);
+                let network_tx_rate = network_tx.saturating_sub(prev_network_tx);
+
+                prev_network_rx = network_rx;
+                prev_network_tx = network_tx;
+
+                // 更新系统统计
+                let system_stats = SystemStats {
+                    cpu_usage,
+                    memory_used,
+                    memory_total,
+                    memory_usage_percent,
+                    network_rx: network_rx_rate,
+                    network_tx: network_tx_rate,
+                };
+
+                let mut data = data.lock().unwrap();
+                data.system_stats = system_stats;
+            }
+        }
     }
 }
