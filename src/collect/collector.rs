@@ -23,6 +23,11 @@ use serde::{
     Deserialize,
     Serialize,
 };
+#[cfg(target_family = "unix")]
+use sysinfo::{
+    Disks,
+    System,
+};
 use tokio::time::{
     self,
     Duration,
@@ -31,12 +36,6 @@ use web3::{
     futures::StreamExt,
     transports::WebSocket,
     types::BlockId,
-};
-
-#[cfg(target_family = "unix")]
-use sysinfo::{
-    System,
-    Disks,
 };
 
 use crate::Opts;
@@ -791,9 +790,9 @@ async fn collect_system_stats(data: SharedData) -> Result<()> {
                 let mut disk_available: u64 = 0;
 
                 for disk in disks.list() {
-                    // 只统计根分区和主要分区，避免重复计算
+                    // 只统计opt分区
                     let mount_point = disk.mount_point().to_string_lossy();
-                    if mount_point == "/" || mount_point.starts_with("/home") || mount_point.starts_with("/var") {
+                    if mount_point == "/opt" {
                         disk_total += disk.total_space();
                         disk_available += disk.available_space();
                     }
