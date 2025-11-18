@@ -1,11 +1,28 @@
-use tui::backend::Backend;
-use tui::layout::{Constraint, Direction, Layout, Rect};
-use tui::widgets::{Block, Borders};
-use tui::{Frame, Terminal};
+use tui::{
+    backend::Backend,
+    layout::{
+        Constraint,
+        Direction,
+        Layout,
+        Rect,
+    },
+    widgets::{
+        Block,
+        Borders,
+    },
+    Frame,
+    Terminal,
+};
 
-use crate::app::{App, Widgets};
+use crate::app::{
+    App,
+    Widgets,
+};
 
-pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) {
+pub fn draw<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) {
     terminal
         .draw(|mut frame| {
             let chunks = Layout::default()
@@ -16,16 +33,59 @@ pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) {
         .unwrap();
 }
 
-pub fn draw_widgets<B: Backend>(frame: &mut Frame<B>, widgets: &mut Widgets, area: Rect) {
-    let vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-        .split(area);
-    draw_top_row(frame, widgets, vertical_chunks[0]);
-    draw_bottom_row(frame, widgets, vertical_chunks[1]);
+pub fn draw_widgets<B: Backend>(
+    frame: &mut Frame<B>,
+    widgets: &mut Widgets,
+    area: Rect,
+) {
+    #[cfg(target_family = "unix")]
+    {
+        let vertical_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(
+                [
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(55),
+                ]
+                .as_ref(),
+            )
+            .split(area);
+        draw_system_row(frame, widgets, vertical_chunks[0]);
+        draw_top_row(frame, widgets, vertical_chunks[1]);
+        draw_bottom_row(frame, widgets, vertical_chunks[2]);
+    }
+
+    #[cfg(not(target_family = "unix"))]
+    {
+        let vertical_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .split(area);
+        draw_top_row(frame, widgets, vertical_chunks[0]);
+        draw_bottom_row(frame, widgets, vertical_chunks[1]);
+    }
 }
 
-pub fn draw_top_row<B: Backend>(frame: &mut Frame<B>, widgets: &mut Widgets, area: Rect) {
+#[cfg(target_family = "unix")]
+pub fn draw_system_row<B: Backend>(
+    frame: &mut Frame<B>,
+    widgets: &mut Widgets,
+    area: Rect,
+) {
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(100)].as_ref())
+        .split(area);
+
+    frame.render_widget(&widgets.system, horizontal_chunks[0]);
+}
+
+pub fn draw_top_row<B: Backend>(
+    frame: &mut Frame<B>,
+    widgets: &mut Widgets,
+    area: Rect,
+) {
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
@@ -35,7 +95,11 @@ pub fn draw_top_row<B: Backend>(frame: &mut Frame<B>, widgets: &mut Widgets, are
     frame.render_widget(&widgets.txs, horizontal_chunks[1]);
 }
 
-pub fn draw_bottom_row<B: Backend>(frame: &mut Frame<B>, widgets: &mut Widgets, area: Rect) {
+pub fn draw_bottom_row<B: Backend>(
+    frame: &mut Frame<B>,
+    widgets: &mut Widgets,
+    area: Rect,
+) {
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(100)].as_ref())
