@@ -6,10 +6,6 @@ use tui::{
         Layout,
         Rect,
     },
-    widgets::{
-        Block,
-        Borders,
-    },
     Frame,
     Terminal,
 };

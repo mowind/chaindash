@@ -4,9 +4,8 @@ use tui::layout::Rect;
 use tui::style::{Color, Style};
 use tui::symbols::Marker;
 use tui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
-use web3::types::{Block, BlockId, H256, U64};
 
-use crate::collect::{Data, SharedData};
+use crate::collect::SharedData;
 use crate::update::UpdatableWidget;
 use crate::widgets::block;
 
