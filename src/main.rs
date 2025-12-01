@@ -171,6 +171,20 @@ async fn main() {
                                 KeyCode::Char('q') => {
                                     break
                                 }
+                                KeyCode::Tab => {
+                                    // Tab键切换磁盘
+                                    app.handle_tab_key();
+                                    draw(&mut terminal, &mut app);
+                                }
+                                _ => {}
+                            }
+                        } else if key_event.modifiers == KeyModifiers::SHIFT {
+                            match key_event.code {
+                                KeyCode::Tab => {
+                                    // Shift+Tab键切换到上一个磁盘
+                                    app.handle_shift_tab_key();
+                                    draw(&mut terminal, &mut app);
+                                }
                                 _ => {}
                             }
                         } else if key_event.modifiers == KeyModifiers::CONTROL {
