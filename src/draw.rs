@@ -40,8 +40,8 @@ pub fn draw_widgets<B: Backend>(
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Percentage(15),
-                    Constraint::Percentage(30),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(25),
                     Constraint::Percentage(55),
                 ]
                 .as_ref(),
