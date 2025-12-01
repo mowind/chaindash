@@ -312,8 +312,17 @@ pub struct SystemStats {
     pub network_tx: u64,
     pub disk_used: u64,
     pub disk_total: u64,
-    pub disk_available: u64,
     pub disk_usage_percent: f32,
+    pub disk_details: Vec<DiskDetail>,
+}
+
+#[cfg(target_family = "unix")]
+#[derive(Debug, Clone)]
+pub struct DiskDetail {
+    pub mount_point: String,
+    pub total: u64,
+    pub used: u64,
+    pub usage_percent: f32,
 }
 
 #[cfg(target_family = "unix")]
@@ -328,8 +337,8 @@ impl Default for SystemStats {
             network_tx: 0,
             disk_used: 0,
             disk_total: 0,
-            disk_available: 0,
             disk_usage_percent: 0.0,
+            disk_details: Vec::new(),
         }
     }
 }
@@ -342,6 +351,7 @@ pub struct Collector {
     urls: Vec<(String, String)>,
     enable_docker_stats: bool,
     docker_port: u16,
+    disk_mount_points: Vec<String>,
 }
 
 pub async fn run(collector: Collector) -> Result<()> {
@@ -472,12 +482,14 @@ impl Collector {
             .collect();
         let enable_docker_stats = opts.enable_docker_stats;
         let docker_port = opts.docker_port;
+        let disk_mount_points = opts.disk_mount_points.clone();
 
         Collector {
             data,
             urls,
             enable_docker_stats,
             docker_port,
+            disk_mount_points,
         }
     }
 
@@ -507,7 +519,7 @@ impl Collector {
 
         // 启动本机系统监控
         #[cfg(target_family = "unix")]
-        tokio::spawn(collect_system_stats(self.data.clone()));
+        tokio::spawn(collect_system_stats(self.data.clone(), self.disk_mount_points.clone()));
 
         loop {
             tokio::select! {
@@ -738,7 +750,10 @@ fn get_blk(stats: &Stats) -> (u64, u64) {
 }
 
 #[cfg(target_family = "unix")]
-async fn collect_system_stats(data: SharedData) -> Result<()> {
+async fn collect_system_stats(
+    data: SharedData,
+    disk_mount_points: Vec<String>,
+) -> Result<()> {
     let mut system = System::new_all();
     let mut interval = time::interval(Duration::from_secs(2));
 
@@ -784,19 +799,34 @@ async fn collect_system_stats(data: SharedData) -> Result<()> {
                 let disks = Disks::new_with_refreshed_list();
                 let mut disk_used: u64 = 0;
                 let mut disk_total: u64 = 0;
-                let mut disk_available: u64 = 0;
+                let mut disk_details = Vec::new();
 
                 for disk in disks.list() {
-                    // 只统计opt分区
                     let mount_point = disk.mount_point().to_string_lossy();
-                    if mount_point == "/opt" {
-                        disk_total += disk.total_space();
-                        disk_available += disk.available_space();
+
+                    // 使用命令行参数过滤
+                    if disk_mount_points.contains(&mount_point.to_string()) {
+                        let total = disk.total_space();
+                        let available = disk.available_space();
+                        let used = total.saturating_sub(available);
+                        let usage_percent = if total > 0 {
+                            (used as f32 / total as f32) * 100.0
+                        } else {
+                            0.0
+                        };
+
+                        disk_details.push(DiskDetail {
+                            mount_point: mount_point.to_string(),
+                            total,
+                            used,
+                            usage_percent,
+                        });
+
+                        disk_total = disk_total.saturating_add(total);
+                        disk_used = disk_used.saturating_add(used);
                     }
                 }
 
-                // 计算已使用空间和使用百分比
-                disk_used = disk_total.saturating_sub(disk_available);
                 let disk_usage_percent = if disk_total > 0 {
                     (disk_used as f32 / disk_total as f32) * 100.0
                 } else {
@@ -813,8 +843,8 @@ async fn collect_system_stats(data: SharedData) -> Result<()> {
                     network_tx: network_tx_rate,
                     disk_used,
                     disk_total,
-                    disk_available,
                     disk_usage_percent,
+                    disk_details,
                 };
 
                 let mut data = data.lock().unwrap();

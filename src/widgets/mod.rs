@@ -1,12 +1,14 @@
 mod block;
 mod node;
-mod time;
-mod txs;
 #[cfg(target_family = "unix")]
 mod system;
+mod time;
+mod txs;
 
-pub use self::node::NodeWidget;
-pub use self::time::TimeWidget;
-pub use self::txs::TxsWidget;
 #[cfg(target_family = "unix")]
 pub use self::system::SystemWidget;
+pub use self::{
+    node::NodeWidget,
+    time::TimeWidget,
+    txs::TxsWidget,
+};

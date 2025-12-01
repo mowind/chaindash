@@ -1,5 +1,13 @@
-use tui::style::{Color, Style};
-use tui::widgets::{Block, Borders};
+use tui::{
+    style::{
+        Color,
+        Style,
+    },
+    widgets::{
+        Block,
+        Borders,
+    },
+};
 
 pub fn new<'a>(title: &'a str) -> Block<'a> {
     Block::default()

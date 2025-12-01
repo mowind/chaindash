@@ -1,13 +1,26 @@
 use num_rational::Ratio;
-use tui::buffer::Buffer;
-use tui::layout::Rect;
-use tui::style::{Color, Style};
-use tui::symbols::Marker;
-use tui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
+use tui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{
+        Color,
+        Style,
+    },
+    symbols::Marker,
+    widgets::{
+        Axis,
+        Chart,
+        Dataset,
+        GraphType,
+        Widget,
+    },
+};
 
-use crate::collect::SharedData;
-use crate::update::UpdatableWidget;
-use crate::widgets::block;
+use crate::{
+    collect::SharedData,
+    update::UpdatableWidget,
+    widgets::block,
+};
 
 pub struct TimeWidget {
     title: String,
@@ -24,7 +37,10 @@ pub struct TimeWidget {
 }
 
 impl TimeWidget {
-    pub fn new(update_interval: Ratio<u64>, collect_data: SharedData) -> TimeWidget {
+    pub fn new(
+        update_interval: Ratio<u64>,
+        collect_data: SharedData,
+    ) -> TimeWidget {
         let time_widget = TimeWidget {
             title: " Block Time(ms) ".to_string(),
             update_interval,
@@ -62,7 +78,11 @@ impl UpdatableWidget for TimeWidget {
 }
 
 impl Widget for &TimeWidget {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    fn render(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         let mut dataset = Vec::new();
         dataset.push(
             Dataset::default()
@@ -74,10 +94,10 @@ impl Widget for &TimeWidget {
 
         Chart::<String, String>::default()
             .block(block::new(&self.title))
-            .x_axis(Axis::default().bounds([
-                self.update_count as f64 - 25.0,
-                self.update_count as f64 + 1.0,
-            ]))
+            .x_axis(
+                Axis::default()
+                    .bounds([self.update_count as f64 - 25.0, self.update_count as f64 + 1.0]),
+            )
             .y_axis(Axis::default().bounds([0.0, 20000.0]))
             .datasets(&dataset)
             .render(area, buf);

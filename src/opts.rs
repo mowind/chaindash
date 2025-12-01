@@ -22,4 +22,8 @@ pub struct Opts {
     /// Enable debug log
     #[arg(long)]
     pub debug: bool,
+
+    /// Disk mount points to monitor (comma-separated)
+    #[arg(long, value_delimiter = ',', default_value = "/,/opt")]
+    pub disk_mount_points: Vec<String>,
 }
