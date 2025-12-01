@@ -26,4 +26,16 @@ pub struct Opts {
     /// Disk mount points to monitor (comma-separated)
     #[arg(long, value_delimiter = ',', default_value = "/,/opt")]
     pub disk_mount_points: Vec<String>,
+
+    /// Enable automatic disk mount point discovery
+    #[arg(long, default_value = "true")]
+    pub disk_auto_discovery: bool,
+
+    /// Disk alert threshold percentage (default: 90%)
+    #[arg(long, default_value = "90.0")]
+    pub disk_alert_threshold: f32,
+
+    /// Disk refresh interval in seconds (default: 2)
+    #[arg(long, default_value = "2")]
+    pub disk_refresh_interval: u64,
 }

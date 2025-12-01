@@ -317,6 +317,7 @@ pub struct SystemStats {
     pub current_disk_index: usize,
     pub alert_threshold: f32,
     pub has_disk_alerts: bool,
+    pub auto_discovery_enabled: bool,
 }
 
 #[cfg(target_family = "unix")]
@@ -351,6 +352,7 @@ impl Default for SystemStats {
             current_disk_index: 0,
             alert_threshold: 90.0,
             has_disk_alerts: false,
+            auto_discovery_enabled: true,
         }
     }
 }
@@ -364,6 +366,9 @@ pub struct Collector {
     enable_docker_stats: bool,
     docker_port: u16,
     disk_mount_points: Vec<String>,
+    disk_auto_discovery: bool,
+    disk_alert_threshold: f32,
+    disk_refresh_interval: u64,
 }
 
 pub async fn run(collector: Collector) -> Result<()> {
@@ -500,6 +505,9 @@ impl Collector {
         let enable_docker_stats = opts.enable_docker_stats;
         let docker_port = opts.docker_port;
         let disk_mount_points = opts.disk_mount_points.clone();
+        let disk_auto_discovery = opts.disk_auto_discovery;
+        let disk_alert_threshold = opts.disk_alert_threshold;
+        let disk_refresh_interval = opts.disk_refresh_interval;
 
         Collector {
             data,
@@ -507,6 +515,9 @@ impl Collector {
             enable_docker_stats,
             docker_port,
             disk_mount_points,
+            disk_auto_discovery,
+            disk_alert_threshold,
+            disk_refresh_interval,
         }
     }
 
@@ -536,7 +547,13 @@ impl Collector {
 
         // 启动本机系统监控
         #[cfg(target_family = "unix")]
-        tokio::spawn(collect_system_stats(self.data.clone(), self.disk_mount_points.clone()));
+        tokio::spawn(collect_system_stats(
+            self.data.clone(),
+            self.disk_mount_points.clone(),
+            self.disk_auto_discovery,
+            self.disk_alert_threshold,
+            self.disk_refresh_interval,
+        ));
 
         loop {
             tokio::select! {
@@ -770,12 +787,21 @@ fn get_blk(stats: &Stats) -> (u64, u64) {
 async fn collect_system_stats(
     data: SharedData,
     disk_mount_points: Vec<String>,
+    disk_auto_discovery: bool,
+    disk_alert_threshold: f32,
+    disk_refresh_interval: u64,
 ) -> Result<()> {
     let mut system = System::new_all();
-    let mut interval = time::interval(Duration::from_secs(2));
+    let mut interval = time::interval(Duration::from_secs(disk_refresh_interval));
 
     let mut prev_network_rx: u64 = 0;
     let mut prev_network_tx: u64 = 0;
+
+    // 自动发现相关状态
+    let mut last_discovery_time = std::time::Instant::now();
+    let discovery_interval = Duration::from_secs(5); // 5秒检测间隔
+    let mut discovered_mount_points: Vec<String> = Vec::new();
+    let auto_discovery_enabled = disk_auto_discovery; // 如果启用了自动发现
 
     loop {
         tokio::select! {
@@ -812,6 +838,36 @@ async fn collect_system_stats(
                 prev_network_rx = network_rx;
                 prev_network_tx = network_tx;
 
+                // 检查是否需要执行自动发现
+                if auto_discovery_enabled && last_discovery_time.elapsed() >= discovery_interval {
+                    match discover_mount_points() {
+                        Ok(mount_points) => {
+                            discovered_mount_points = mount_points.iter()
+                                .map(|mp| mp.mount_point.clone())
+                                .collect();
+                            debug!("自动发现 {} 个挂载点: {:?}", discovered_mount_points.len(), discovered_mount_points);
+                            last_discovery_time = std::time::Instant::now();
+                        }
+                        Err(e) => {
+                            warn!("自动发现挂载点失败: {}", e);
+                        }
+                    }
+                }
+
+                // 确定要监控的挂载点列表：自动发现的 + 用户指定的
+                let mount_points_to_monitor = if auto_discovery_enabled {
+                    // 合并自动发现的和用户指定的挂载点（去重）
+                    let mut all_points = discovered_mount_points.clone();
+                    for point in &disk_mount_points {
+                        if !all_points.contains(point) {
+                            all_points.push(point.clone());
+                        }
+                    }
+                    all_points
+                } else {
+                    disk_mount_points.clone()
+                };
+
                 // 获取磁盘使用情况
                 let disks = Disks::new_with_refreshed_list();
                 let mut disk_used: u64 = 0;
@@ -822,8 +878,8 @@ async fn collect_system_stats(
                 for disk in disks.list() {
                     let mount_point = disk.mount_point().to_string_lossy();
 
-                    // 使用命令行参数过滤
-                    if disk_mount_points.contains(&mount_point.to_string()) {
+                    // 使用自动发现或命令行参数过滤
+                    if mount_points_to_monitor.contains(&mount_point.to_string()) {
                         let total = disk.total_space();
                         let available = disk.available_space();
                         let used = total.saturating_sub(available);
@@ -840,8 +896,8 @@ async fn collect_system_stats(
                         // 检查是否为网络文件系统
                         let is_network = is_network_filesystem(&filesystem);
 
-                        // 检查告警状态（使用默认阈值90%）
-                        let is_alert = usage_percent >= 90.0;
+                        // 检查告警状态
+                        let is_alert = usage_percent >= disk_alert_threshold;
                         if is_alert {
                             has_disk_alerts = true;
                         }
@@ -885,8 +941,9 @@ async fn collect_system_stats(
                     disk_usage_percent,
                     disk_details,
                     current_disk_index: current_index,
-                    alert_threshold: 90.0, // 默认告警阈值
+                    alert_threshold: disk_alert_threshold,
                     has_disk_alerts,
+                    auto_discovery_enabled,
                 };
             }
         }
@@ -897,4 +954,103 @@ async fn collect_system_stats(
 fn is_network_filesystem(filesystem: &str) -> bool {
     let fs_lower = filesystem.to_lowercase();
     fs_lower.contains("nfs") || fs_lower.contains("smb") || fs_lower.contains("cifs")
+}
+
+/// 检查是否为特殊文件系统（不应该被监控）
+fn is_special_filesystem(filesystem: &str) -> bool {
+    let fs_lower = filesystem.to_lowercase();
+    fs_lower.contains("proc") ||
+    fs_lower.contains("sysfs") ||
+    fs_lower.contains("tmpfs") ||
+    fs_lower.contains("devtmpfs") ||
+    fs_lower.contains("cgroup") ||
+    fs_lower.contains("cgroup2") ||
+    fs_lower.contains("overlay") ||
+    fs_lower.contains("devpts") ||
+    fs_lower.contains("mqueue") ||
+    fs_lower.contains("hugetlbfs") ||
+    fs_lower.contains("securityfs") ||
+    fs_lower.contains("pstore") ||
+    fs_lower.contains("debugfs") ||
+    fs_lower.contains("tracefs") ||
+    fs_lower.contains("fusectl") ||
+    fs_lower.contains("configfs") ||
+    fs_lower.contains("binfmt_misc") ||
+    fs_lower.contains("autofs") ||
+    fs_lower.contains("rpc_pipefs")
+}
+
+/// 自动发现挂载点信息
+#[derive(Debug, Clone)]
+struct MountPointInfo {
+    device: String,
+    mount_point: String,
+    filesystem: String,
+}
+
+/// 读取/proc/mounts并返回非特殊文件系统的挂载点
+fn discover_mount_points() -> Result<Vec<MountPointInfo>> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let mut mount_points = Vec::new();
+
+    // 尝试读取/proc/mounts
+    let file = match File::open("/proc/mounts") {
+        Ok(f) => f,
+        Err(e) => {
+            // 如果/proc/mounts不可用，尝试使用sysinfo作为后备
+            warn!("无法读取/proc/mounts: {}, 使用sysinfo作为后备", e);
+            return discover_mount_points_fallback();
+        }
+    };
+
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+
+        if parts.len() >= 3 {
+            let device = parts[0].to_string();
+            let mount_point = parts[1].to_string();
+            let filesystem = parts[2].to_string();
+
+            // 跳过特殊文件系统
+            if !is_special_filesystem(&filesystem) {
+                mount_points.push(MountPointInfo {
+                    device,
+                    mount_point,
+                    filesystem,
+                });
+            }
+        }
+    }
+
+    Ok(mount_points)
+}
+
+/// 使用sysinfo作为后备的挂载点发现
+fn discover_mount_points_fallback() -> Result<Vec<MountPointInfo>> {
+    use sysinfo::Disks;
+
+    let disks = Disks::new_with_refreshed_list();
+    let mut mount_points = Vec::new();
+
+    for disk in disks.list() {
+        let device = disk.name().to_string_lossy().to_string();
+        let mount_point = disk.mount_point().to_string_lossy().to_string();
+        let filesystem = disk.file_system().to_string_lossy().to_string();
+
+        // 跳过特殊文件系统
+        if !is_special_filesystem(&filesystem) {
+            mount_points.push(MountPointInfo {
+                device,
+                mount_point,
+                filesystem,
+            });
+        }
+    }
+
+    Ok(mount_points)
 }
