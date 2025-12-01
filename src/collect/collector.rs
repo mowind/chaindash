@@ -314,15 +314,24 @@ pub struct SystemStats {
     pub disk_total: u64,
     pub disk_usage_percent: f32,
     pub disk_details: Vec<DiskDetail>,
+    pub current_disk_index: usize,
+    pub alert_threshold: f32,
+    pub has_disk_alerts: bool,
 }
 
 #[cfg(target_family = "unix")]
 #[derive(Debug, Clone)]
 pub struct DiskDetail {
     pub mount_point: String,
+    pub filesystem: String,
     pub total: u64,
     pub used: u64,
+    pub available: u64,
     pub usage_percent: f32,
+    pub device: String,
+    pub is_alert: bool,
+    pub is_network: bool,
+    pub last_updated: std::time::Instant,
 }
 
 #[cfg(target_family = "unix")]
@@ -339,6 +348,9 @@ impl Default for SystemStats {
             disk_total: 0,
             disk_usage_percent: 0.0,
             disk_details: Vec::new(),
+            current_disk_index: 0,
+            alert_threshold: 90.0,
+            has_disk_alerts: false,
         }
     }
 }
@@ -461,6 +473,11 @@ impl Data {
     #[cfg(target_family = "unix")]
     pub fn system_stats(&self) -> SystemStats {
         self.system_stats.clone()
+    }
+
+    #[cfg(target_family = "unix")]
+    pub fn update_disk_index(&mut self, new_index: usize) {
+        self.system_stats.current_disk_index = new_index;
     }
 }
 
@@ -800,6 +817,7 @@ async fn collect_system_stats(
                 let mut disk_used: u64 = 0;
                 let mut disk_total: u64 = 0;
                 let mut disk_details = Vec::new();
+                let mut has_disk_alerts = false;
 
                 for disk in disks.list() {
                     let mount_point = disk.mount_point().to_string_lossy();
@@ -815,11 +833,30 @@ async fn collect_system_stats(
                             0.0
                         };
 
+                        // 获取文件系统类型和设备名称
+                        let filesystem = disk.file_system().to_string_lossy().to_string();
+                        let device = disk.name().to_string_lossy().to_string();
+
+                        // 检查是否为网络文件系统
+                        let is_network = is_network_filesystem(&filesystem);
+
+                        // 检查告警状态（使用默认阈值90%）
+                        let is_alert = usage_percent >= 90.0;
+                        if is_alert {
+                            has_disk_alerts = true;
+                        }
+
                         disk_details.push(DiskDetail {
                             mount_point: mount_point.to_string(),
+                            filesystem,
                             total,
                             used,
+                            available,
                             usage_percent,
+                            device,
+                            is_alert,
+                            is_network,
+                            last_updated: std::time::Instant::now(),
                         });
 
                         disk_total = disk_total.saturating_add(total);
@@ -833,8 +870,10 @@ async fn collect_system_stats(
                     0.0
                 };
 
-                // 更新系统统计
-                let system_stats = SystemStats {
+                // 更新系统统计，保留当前的磁盘索引
+                let mut data = data.lock().unwrap();
+                let current_index = data.system_stats.current_disk_index;
+                data.system_stats = SystemStats {
                     cpu_usage,
                     memory_used,
                     memory_total,
@@ -845,11 +884,17 @@ async fn collect_system_stats(
                     disk_total,
                     disk_usage_percent,
                     disk_details,
+                    current_disk_index: current_index,
+                    alert_threshold: 90.0, // 默认告警阈值
+                    has_disk_alerts,
                 };
-
-                let mut data = data.lock().unwrap();
-                data.system_stats = system_stats;
             }
         }
     }
+}
+
+/// 检查是否为网络文件系统
+fn is_network_filesystem(filesystem: &str) -> bool {
+    let fs_lower = filesystem.to_lowercase();
+    fs_lower.contains("nfs") || fs_lower.contains("smb") || fs_lower.contains("cifs")
 }
