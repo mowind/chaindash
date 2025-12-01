@@ -481,7 +481,10 @@ impl Data {
     }
 
     #[cfg(target_family = "unix")]
-    pub fn update_disk_index(&mut self, new_index: usize) {
+    pub fn update_disk_index(
+        &mut self,
+        new_index: usize,
+    ) {
         self.system_stats.current_disk_index = new_index;
     }
 }
@@ -959,25 +962,29 @@ fn is_network_filesystem(filesystem: &str) -> bool {
 /// 检查是否为特殊文件系统（不应该被监控）
 fn is_special_filesystem(filesystem: &str) -> bool {
     let fs_lower = filesystem.to_lowercase();
-    fs_lower.contains("proc") ||
-    fs_lower.contains("sysfs") ||
-    fs_lower.contains("tmpfs") ||
-    fs_lower.contains("devtmpfs") ||
-    fs_lower.contains("cgroup") ||
-    fs_lower.contains("cgroup2") ||
-    fs_lower.contains("overlay") ||
-    fs_lower.contains("devpts") ||
-    fs_lower.contains("mqueue") ||
-    fs_lower.contains("hugetlbfs") ||
-    fs_lower.contains("securityfs") ||
-    fs_lower.contains("pstore") ||
-    fs_lower.contains("debugfs") ||
-    fs_lower.contains("tracefs") ||
-    fs_lower.contains("fusectl") ||
-    fs_lower.contains("configfs") ||
-    fs_lower.contains("binfmt_misc") ||
-    fs_lower.contains("autofs") ||
-    fs_lower.contains("rpc_pipefs")
+    fs_lower == "proc"
+        || fs_lower == "sysfs"
+        || fs_lower == "tmpfs"
+        || fs_lower == "devtmpfs"
+        || fs_lower == "cgroup"
+        || fs_lower == "cgroup2"
+        || fs_lower == "overlay"
+        || fs_lower == "devpts"
+        || fs_lower == "mqueue"
+        || fs_lower == "hugetlbfs"
+        || fs_lower == "securityfs"
+        || fs_lower == "pstore"
+        || fs_lower == "debugfs"
+        || fs_lower == "tracefs"
+        || fs_lower == "fusectl"
+        || fs_lower == "configfs"
+        || fs_lower == "binfmt_misc"
+        || fs_lower == "autofs"
+        || fs_lower == "rpc_pipefs"
+        || fs_lower == "efivarfs"
+        || fs_lower == "bpf"
+        || fs_lower.contains("fuse")
+        || fs_lower.starts_with("cgroup")
 }
 
 /// 自动发现挂载点信息
@@ -990,8 +997,13 @@ struct MountPointInfo {
 
 /// 读取/proc/mounts并返回非特殊文件系统的挂载点
 fn discover_mount_points() -> Result<Vec<MountPointInfo>> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
+    use std::{
+        fs::File,
+        io::{
+            BufRead,
+            BufReader,
+        },
+    };
 
     let mut mount_points = Vec::new();
 
@@ -1002,7 +1014,7 @@ fn discover_mount_points() -> Result<Vec<MountPointInfo>> {
             // 如果/proc/mounts不可用，尝试使用sysinfo作为后备
             warn!("无法读取/proc/mounts: {}, 使用sysinfo作为后备", e);
             return discover_mount_points_fallback();
-        }
+        },
     };
 
     let reader = BufReader::new(file);

@@ -17,7 +17,6 @@ impl App {
     pub fn handle_tab_key(&self) {
         let mut data = self.data.lock().unwrap();
         let disk_count = data.system_stats().disk_details.len();
-
         if disk_count > 0 {
             // 获取当前索引并计算下一个索引
             let current_index = data.system_stats().current_disk_index;
