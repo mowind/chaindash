@@ -1,6 +1,11 @@
-use crate::collect::{Data, SharedData};
-use crate::opts::Opts;
-use crate::widgets::*;
+use crate::{
+    collect::{
+        Data,
+        SharedData,
+    },
+    opts::Opts,
+    widgets::*,
+};
 
 pub struct App {
     pub widgets: Widgets,
@@ -15,7 +20,10 @@ pub struct Widgets {
     pub system: SystemWidget,
 }
 
-pub fn setup_app(opts: &Opts, _program_name: &str) -> App {
+pub fn setup_app(
+    opts: &Opts,
+    _program_name: &str,
+) -> App {
     let data = Data::new();
     let txs = TxsWidget::new(opts.interval, data.clone());
     let time = TimeWidget::new(opts.interval, data.clone());

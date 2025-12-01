@@ -1,15 +1,36 @@
-use std::collections::HashMap;
-use std::iter::IntoIterator;
+use std::{
+    collections::HashMap,
+    iter::IntoIterator,
+};
 
 use num_rational::Ratio;
-use tui::buffer::Buffer;
-use tui::layout::{Constraint, Rect};
-use tui::style::{Color, Modifier, Style};
-use tui::widgets::{Row, Table, Widget};
+use tui::{
+    buffer::Buffer,
+    layout::{
+        Constraint,
+        Rect,
+    },
+    style::{
+        Color,
+        Modifier,
+        Style,
+    },
+    widgets::{
+        Row,
+        Table,
+        Widget,
+    },
+};
 
-use crate::collect::{ConsensusState, NodeStats, SharedData};
-use crate::update::UpdatableWidget;
-use crate::widgets::block;
+use crate::{
+    collect::{
+        ConsensusState,
+        NodeStats,
+        SharedData,
+    },
+    update::UpdatableWidget,
+    widgets::block,
+};
 
 pub struct NodeWidget {
     title: String,
@@ -33,18 +54,13 @@ impl NodeWidget {
         }
     }
 
-    fn render_without_stats(&self, area: Rect, buf: &mut Buffer) {
-        let header = [
-            " Name",
-            "Host",
-            "Block",
-            "Epoch",
-            "View",
-            "Committed",
-            "Locked",
-            "QC",
-            "Validator",
-        ];
+    fn render_without_stats(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let header =
+            [" Name", "Host", "Block", "Epoch", "View", "Committed", "Locked", "QC", "Validator"];
 
         let nodes = self.nodes.clone();
 
@@ -64,9 +80,7 @@ impl NodeWidget {
                         format!("{}", node.validator),
                     ]
                     .into_iter(),
-                    Style::default()
-                        .fg(Color::Indexed(249 as u8))
-                        .bg(Color::Reset),
+                    Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
                 )
             }),
         )
@@ -93,7 +107,12 @@ impl NodeWidget {
         .render(area, buf);
     }
 
-    fn render_with_stats(&self, area: Rect, buf: &mut Buffer, stats: &HashMap<String, NodeStats>) {
+    fn render_with_stats(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        stats: &HashMap<String, NodeStats>,
+    ) {
         let header = [
             " Name",
             "Host",
@@ -143,9 +162,7 @@ impl NodeWidget {
                         format!("{:.2}GB", blk_write),
                     ]
                     .into_iter(),
-                    Style::default()
-                        .fg(Color::Indexed(249 as u8))
-                        .bg(Color::Reset),
+                    Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
                 )
             }),
         )
@@ -192,7 +209,11 @@ impl UpdatableWidget for NodeWidget {
 }
 
 impl Widget for &NodeWidget {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    fn render(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         if area.height < 3 {
             return;
         }

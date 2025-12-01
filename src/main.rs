@@ -5,27 +5,44 @@ mod opts;
 mod update;
 mod widgets;
 
-use std::fs;
-use std::io::{self, Write};
-use std::panic;
-use std::path::Path;
-use std::thread;
-use std::time::Duration;
-
-use clap::Parser;
-use crossbeam_channel::{select, tick, unbounded, Receiver};
-use crossterm::cursor;
-use crossterm::event::{Event, KeyCode, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal;
-//use log::{debug, info};
-use num_rational::Ratio;
-use tui::backend::CrosstermBackend;
-use tui::Terminal;
+use std::{
+    fs,
+    io::{
+        self,
+        Write,
+    },
+    panic,
+    path::Path,
+    thread,
+    time::Duration,
+};
 
 use app::*;
+use clap::Parser;
+use crossbeam_channel::{
+    select,
+    tick,
+    unbounded,
+    Receiver,
+};
+use crossterm::{
+    cursor,
+    event::{
+        Event,
+        KeyCode,
+        KeyModifiers,
+    },
+    execute,
+    terminal,
+};
 use draw::*;
+//use log::{debug, info};
+use num_rational::Ratio;
 use opts::Opts;
+use tui::{
+    backend::CrosstermBackend,
+    Terminal,
+};
 use update::*;
 
 const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
@@ -75,12 +92,8 @@ fn setup_ctrl_c() -> Receiver<()> {
 
 fn setup_logfile(logfile_path: &Path) {
     fs::create_dir_all(logfile_path.parent().unwrap()).unwrap();
-    let logfile = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(logfile_path)
-        .unwrap();
+    let logfile =
+        fs::OpenOptions::new().write(true).create(true).truncate(true).open(logfile_path).unwrap();
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
