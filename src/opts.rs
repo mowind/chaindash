@@ -38,4 +38,8 @@ pub struct Opts {
     /// Disk refresh interval in seconds (default: 2)
     #[arg(long, default_value = "2")]
     pub disk_refresh_interval: u64,
+
+    /// Node ID to show details for
+    #[arg(long)]
+    pub node_id: Option<String>,
 }

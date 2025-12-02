@@ -50,7 +50,8 @@ pub fn draw_widgets<B: Backend>(
                 [
                     Constraint::Percentage(20),
                     Constraint::Percentage(25),
-                    Constraint::Percentage(55),
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(30),
                 ]
                 .as_ref(),
             )
@@ -59,16 +60,25 @@ pub fn draw_widgets<B: Backend>(
         draw_system_row_split(frame, widgets, data, vertical_chunks[0]);
         draw_top_row(frame, widgets, vertical_chunks[1]);
         draw_bottom_row(frame, widgets, vertical_chunks[2]);
+        draw_bottom_down_row(frame, widgets, vertical_chunks[3]);
     }
 
     #[cfg(not(target_family = "unix"))]
     {
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .constraints(
+                [
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(30),
+                ]
+                .as_ref(),
+            )
             .split(area);
         draw_top_row(frame, widgets, vertical_chunks[0]);
         draw_bottom_row(frame, widgets, vertical_chunks[1]);
+        draw_bottom_down_row(frame, widgets, vertical_chunks[2]);
     }
 }
 
@@ -115,4 +125,17 @@ pub fn draw_bottom_row<B: Backend>(
         .split(area);
 
     frame.render_widget(&widgets.node, horizontal_chunks[0]);
+}
+
+pub fn draw_bottom_down_row<B: Backend>(
+    frame: &mut Frame<B>,
+    widgets: &mut Widgets,
+    area: Rect,
+) {
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(100)].as_ref())
+        .split(area);
+
+    frame.render_widget(&widgets.node_details, horizontal_chunks[0])
 }
