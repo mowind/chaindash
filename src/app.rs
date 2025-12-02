@@ -52,7 +52,9 @@ pub struct Widgets {
     pub time: TimeWidget,
     pub node: NodeWidget,
     #[cfg(target_family = "unix")]
-    pub system: SystemWidget,
+    pub system_summary: SystemSummaryWidget,
+    #[cfg(target_family = "unix")]
+    pub disk_list: DiskListWidget,
 }
 
 pub fn setup_app(
@@ -65,7 +67,10 @@ pub fn setup_app(
     let node = NodeWidget::new(data.clone());
 
     #[cfg(target_family = "unix")]
-    let system = SystemWidget::new(data.clone());
+    let system_summary = SystemSummaryWidget::new(data.clone());
+
+    #[cfg(target_family = "unix")]
+    let disk_list = DiskListWidget::new(data.clone());
 
     App {
         widgets: Widgets {
@@ -73,7 +78,9 @@ pub fn setup_app(
             time,
             node,
             #[cfg(target_family = "unix")]
-            system,
+            system_summary,
+            #[cfg(target_family = "unix")]
+            disk_list,
         },
         data,
     }

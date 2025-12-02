@@ -28,7 +28,7 @@ pub struct Opts {
     pub disk_mount_points: Vec<String>,
 
     /// Enable automatic disk mount point discovery
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value = "false")]
     pub disk_auto_discovery: bool,
 
     /// Disk alert threshold percentage (default: 90%)

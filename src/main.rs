@@ -47,15 +47,17 @@ use update::*;
 
 const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 
-fn setup_terminal() {
+fn setup_terminal() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = io::stdout();
 
-    execute!(stdout, terminal::EnterAlternateScreen).unwrap();
-    execute!(stdout, cursor::Hide).unwrap();
+    execute!(stdout, terminal::EnterAlternateScreen)?;
+    execute!(stdout, cursor::Hide)?;
 
-    execute!(stdout, terminal::Clear(terminal::ClearType::All)).unwrap();
+    execute!(stdout, terminal::Clear(terminal::ClearType::All))?;
 
-    terminal::enable_raw_mode().unwrap();
+    terminal::enable_raw_mode()?;
+
+    Ok(())
 }
 
 fn cleanup_terminal() {
@@ -136,7 +138,12 @@ async fn main() {
     let mut terminal = Terminal::new(backend).unwrap();
 
     setup_panci_hook();
-    setup_terminal();
+    if let Err(e) = setup_terminal() {
+        eprintln!("Failed to setup terminal: {}", e);
+        eprintln!("This may be because you're running in an environment without a proper terminal.");
+        eprintln!("Try running in a real terminal (not an IDE or pipe).");
+        std::process::exit(1);
+    }
 
     let ticker = tick(Duration::from_secs_f64(
         *draw_interval.numer() as f64 / *draw_interval.denom() as f64,

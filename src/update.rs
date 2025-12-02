@@ -15,7 +15,10 @@ pub fn update_widgets(
         vec![&mut widgets.txs, &mut widgets.time, &mut widgets.node];
 
     #[cfg(target_family = "unix")]
-    widgets_to_update.push(&mut widgets.system);
+    {
+        widgets_to_update.push(&mut widgets.system_summary);
+        widgets_to_update.push(&mut widgets.disk_list);
+    }
 
     for widget in widgets_to_update {
         if seconds % widget.get_update_interval() == Ratio::from_integer(0) {
