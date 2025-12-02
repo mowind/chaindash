@@ -55,6 +55,7 @@ pub struct Widgets {
     pub system_summary: SystemSummaryWidget,
     #[cfg(target_family = "unix")]
     pub disk_list: DiskListWidget,
+    pub node_details: NodeDetailWidget,
 }
 
 pub fn setup_app(
@@ -72,6 +73,8 @@ pub fn setup_app(
     #[cfg(target_family = "unix")]
     let disk_list = DiskListWidget::new(data.clone());
 
+    let node_details = NodeDetailWidget::new(data.clone());
+
     App {
         widgets: Widgets {
             txs,
@@ -81,6 +84,7 @@ pub fn setup_app(
             system_summary,
             #[cfg(target_family = "unix")]
             disk_list,
+            node_details,
         },
         data,
     }

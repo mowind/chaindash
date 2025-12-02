@@ -12,7 +12,7 @@ pub fn update_widgets(
     seconds: Ratio<u64>,
 ) {
     let mut widgets_to_update: Vec<&mut dyn UpdatableWidget> =
-        vec![&mut widgets.txs, &mut widgets.time, &mut widgets.node];
+        vec![&mut widgets.txs, &mut widgets.time, &mut widgets.node, &mut widgets.node_details];
 
     #[cfg(target_family = "unix")]
     {

@@ -1,8 +1,11 @@
 #[warn(dead_code)]
 use std::collections::HashMap;
-use std::sync::{
-    Arc,
-    Mutex,
+use std::{
+    fmt::format,
+    sync::{
+        Arc,
+        Mutex,
+    },
 };
 
 use hyper::{
@@ -10,8 +13,10 @@ use hyper::{
         Buf,
         HttpBody as _,
     },
+    client::HttpConnector,
     Client,
 };
+use hyper_tls::HttpsConnector;
 use log::{
     debug,
     warn,
@@ -265,6 +270,24 @@ pub struct NodeStats {
     pub blk_write: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct NodeDetail {
+    pub node_name: String,
+    pub block_qty: u64,
+    pub block_rate: String,
+    pub daily_block_rate: String,
+    pub reward_per: f64, // percentage, e.g., 50.0
+    pub reward_value: f64,
+    pub reward_address: String,
+    pub verifier_time: u64,
+}
+
+impl NodeDetail {
+    pub fn rewards(&self) -> f64 {
+        self.reward_value * (1.0 - self.reward_per / 100.0)
+    }
+}
+
 impl Default for &NodeStats {
     fn default() -> Self {
         &NodeStats {
@@ -297,6 +320,7 @@ pub struct Data {
 
     states: HashMap<String, ConsensusState>,
     stats: HashMap<String, NodeStats>,
+    node_detail: Option<NodeDetail>,
     #[cfg(target_family = "unix")]
     system_stats: SystemStats,
 }
@@ -369,6 +393,7 @@ pub struct Collector {
     disk_auto_discovery: bool,
     disk_alert_threshold: f32,
     disk_refresh_interval: u64,
+    node_id: Option<String>,
 }
 
 pub async fn run(collector: Collector) -> Result<()> {
@@ -410,6 +435,7 @@ impl Default for Data {
             max_interval: 0,
             states: HashMap::new(),
             stats: HashMap::new(),
+            node_detail: None,
             #[cfg(target_family = "unix")]
             system_stats: SystemStats::default(),
         }
@@ -475,6 +501,17 @@ impl Data {
         stats
     }
 
+    pub fn node_detail(&self) -> Option<NodeDetail> {
+        self.node_detail.clone()
+    }
+
+    pub fn update_node_detail(
+        &mut self,
+        detail: Option<NodeDetail>,
+    ) {
+        self.node_detail = detail;
+    }
+
     #[cfg(target_family = "unix")]
     pub fn system_stats(&self) -> SystemStats {
         self.system_stats.clone()
@@ -511,6 +548,7 @@ impl Collector {
         let disk_auto_discovery = opts.disk_auto_discovery;
         let disk_alert_threshold = opts.disk_alert_threshold;
         let disk_refresh_interval = opts.disk_refresh_interval;
+        let node_id = opts.node_id.clone();
 
         Collector {
             data,
@@ -521,6 +559,7 @@ impl Collector {
             disk_auto_discovery,
             disk_alert_threshold,
             disk_refresh_interval,
+            node_id,
         }
     }
 
@@ -547,6 +586,12 @@ impl Collector {
                 }
             })
             .collect();
+
+        // 启动节点详情监控
+        if let Some(node_id) = &self.node_id {
+            debug!("start collect node detail: {}", node_id);
+            tokio::spawn(collect_node_detail(node_id.clone(), self.data.clone()));
+        }
 
         // 启动本机系统监控
         #[cfg(target_family = "unix")]
@@ -1075,4 +1120,162 @@ fn discover_mount_points_fallback() -> Result<Vec<MountPointInfo>> {
     }
 
     Ok(mount_points)
+}
+
+async fn collect_node_detail(
+    node_id: String,
+    data: SharedData,
+) -> Result<()> {
+    use tokio::time::{
+        self,
+        Duration,
+    };
+
+    let https = HttpsConnector::new();
+    let client = hyper::Client::builder().build(https);
+    let url = "https://scan.platon.network/browser-server/staking/stakingDetails";
+    let mut interval = time::interval(Duration::from_secs(60)); // 每60秒更新一次
+
+    // 立即获取一次，不等待第一次tick
+    fetch_node_detail(&client, url, &node_id, data.clone()).await;
+
+    loop {
+        interval.tick().await;
+        fetch_node_detail(&client, url, &node_id, data.clone()).await;
+    }
+}
+
+async fn fetch_node_detail(
+    client: &hyper::Client<hyper_tls::HttpsConnector<HttpConnector>>,
+    url: &str,
+    node_id: &str,
+    data: SharedData,
+) {
+    use hyper::{
+        Body,
+        Method,
+        Request,
+    };
+
+    let body = serde_json::json!({
+        "nodeId": node_id
+    });
+    let req = match Request::builder()
+        .method(Method::POST)
+        .uri(url)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+    {
+        Ok(req) => req,
+        Err(e) => {
+            warn!("Failed to build request: {}", e);
+            return;
+        },
+    };
+
+    debug!("fetch node detail: {:?}", req);
+
+    match client.request(req).await {
+        Ok(resp) => {
+            debug!("Reponse: {}", resp.status());
+            if !resp.status().is_success() {
+                warn!("Node detail API returned error status: {}", resp.status());
+                return;
+            }
+            let body_bytes = match hyper::body::to_bytes(resp.into_body()).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    warn!("Failed to read response body: {}", e);
+                    return;
+                },
+            };
+            let json: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(json) => json,
+                Err(e) => {
+                    warn!("Failed to parse response JSON: {}", e);
+                    return;
+                },
+            };
+            debug!("Body: {}", json);
+
+            // 解析响应
+            if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
+                if code == 0 {
+                    if let Some(data_obj) = json.get("data") {
+                        match parse_node_detail(data_obj) {
+                            Ok(detail) => {
+                                let mut data = data.lock().unwrap();
+                                data.update_node_detail(Some(detail));
+                            },
+                            Err(e) => {
+                                warn!("Failed to parse node detail: {}", e);
+                                let mut data = data.lock().unwrap();
+                                data.update_node_detail(None);
+                            },
+                        }
+                    } else {
+                        warn!("Node detail response missing data field");
+                        let mut data = data.lock().unwrap();
+                        data.update_node_detail(None);
+                    }
+                } else {
+                    warn!("Node detail API returned error code: {}", code);
+                    let mut data = data.lock().unwrap();
+                    data.update_node_detail(None);
+                }
+            } else {
+                warn!("Node detail response missing code field");
+                let mut data = data.lock().unwrap();
+                data.update_node_detail(None);
+            }
+        },
+        Err(e) => {
+            warn!("Failed to fetch node detail: {}", e);
+            let mut data = data.lock().unwrap();
+            data.update_node_detail(None);
+        },
+    }
+}
+
+fn parse_node_detail(data: &serde_json::Value) -> Result<NodeDetail> {
+    let node_name = data.get("nodeName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let block_qty = data.get("blockQty").and_then(|v| v.as_u64()).unwrap_or(0);
+    let expect_block_qty = data.get("expectBlockQty").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    let mut block_rate = String::new();
+    if block_qty > 0 && expect_block_qty > 0 {
+        let rate = (block_qty as f64) / (expect_block_qty as f64);
+        block_rate = format!("{:.2}%", rate * 100.0);
+    }
+
+    let daily_block_rate =
+        data.get("genBlocksRate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let reward_per = data
+        .get("rewardPer")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let reward_value = data
+        .get("rewardValue")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let reward_address = data.get("denefitAddr").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let verifier_time = data.get("verifierTime").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    Ok(NodeDetail {
+        node_name,
+        block_qty,
+        block_rate,
+        daily_block_rate,
+        reward_per,
+        reward_value,
+        reward_address,
+        verifier_time,
+    })
 }
