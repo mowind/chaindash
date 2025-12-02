@@ -1,3 +1,4 @@
+use log::debug;
 use num_rational::Ratio;
 use tui::{
     buffer::Buffer,
@@ -26,16 +27,16 @@ use crate::{
     widgets::block,
 };
 
-pub struct SystemWidget {
+pub struct SystemSummaryWidget {
     title: String,
     update_interval: Ratio<u64>,
     collect_data: SharedData,
     system_stats: SystemStats,
 }
 
-impl SystemWidget {
-    pub fn new(collect_data: SharedData) -> SystemWidget {
-        SystemWidget {
+impl SystemSummaryWidget {
+    pub fn new(collect_data: SharedData) -> SystemSummaryWidget {
+        SystemSummaryWidget {
             title: " System Stats ".to_string(),
             update_interval: Ratio::from_integer(2),
             collect_data,
@@ -44,10 +45,11 @@ impl SystemWidget {
     }
 }
 
-impl UpdatableWidget for SystemWidget {
+impl UpdatableWidget for SystemSummaryWidget {
     fn update(&mut self) {
         let collect_data = self.collect_data.lock().unwrap();
         self.system_stats = collect_data.system_stats();
+        debug!("update system stats: {:?}", &self.system_stats);
     }
 
     fn get_update_interval(&self) -> Ratio<u64> {
@@ -55,25 +57,42 @@ impl UpdatableWidget for SystemWidget {
     }
 }
 
-impl Widget for &SystemWidget {
+impl Widget for &SystemSummaryWidget {
     fn render(
         self,
         area: Rect,
         buf: &mut Buffer,
     ) {
+        debug!("area.height: {}", area.height);
         if area.height < 3 {
             return;
         }
 
-        // 向后兼容的适配器：只渲染系统摘要
-        // 磁盘详情现在由DiskListWidget在左右分屏布局中显示
         self.render_summary_only(area, buf);
     }
 }
 
-impl SystemWidget {
+impl SystemSummaryWidget {
     /// 渲染仅包含摘要信息的视图
     fn render_summary_only(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        // 根据可用宽度动态调整布局
+        let use_compact_layout = area.width < 100;
+
+        debug!("render data: {:?}", &self.system_stats);
+
+        if use_compact_layout {
+            self.render_compact_summary(area, buf);
+        } else {
+            self.render_full_summary(area, buf);
+        }
+    }
+
+    /// 渲染完整摘要视图
+    fn render_full_summary(
         &self,
         area: Rect,
         buf: &mut Buffer,
@@ -103,6 +122,23 @@ impl SystemWidget {
             format!("\u{f1c0} {:.2}% [!]", stats.disk_usage_percent)
         } else {
             format!("\u{f1c0} {:.2}%", stats.disk_usage_percent)
+        };
+
+        // 确定颜色：高使用率显示警告颜色
+        let _cpu_color = if stats.cpu_usage > 80.0 {
+            Color::Red
+        } else {
+            Color::Indexed(249 as u8)
+        };
+        let _memory_color = if stats.memory_usage_percent > 80.0 {
+            Color::Red
+        } else {
+            Color::Indexed(249 as u8)
+        };
+        let _disk_color = if stats.has_disk_alerts {
+            Color::Red
+        } else {
+            Color::Indexed(249 as u8)
         };
 
         let rows = vec![Row::StyledData(
@@ -141,6 +177,68 @@ impl SystemWidget {
             .render(area, buf);
     }
 
-    // 注意：render_with_disk_details和render_disk_details方法已被移除
-    // 磁盘详情现在由DiskListWidget在左右分屏布局中显示
+    /// 渲染紧凑摘要视图（用于小宽度）
+    fn render_compact_summary(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let header = ["CPU", "Mem", "Disk", "Net RX", "Net TX"];
+
+        let stats = &self.system_stats;
+
+        // 格式化数据
+        let _memory_used_gb = stats.memory_used as f64 / 1024.0 / 1024.0 / 1024.0;
+        let _memory_total_gb = stats.memory_total as f64 / 1024.0 / 1024.0 / 1024.0;
+        let network_rx_mb = stats.network_rx as f64 / 1024.0 / 1024.0;
+        let network_tx_mb = stats.network_tx as f64 / 1024.0 / 1024.0;
+
+        // 确定颜色：高使用率显示警告颜色
+        let _cpu_color = if stats.cpu_usage > 80.0 {
+            Color::Red
+        } else {
+            Color::Indexed(249 as u8)
+        };
+        let _memory_color = if stats.memory_usage_percent > 80.0 {
+            Color::Red
+        } else {
+            Color::Indexed(249 as u8)
+        };
+        let _disk_color = if stats.has_disk_alerts {
+            Color::Red
+        } else {
+            Color::Indexed(249 as u8)
+        };
+
+        let rows = vec![Row::StyledData(
+            vec![
+                format!(" {:.1}%", stats.cpu_usage),
+                format!(" {:.1}%", stats.memory_usage_percent),
+                format!(" {:.1}%", stats.disk_usage_percent),
+                format!(" {:.1}M", network_rx_mb),
+                format!(" {:.1}M", network_tx_mb),
+            ]
+            .into_iter(),
+            Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+        )];
+
+        Table::new(header.iter(), rows.into_iter())
+            .block(block::new(&self.title))
+            .header_style(
+                Style::default()
+                    .fg(Color::Indexed(249 as u8))
+                    .bg(Color::Reset)
+                    .modifier(Modifier::BOLD),
+            )
+            .widths(&[
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(10),
+                Constraint::Length(10),
+            ])
+            .column_spacing(1)
+            .header_gap(0)
+            .render(area, buf);
+    }
 }

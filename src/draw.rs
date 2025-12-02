@@ -10,9 +10,16 @@ use tui::{
     Terminal,
 };
 
-use crate::app::{
-    App,
-    Widgets,
+use crate::{
+    app::{
+        App,
+        Widgets,
+    },
+    collect::SharedData,
+    widgets::{
+        DiskListWidget,
+        SystemSummaryWidget,
+    },
 };
 
 pub fn draw<B: Backend>(
@@ -24,7 +31,7 @@ pub fn draw<B: Backend>(
             let chunks = Layout::default()
                 .constraints(vec![Constraint::Percentage(100)])
                 .split(frame.size());
-            draw_widgets(&mut frame, &mut app.widgets, chunks[0])
+            draw_widgets(&mut frame, &mut app.widgets, app.data.clone(), chunks[0])
         })
         .unwrap();
 }
@@ -32,6 +39,7 @@ pub fn draw<B: Backend>(
 pub fn draw_widgets<B: Backend>(
     frame: &mut Frame<B>,
     widgets: &mut Widgets,
+    data: SharedData,
     area: Rect,
 ) {
     #[cfg(target_family = "unix")]
@@ -47,7 +55,8 @@ pub fn draw_widgets<B: Backend>(
                 .as_ref(),
             )
             .split(area);
-        draw_system_row(frame, widgets, vertical_chunks[0]);
+        // 使用新的左右分屏布局
+        draw_system_row_split(frame, widgets, data, vertical_chunks[0]);
         draw_top_row(frame, widgets, vertical_chunks[1]);
         draw_bottom_row(frame, widgets, vertical_chunks[2]);
     }
@@ -64,17 +73,21 @@ pub fn draw_widgets<B: Backend>(
 }
 
 #[cfg(target_family = "unix")]
-pub fn draw_system_row<B: Backend>(
+pub fn draw_system_row_split<B: Backend>(
     frame: &mut Frame<B>,
     widgets: &mut Widgets,
+    _data: SharedData,
     area: Rect,
 ) {
+    // 左右分屏布局：左侧70%显示系统摘要，右侧50%显示磁盘列表
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(100)].as_ref())
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)].as_ref())
         .split(area);
 
-    frame.render_widget(&widgets.system, horizontal_chunks[0]);
+    // 使用widgets中已有的实例
+    frame.render_widget(&widgets.system_summary, horizontal_chunks[0]);
+    frame.render_widget(&widgets.disk_list, horizontal_chunks[1]);
 }
 
 pub fn draw_top_row<B: Backend>(

@@ -163,3 +163,9 @@
 
 ## 仓库指南
 这里描述项目的文件结构，以及基础命令、常用、代码风格等。
+
+### 运行
+
+```
+chaindash --url mainnet@wss://openapi2.platon.network/rpc
+```

@@ -857,6 +857,11 @@ async fn collect_system_stats(
                     }
                 }
 
+                // 调试：打印当前状态
+                debug!("disk_mount_points: {:?}", disk_mount_points);
+                debug!("auto_discovery_enabled: {}", auto_discovery_enabled);
+                debug!("discovered_mount_points: {:?}", discovered_mount_points);
+
                 // 确定要监控的挂载点列表：自动发现的 + 用户指定的
                 let mount_points_to_monitor = if auto_discovery_enabled {
                     // 合并自动发现的和用户指定的挂载点（去重）
@@ -866,10 +871,14 @@ async fn collect_system_stats(
                             all_points.push(point.clone());
                         }
                     }
+                    debug!("合并后的挂载点列表: {:?}", all_points);
                     all_points
                 } else {
+                    debug!("使用用户指定的挂载点列表: {:?}", disk_mount_points);
                     disk_mount_points.clone()
                 };
+
+                debug!("最终监控的挂载点: {:?}", mount_points_to_monitor);
 
                 // 获取磁盘使用情况
                 let disks = Disks::new_with_refreshed_list();
@@ -948,6 +957,7 @@ async fn collect_system_stats(
                     has_disk_alerts,
                     auto_discovery_enabled,
                 };
+                debug!("collect system stats: {:?}", &data.system_stats);
             }
         }
     }
