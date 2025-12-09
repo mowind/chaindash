@@ -92,7 +92,15 @@ fn setup_ctrl_c() -> Receiver<()> {
     receiver
 }
 
-fn setup_logfile(logfile_path: &Path) {
+fn setup_logfile(
+    logfile_path: &Path,
+    debug: bool,
+) {
+    let mut level = log::LevelFilter::Warn;
+    if debug {
+        level = log::LevelFilter::Debug;
+    }
+
     fs::create_dir_all(logfile_path.parent().unwrap()).unwrap();
     let logfile =
         fs::OpenOptions::new().write(true).create(true).truncate(true).open(logfile_path).unwrap();
@@ -107,7 +115,7 @@ fn setup_logfile(logfile_path: &Path) {
             ))
         })
         .chain(logfile)
-        .level_for("mio", log::LevelFilter::Debug)
+        .level(level)
         .apply()
         .unwrap();
 }
@@ -127,9 +135,7 @@ async fn main() {
 
     let mut app = setup_app(&opts, PROGRAM_NAME);
 
-    if opts.debug {
-        setup_logfile(Path::new("./errors.log"));
-    }
+    setup_logfile(Path::new("./errors.log"), opts.debug);
 
     let draw_interval = Ratio::min(Ratio::from_integer(1), opts.interval);
 
@@ -140,7 +146,9 @@ async fn main() {
     setup_panci_hook();
     if let Err(e) = setup_terminal() {
         eprintln!("Failed to setup terminal: {}", e);
-        eprintln!("This may be because you're running in an environment without a proper terminal.");
+        eprintln!(
+            "This may be because you're running in an environment without a proper terminal."
+        );
         eprintln!("Try running in a real terminal (not an IDE or pipe).");
         std::process::exit(1);
     }

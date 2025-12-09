@@ -1134,7 +1134,7 @@ async fn collect_node_detail(
     let https = HttpsConnector::new();
     let client = hyper::Client::builder().build(https);
     let url = "https://scan.platon.network/browser-server/staking/stakingDetails";
-    let mut interval = time::interval(Duration::from_secs(60)); // 每60秒更新一次
+    let mut interval = time::interval(Duration::from_secs(10)); // 每10秒更新一次
 
     // 立即获取一次，不等待第一次tick
     fetch_node_detail(&client, url, &node_id, data.clone()).await;
