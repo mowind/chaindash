@@ -40,7 +40,10 @@ use web3::{
     types::BlockId,
 };
 
-use crate::Opts;
+use crate::{
+    widgets::NodeWidget,
+    Opts,
+};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
@@ -270,9 +273,10 @@ pub struct NodeStats {
     pub blk_write: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NodeDetail {
     pub node_name: String,
+    pub ranking: i32,
     pub block_qty: u64,
     pub block_rate: String,
     pub daily_block_rate: String,
@@ -1135,13 +1139,119 @@ async fn collect_node_detail(
     let client = hyper::Client::builder().build(https);
     let url = "https://scan.platon.network/browser-server/staking/stakingDetails";
     let mut interval = time::interval(Duration::from_secs(10)); // 每10秒更新一次
+    let ranking_url = "https://scan.platon.network/browser-server/staking/aliveStakingList";
 
     // 立即获取一次，不等待第一次tick
     fetch_node_detail(&client, url, &node_id, data.clone()).await;
+    fetch_node_ranking(&client, ranking_url, &node_id, data.clone()).await;
 
     loop {
         interval.tick().await;
         fetch_node_detail(&client, url, &node_id, data.clone()).await;
+        fetch_node_ranking(&client, ranking_url, &node_id, data.clone()).await;
+    }
+}
+
+async fn fetch_node_ranking(
+    client: &hyper::Client<hyper_tls::HttpsConnector<HttpConnector>>,
+    url: &str,
+    node_id: &str,
+    data: SharedData,
+) {
+    use hyper::{
+        Body,
+        Method,
+        Request,
+    };
+
+    let body = serde_json::json!({
+        "pageNo": 1,
+        "pageSize": 300,
+        "key": "",
+        "queryStatus": "all",
+    });
+    let req = match Request::builder()
+        .method(Method::POST)
+        .uri(url)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+    {
+        Ok(req) => req,
+        Err(e) => {
+            warn!("Failed to build request: {}", e);
+            return;
+        },
+    };
+
+    debug!("fetch node ranking: {:?}", req);
+
+    match client.request(req).await {
+        Ok(resp) => {
+            debug!("Reponse: {}", resp.status());
+            if !resp.status().is_success() {
+                warn!("Node detail API returned error status: {}", resp.status());
+                return;
+            }
+            let body_bytes = match hyper::body::to_bytes(resp.into_body()).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    warn!("Failed to read response body: {}", e);
+                    return;
+                },
+            };
+            let json: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+                Ok(json) => json,
+                Err(e) => {
+                    warn!("Failed to parse response JSON: {}", e);
+                    return;
+                },
+            };
+            debug!("Body: {}", json);
+
+            // 解析响应
+            if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
+                if code == 0 {
+                    if let Some(data_obj) = json.get("data") {
+                        match parse_node_ranking(data_obj, node_id) {
+                            Ok(ranking) => {
+                                let mut data = data.lock().unwrap();
+                                if let Some(old_detail) = data.node_detail() {
+                                    let mut new_detail = old_detail;
+                                    new_detail.ranking = ranking;
+                                    data.update_node_detail(Some(new_detail));
+                                } else {
+                                    let mut detail = NodeDetail::default();
+                                    detail.ranking = ranking;
+                                    data.update_node_detail(Some(detail));
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to parse node detail: {}", e);
+                                let mut data = data.lock().unwrap();
+                                data.update_node_detail(None);
+                            },
+                        }
+                    } else {
+                        warn!("Node detail response missing data field");
+                        let mut data = data.lock().unwrap();
+                        data.update_node_detail(None);
+                    }
+                } else {
+                    warn!("Node detail API returned error code: {}", code);
+                    let mut data = data.lock().unwrap();
+                    data.update_node_detail(None);
+                }
+            } else {
+                warn!("Node detail response missing code field");
+                let mut data = data.lock().unwrap();
+                data.update_node_detail(None);
+            }
+        },
+        Err(e) => {
+            warn!("Failed to fetch node detail: {}", e);
+            let mut data = data.lock().unwrap();
+            data.update_node_detail(None);
+        },
     }
 }
 
@@ -1203,8 +1313,11 @@ async fn fetch_node_detail(
                 if code == 0 {
                     if let Some(data_obj) = json.get("data") {
                         match parse_node_detail(data_obj) {
-                            Ok(detail) => {
+                            Ok(mut detail) => {
                                 let mut data = data.lock().unwrap();
+                                if let Some(old_detial) = data.node_detail() {
+                                    detail.ranking = old_detial.ranking;
+                                }
                                 data.update_node_detail(Some(detail));
                             },
                             Err(e) => {
@@ -1270,6 +1383,7 @@ fn parse_node_detail(data: &serde_json::Value) -> Result<NodeDetail> {
 
     Ok(NodeDetail {
         node_name,
+        ranking: 0,
         block_qty,
         block_rate,
         daily_block_rate,
@@ -1278,4 +1392,24 @@ fn parse_node_detail(data: &serde_json::Value) -> Result<NodeDetail> {
         reward_address,
         verifier_time,
     })
+}
+
+fn parse_node_ranking(
+    data: &serde_json::Value,
+    node_id: &str,
+) -> Result<i32> {
+    if let Some(dv) = data.as_array() {
+        let rvl = dv
+            .iter()
+            .filter(|v| {
+                v.get("nodeId").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                    == node_id.to_string()
+            })
+            .collect::<Vec<&serde_json::Value>>();
+        if rvl.len() > 0 {
+            let rv = rvl[0];
+            return Ok(rv.get("ranking").and_then(|v| v.as_i64()).unwrap_or(0) as i32);
+        }
+    }
+    Ok(0)
 }
