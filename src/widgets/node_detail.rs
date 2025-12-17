@@ -49,6 +49,7 @@ impl NodeDetailWidget {
     ) {
         let headers = [
             " Name",
+            "Ranking",
             "Elected Validator",
             "Blocks",
             "Block Rate",
@@ -72,6 +73,7 @@ impl NodeDetailWidget {
                 vec![Row::StyledData(
                     vec![
                         format!(" {}", detail.node_name),
+                        detail.ranking.to_string(),
                         detail.verifier_time.to_string(), // Elected Validator
                         detail.block_qty.to_string(),
                         detail.block_rate,
@@ -102,6 +104,7 @@ impl NodeDetailWidget {
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
+                        "".to_string(),
                     ]
                     .into_iter(),
                     Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
@@ -119,6 +122,7 @@ impl NodeDetailWidget {
             )
             .widths(&[
                 Constraint::Length(15),
+                Constraint::Length(10),
                 Constraint::Length(20),
                 Constraint::Length(15),
                 Constraint::Length(15),
