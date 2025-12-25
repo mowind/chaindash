@@ -1,11 +1,8 @@
 #[warn(dead_code)]
 use std::collections::HashMap;
-use std::{
-    fmt::format,
-    sync::{
-        Arc,
-        Mutex,
-    },
+use std::sync::{
+    Arc,
+    Mutex,
 };
 
 use hyper::{
@@ -40,8 +37,9 @@ use web3::{
     types::BlockId,
 };
 
+use super::types::NodeInfo;
 use crate::{
-    widgets::NodeWidget,
+    collect::types,
     Opts,
 };
 
@@ -895,8 +893,8 @@ async fn collect_system_stats(
                     match discover_mount_points() {
                         Ok(mount_points) => {
                             discovered_mount_points = mount_points.iter()
-                                .map(|mp| mp.mount_point.clone())
-                                .collect();
+                            .map(|mp| mp.mount_point.clone())
+                            .collect();
                             debug!("自动发现 {} 个挂载点: {:?}", discovered_mount_points.len(), discovered_mount_points);
                             last_discovery_time = std::time::Instant::now();
                         }
@@ -1199,50 +1197,48 @@ async fn fetch_node_ranking(
                     return;
                 },
             };
-            let json: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(json) => json,
+            let node_list_resp: types::NodeListResponse = match serde_json::from_slice(&body_bytes)
+            {
+                Ok(node_list_resp) => node_list_resp,
                 Err(e) => {
                     warn!("Failed to parse response JSON: {}", e);
                     return;
                 },
             };
-            debug!("Body: {}", json);
+            debug!("Node list response: {:?}", node_list_resp);
 
             // 解析响应
-            if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
-                if code == 0 {
-                    if let Some(data_obj) = json.get("data") {
-                        match parse_node_ranking(data_obj, node_id) {
-                            Ok(ranking) => {
-                                let mut data = data.lock().unwrap();
-                                if let Some(old_detail) = data.node_detail() {
-                                    let mut new_detail = old_detail;
-                                    new_detail.ranking = ranking;
-                                    data.update_node_detail(Some(new_detail));
-                                } else {
-                                    let mut detail = NodeDetail::default();
-                                    detail.ranking = ranking;
-                                    data.update_node_detail(Some(detail));
-                                }
-                            },
-                            Err(e) => {
-                                warn!("Failed to parse node detail: {}", e);
-                                let mut data = data.lock().unwrap();
-                                data.update_node_detail(None);
-                            },
-                        }
-                    } else {
-                        warn!("Node detail response missing data field");
-                        let mut data = data.lock().unwrap();
-                        data.update_node_detail(None);
+            if node_list_resp.code == 0 {
+                if let Some(data_obj) = node_list_resp.data {
+                    match parse_node_ranking(&data_obj, node_id) {
+                        Ok(ranking) => {
+                            let mut data = data.lock().unwrap();
+                            if let Some(old_detail) = data.node_detail() {
+                                let mut new_detail = old_detail;
+                                new_detail.ranking = ranking;
+                                data.update_node_detail(Some(new_detail));
+                            } else {
+                                let mut detail = NodeDetail::default();
+                                detail.ranking = ranking;
+                                data.update_node_detail(Some(detail));
+                            }
+                        },
+                        Err(e) => {
+                            warn!("Failed to parse node detail: {}", e);
+                            let mut data = data.lock().unwrap();
+                            data.update_node_detail(None);
+                        },
                     }
                 } else {
-                    warn!("Node detail API returned error code: {}", code);
+                    warn!("Node detail response missing data field");
                     let mut data = data.lock().unwrap();
                     data.update_node_detail(None);
                 }
             } else {
-                warn!("Node detail response missing code field");
+                warn!(
+                    "Node detail API returned error code: {}, err_msg: {}",
+                    node_list_resp.code, node_list_resp.err_msg
+                );
                 let mut data = data.lock().unwrap();
                 data.update_node_detail(None);
             }
@@ -1299,45 +1295,42 @@ async fn fetch_node_detail(
                     return;
                 },
             };
-            let json: serde_json::Value = match serde_json::from_slice(&body_bytes) {
-                Ok(json) => json,
-                Err(e) => {
-                    warn!("Failed to parse response JSON: {}", e);
-                    return;
-                },
-            };
-            debug!("Body: {}", json);
+            let node_detail_resp: types::NodeDetailRespose =
+                match serde_json::from_slice(&body_bytes) {
+                    Ok(node_detail_resp) => node_detail_resp,
+                    Err(e) => {
+                        warn!("Failed to parse response JSON: {}", e);
+                        return;
+                    },
+                };
+            debug!("Node detail response: {:?}", node_detail_resp);
 
-            // 解析响应
-            if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
-                if code == 0 {
-                    if let Some(data_obj) = json.get("data") {
-                        match parse_node_detail(data_obj) {
-                            Ok(mut detail) => {
-                                let mut data = data.lock().unwrap();
-                                if let Some(old_detial) = data.node_detail() {
-                                    detail.ranking = old_detial.ranking;
-                                }
-                                data.update_node_detail(Some(detail));
-                            },
-                            Err(e) => {
-                                warn!("Failed to parse node detail: {}", e);
-                                let mut data = data.lock().unwrap();
-                                data.update_node_detail(None);
-                            },
-                        }
-                    } else {
-                        warn!("Node detail response missing data field");
-                        let mut data = data.lock().unwrap();
-                        data.update_node_detail(None);
+            if node_detail_resp.code == 0 {
+                if let Some(detail) = node_detail_resp.data {
+                    match parse_node_detail(&detail) {
+                        Ok(mut node_detail) => {
+                            let mut data = data.lock().unwrap();
+                            if let Some(old_detail) = data.node_detail() {
+                                node_detail.ranking = old_detail.ranking;
+                            }
+                            data.update_node_detail(Some(node_detail));
+                        },
+                        Err(e) => {
+                            warn!("Failed to parse node detail: {}", e);
+                            let mut data = data.lock().unwrap();
+                            data.update_node_detail(None);
+                        },
                     }
                 } else {
-                    warn!("Node detail API returned error code: {}", code);
+                    warn!("Node detail response missing data field");
                     let mut data = data.lock().unwrap();
                     data.update_node_detail(None);
                 }
             } else {
-                warn!("Node detail response missing code field");
+                warn!(
+                    "Node detail API returned error code: {}, err_msg: {}",
+                    node_detail_resp.code, node_detail_resp.err_msg
+                );
                 let mut data = data.lock().unwrap();
                 data.update_node_detail(None);
             }
@@ -1350,36 +1343,20 @@ async fn fetch_node_detail(
     }
 }
 
-fn parse_node_detail(data: &serde_json::Value) -> Result<NodeDetail> {
-    let node_name = data.get("nodeName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-    let block_qty = data.get("blockQty").and_then(|v| v.as_u64()).unwrap_or(0);
-    let expect_block_qty = data.get("expectBlockQty").and_then(|v| v.as_u64()).unwrap_or(0);
-
+fn parse_node_detail(node_detail: &types::NodeDetail) -> Result<NodeDetail> {
+    let node_name = node_detail.node_name.clone();
+    let block_qty = node_detail.block_qty as u64;
+    let expect_block_qty = node_detail.expect_block_qty;
     let mut block_rate = String::new();
     if block_qty > 0 && expect_block_qty > 0 {
         let rate = (block_qty as f64) / (expect_block_qty as f64);
         block_rate = format!("{:.2}%", rate * 100.0);
     }
-
-    let daily_block_rate =
-        data.get("genBlocksRate").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-    let reward_per = data
-        .get("rewardPer")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.0);
-
-    let reward_value = data
-        .get("rewardValue")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.0);
-
-    let reward_address = data.get("denefitAddr").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-    let verifier_time = data.get("verifierTime").and_then(|v| v.as_u64()).unwrap_or(0);
+    let daily_block_rate = node_detail.gen_blocks_rate.clone();
+    let reward_per = node_detail.reward_per.parse::<f64>().ok().unwrap_or(0.0);
+    let reward_value = node_detail.reward_value.parse::<f64>().ok().unwrap_or(0.0);
+    let reward_address = node_detail.denefit_addr.clone();
+    let verifier_time = node_detail.verifier_time as u64;
 
     Ok(NodeDetail {
         node_name,
@@ -1395,21 +1372,11 @@ fn parse_node_detail(data: &serde_json::Value) -> Result<NodeDetail> {
 }
 
 fn parse_node_ranking(
-    data: &serde_json::Value,
+    data: &Vec<NodeInfo>,
     node_id: &str,
 ) -> Result<i32> {
-    if let Some(dv) = data.as_array() {
-        let rvl = dv
-            .iter()
-            .filter(|v| {
-                v.get("nodeId").and_then(|v| v.as_str()).unwrap_or("").to_string()
-                    == node_id.to_string()
-            })
-            .collect::<Vec<&serde_json::Value>>();
-        if rvl.len() > 0 {
-            let rv = rvl[0];
-            return Ok(rv.get("ranking").and_then(|v| v.as_i64()).unwrap_or(0) as i32);
-        }
+    match &data.into_iter().find(|ref n| n.node_id == node_id) {
+        Some(ref node) => Ok(node.ranking as i32),
+        None => Ok(0),
     }
-    Ok(0)
 }
