@@ -1,4 +1,5 @@
 mod collector;
+mod types;
 
 #[cfg(target_family = "unix")]
 pub use self::collector::SystemStats;
