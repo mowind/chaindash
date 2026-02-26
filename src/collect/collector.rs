@@ -46,38 +46,6 @@ use crate::{
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Deserialize, Serialize, Debug)]
-struct Container {
-    #[serde(rename = "Id")]
-    id: String,
-    #[serde(rename = "Names")]
-    names: Vec<String>,
-    #[serde(rename = "Image")]
-    image: String,
-    #[serde(rename = "ImageID")]
-    image_id: String,
-    #[serde(rename = "Command")]
-    command: String,
-    #[serde(rename = "Created")]
-    created: u64,
-    #[serde(rename = "State")]
-    state: String,
-    #[serde(rename = "Status")]
-    status: String,
-    //#[serde(rename = "Ports")]
-    //ports: Vec<>,
-    #[serde(rename = "Labels")]
-    labels: HashMap<String, String>,
-    #[serde(rename = "SizeRw")]
-    size_rw: Option<u64>,
-    #[serde(rename = "SizeRootFs")]
-    size_root_fs: Option<u64>,
-    #[serde(rename = "HostConfig")]
-    host_config: HashMap<String, String>,
-}
-
-type ContainerList = Vec<Container>;
-
 /// `NetworkStats` aggregates the network stats of one container
 #[derive(Serialize, Debug, Deserialize)]
 struct NetworkStats {
@@ -679,42 +647,6 @@ async fn collect_node_state(
     }
 }
 
-async fn get_container_id(
-    host: String,
-    name: String,
-) -> Result<String> {
-    let client = Client::new();
-    let uri = format!("{}/containers/json", host).parse()?;
-    let resp = client.get(uri).await?;
-    let body = hyper::body::to_bytes(resp.into_body()).await?;
-
-    let container_list: ContainerList = serde_json::from_slice(body.as_ref()).unwrap_or_default();
-
-    let v: Vec<String> = container_list
-        .into_iter()
-        .filter(|c| {
-            let cc: Vec<_> = c
-                .names
-                .iter()
-                .filter(|cname| {
-                    if cname.contains(name.as_str()) {
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .collect();
-            cc.len() > 0
-        })
-        .map(|c| c.id.clone())
-        .collect();
-    if v.len() > 0 {
-        Ok(v[0].clone())
-    } else {
-        Err("not found".into())
-    }
-}
-
 async fn collect_node_stats(
     name: String,
     host: String,
@@ -1051,9 +983,7 @@ fn is_special_filesystem(filesystem: &str) -> bool {
 /// 自动发现挂载点信息
 #[derive(Debug, Clone)]
 struct MountPointInfo {
-    device: String,
     mount_point: String,
-    filesystem: String,
 }
 
 /// 读取/proc/mounts并返回非特殊文件系统的挂载点
@@ -1085,17 +1015,12 @@ fn discover_mount_points() -> Result<Vec<MountPointInfo>> {
         let parts: Vec<&str> = line.split_whitespace().collect();
 
         if parts.len() >= 3 {
-            let device = parts[0].to_string();
             let mount_point = parts[1].to_string();
             let filesystem = parts[2].to_string();
 
             // 跳过特殊文件系统
             if !is_special_filesystem(&filesystem) {
-                mount_points.push(MountPointInfo {
-                    device,
-                    mount_point,
-                    filesystem,
-                });
+                mount_points.push(MountPointInfo { mount_point });
             }
         }
     }
@@ -1111,17 +1036,12 @@ fn discover_mount_points_fallback() -> Result<Vec<MountPointInfo>> {
     let mut mount_points = Vec::new();
 
     for disk in disks.list() {
-        let device = disk.name().to_string_lossy().to_string();
         let mount_point = disk.mount_point().to_string_lossy().to_string();
         let filesystem = disk.file_system().to_string_lossy().to_string();
 
         // 跳过特殊文件系统
         if !is_special_filesystem(&filesystem) {
-            mount_points.push(MountPointInfo {
-                device,
-                mount_point,
-                filesystem,
-            });
+            mount_points.push(MountPointInfo { mount_point });
         }
     }
 

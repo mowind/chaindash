@@ -34,7 +34,6 @@ pub struct TimeWidget {
 
     update_count: u64,
     cur_num: u64,
-    prev_timestamp: u64,
     cur_time: u64,
     max_time: u64,
     data: Vec<(f64, f64)>,
@@ -52,7 +51,6 @@ impl TimeWidget {
             collect_data,
             update_count: 0,
             cur_num: 0,
-            prev_timestamp: 0,
             cur_time: 0,
             max_time: 0,
             data: vec![(0.0, 0.0)],

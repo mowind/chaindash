@@ -16,10 +16,6 @@ use crate::{
         Widgets,
     },
     collect::SharedData,
-    widgets::{
-        DiskListWidget,
-        SystemSummaryWidget,
-    },
 };
 
 pub fn draw<B: Backend>(

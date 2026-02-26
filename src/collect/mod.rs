@@ -8,7 +8,6 @@ pub use self::collector::{
     Collector,
     ConsensusState,
     Data,
-    NodeDetail,
     NodeStats,
     SharedData,
 };
