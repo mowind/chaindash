@@ -22,6 +22,10 @@ use crate::{
     widgets::block,
 };
 
+/// Maximum number of data points to keep in memory.
+/// Older data points are discarded to prevent unbounded memory growth.
+const MAX_DATA_POINTS: usize = 200;
+
 pub struct TimeWidget {
     title: String,
     update_interval: Ratio<u64>,
@@ -69,6 +73,10 @@ impl UpdatableWidget for TimeWidget {
         for interval in data {
             self.data.push((self.update_count as f64, interval as f64));
             self.update_count += 1;
+        }
+
+        if self.data.len() > MAX_DATA_POINTS {
+            self.data.drain(0..self.data.len() - MAX_DATA_POINTS);
         }
     }
 
@@ -122,5 +130,60 @@ impl Widget for &TimeWidget {
             format!("BLOCK {}", self.cur_num),
             Style::default().fg(Color::Indexed(208)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_max_data_points_constant() {
+        assert_eq!(MAX_DATA_POINTS, 200);
+    }
+
+    #[test]
+    fn test_data_truncation_at_boundary() {
+        assert_eq!(MAX_DATA_POINTS, 200);
+
+        let mut data: Vec<(f64, f64)> = (0..200).map(|i| (i as f64, i as f64)).collect();
+        assert_eq!(data.len(), MAX_DATA_POINTS);
+
+        data.push((200.0, 200.0));
+        assert_eq!(data.len(), MAX_DATA_POINTS + 1);
+
+        if data.len() > MAX_DATA_POINTS {
+            data.drain(0..data.len() - MAX_DATA_POINTS);
+        }
+
+        assert_eq!(data.len(), MAX_DATA_POINTS);
+        assert_eq!(data[0], (1.0, 1.0));
+        assert_eq!(data[199], (200.0, 200.0));
+    }
+
+    #[test]
+    fn test_data_truncation_multiple_excess() {
+        let mut data: Vec<(f64, f64)> = (0..250).map(|i| (i as f64, i as f64)).collect();
+
+        if data.len() > MAX_DATA_POINTS {
+            data.drain(0..data.len() - MAX_DATA_POINTS);
+        }
+
+        assert_eq!(data.len(), MAX_DATA_POINTS);
+        assert_eq!(data[0], (50.0, 50.0));
+        assert_eq!(data[199], (249.0, 249.0));
+    }
+
+    #[test]
+    fn test_data_no_truncation_when_below_limit() {
+        let mut data: Vec<(f64, f64)> = (0..100).map(|i| (i as f64, i as f64)).collect();
+
+        if data.len() > MAX_DATA_POINTS {
+            data.drain(0..data.len() - MAX_DATA_POINTS);
+        }
+
+        assert_eq!(data.len(), 100);
+        assert_eq!(data[0], (0.0, 0.0));
+        assert_eq!(data[99], (99.0, 99.0));
     }
 }

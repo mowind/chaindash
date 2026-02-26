@@ -532,18 +532,18 @@ impl Collector {
     pub fn new(
         opts: &Opts,
         data: SharedData,
-    ) -> Self {
+    ) -> Result<Self> {
         let urls: Vec<&str> = opts.url.as_str().split(",").collect();
         let urls: Vec<(String, String)> = urls
             .into_iter()
             .map(|url| {
                 let v: Vec<&str> = url.split("@").collect();
                 if v.len() < 2 {
-                    panic!("invalid url");
+                    return Err(format!("invalid url format: {}", url).into());
                 }
-                (v[0].into(), v[1].into())
+                Ok((v[0].into(), v[1].into()))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let enable_docker_stats = opts.enable_docker_stats;
         let docker_port = opts.docker_port;
         let disk_mount_points = opts.disk_mount_points.clone();
@@ -552,7 +552,7 @@ impl Collector {
         let disk_refresh_interval = opts.disk_refresh_interval;
         let node_id = opts.node_id.clone();
 
-        Collector {
+        Ok(Collector {
             data,
             urls,
             enable_docker_stats,
@@ -562,7 +562,7 @@ impl Collector {
             disk_alert_threshold,
             disk_refresh_interval,
             node_id,
-        }
+        })
     }
 
     pub(crate) async fn run(&self) -> Result<()> {
@@ -688,7 +688,7 @@ async fn get_container_id(
     let resp = client.get(uri).await?;
     let body = hyper::body::to_bytes(resp.into_body()).await?;
 
-    let container_list: ContainerList = serde_json::from_slice(body.as_ref()).unwrap();
+    let container_list: ContainerList = serde_json::from_slice(body.as_ref()).unwrap_or_default();
 
     let v: Vec<String> = container_list
         .into_iter()
@@ -784,15 +784,19 @@ fn calc_cpu_usage(stats: &Stats) -> f64 {
     let precpu_usage = &stats.precpu_stats.cpu_usage;
     let cpu_delta = cpu_usage.total_usage - precpu_usage.total_usage;
     let precpu_system_cpu_usage = stats.precpu_stats.system_cpu_usage.unwrap_or(0);
-    let system_cpu_delta = stats.cpu_stats.system_cpu_usage.unwrap() - precpu_system_cpu_usage;
-    let num_cpus = cpu_usage.percpu_usage.clone().unwrap().len();
+    let system_cpu_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0) - precpu_system_cpu_usage;
+    let num_cpus = cpu_usage.percpu_usage.as_ref().map(|v| v.len()).unwrap_or(1);
+
+    if system_cpu_delta == 0 {
+        return 0.0;
+    }
 
     (cpu_delta as f64 / system_cpu_delta as f64) * num_cpus as f64 * 100.0
 }
 
 fn calc_mem_usage(stats: &Stats) -> (u64, f64) {
     let memory_stat = &stats.memory_stats;
-    let cache = memory_stat.stats.get("cache").unwrap();
+    let cache = *memory_stat.stats.get("cache").unwrap_or(&0);
     let used_memory = memory_stat.usage - cache;
     let avaliable_memory = memory_stat.limit;
     (used_memory, (used_memory as f64 / avaliable_memory as f64) * 100.0)
@@ -1535,6 +1539,23 @@ mod tests {
         assert!((result - 1.8181818).abs() < 0.001);
     }
 
+    #[test]
+    fn test_calc_cpu_usage_zero_system_delta() {
+        // When system_cpu_delta is 0, return 0.0 to avoid division by zero
+        // cpu_delta = 100, system_cpu_delta = 0, num_cpus = 2
+        // expected = 0.0 (division avoided)
+        let stats = create_test_stats(
+            1100,  // cpu_total
+            1000,  // precpu_total -> cpu_delta = 100
+            10000, // system_cpu
+            10000, // pre_system_cpu -> system_cpu_delta = 0
+            2,     // percpu_len (2 CPUs)
+            0, 0, 0,
+        );
+        let result = calc_cpu_usage(&stats);
+        assert!((result - 0.0).abs() < 0.001);
+    }
+
     // ========================================
     // calc_mem_usage tests
     // ========================================
@@ -1591,5 +1612,35 @@ mod tests {
         let (used, percent) = calc_mem_usage(&stats);
         assert_eq!(used, 0);
         assert!((percent - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_collector_new_invalid_url_no_at_sign() {
+        // Test URL without @ sign returns error
+        use clap::Parser;
+
+        use crate::Opts;
+
+        let opts = Opts::parse_from(["test", "--url", "invalid_url"]);
+        let data: SharedData = Arc::new(Mutex::new(Data::default()));
+
+        let result = Collector::new(&opts, data);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("invalid url format"));
+    }
+
+    #[test]
+    fn test_collector_new_valid_url() {
+        // Test valid URL format succeeds
+        use clap::Parser;
+
+        use crate::Opts;
+
+        let opts = Opts::parse_from(["test", "--url", "test@ws://127.0.0.1:6789"]);
+        let data: SharedData = Arc::new(Mutex::new(Data::default()));
+
+        let result = Collector::new(&opts, data);
+        assert!(result.is_ok());
     }
 }

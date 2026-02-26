@@ -82,8 +82,7 @@ impl DiskListWidget {
             // 无磁盘数据时显示友好消息
             let title = " Disk Details ".to_string();
             let rows = vec![Row::StyledData(
-                vec![" No disk mount points found".to_string()]
-                    .into_iter(),
+                vec![" No disk mount points found".to_string()].into_iter(),
                 Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
             )];
 
@@ -110,13 +109,7 @@ impl DiskListWidget {
         };
 
         // 创建表头 - 类似 df -h 的格式
-        let header = [
-            "Mounted on",
-            "Size",
-            "Used",
-            "Avail",
-            "Use%",
-        ];
+        let header = ["Mounted on", "Size", "Used", "Avail", "Use%"];
 
         // 创建行数据
         let mut rows = Vec::new();

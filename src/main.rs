@@ -162,7 +162,7 @@ async fn main() {
 
     let mut update_seconds = Ratio::from_integer(0);
 
-    let collector = collect::Collector::new(&opts, app.data.clone());
+    let collector = collect::Collector::new(&opts, app.data.clone()).expect("Failed to parse URL");
     tokio::spawn(collect::run(collector));
 
     update_widgets(&mut app.widgets, update_seconds);
