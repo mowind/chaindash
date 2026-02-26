@@ -62,15 +62,13 @@ impl NodeWidget {
         let header =
             [" Name", "Host", "Block", "Epoch", "View", "Committed", "Locked", "QC", "Validator"];
 
-        let nodes = self.nodes.clone();
-
         Table::new(
             header.iter(),
-            nodes.into_iter().map(|node| {
+            self.nodes.iter().map(|node| {
                 Row::StyledData(
                     vec![
-                        format!(" {}", node.name),
-                        format!("{}", node.host),
+                        format!(" {}", &node.name),
+                        format!("{}", &node.host),
                         format!("{}", node.current_number),
                         format!("{}", node.epoch),
                         format!("{}", node.view),
@@ -131,22 +129,20 @@ impl NodeWidget {
             "Disc Write",
         ];
 
-        let nodes = self.nodes.clone();
-
         Table::new(
             header.iter(),
-            nodes.into_iter().map(|node| {
+            self.nodes.iter().map(|node| {
                 let stat = stats.get(&node.name).unwrap_or_default();
                 let mem = stat.mem as f64 / 1024.0 / 1024.0 / 1024.0;
                 let mem_limit = stat.mem_limit as f64 / 1024.0 / 1024.0 / 1024.0;
                 let blk_read = stat.blk_read as f64 / 1024.0 / 1024.0 / 1024.0;
                 let blk_write = stat.blk_write as f64 / 1024.0 / 1024.0 / 1024.0;
-                let rx = stat.network_tx as f64 / 1024.0 / 1024.0 / 1024.0;
+                let rx = stat.network_rx as f64 / 1024.0 / 1024.0 / 1024.0;
                 let tx = stat.network_tx as f64 / 1024.0 / 1024.0 / 1024.0;
                 Row::StyledData(
                     vec![
-                        format!(" {}", node.name),
-                        format!("{}", node.host),
+                        format!(" {}", &node.name),
+                        format!("{}", &node.host),
                         format!("{}", node.current_number),
                         format!("{}", node.epoch),
                         format!("{}", node.view),
@@ -218,9 +214,8 @@ impl Widget for &NodeWidget {
             return;
         }
 
-        let stats = self.stats.clone();
-        if stats.len() > 0 {
-            self.render_with_stats(area, buf, &stats);
+        if !self.stats.is_empty() {
+            self.render_with_stats(area, buf, &self.stats);
         } else {
             self.render_without_stats(area, buf);
         }
