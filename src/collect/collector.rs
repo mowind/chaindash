@@ -1380,3 +1380,216 @@ fn parse_node_ranking(
         None => Ok(0),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// Helper to create a minimal Stats struct for testing
+    fn create_test_stats(
+        cpu_total: u64,
+        precpu_total: u64,
+        system_cpu: u64,
+        pre_system_cpu: u64,
+        percpu_len: usize,
+        mem_usage: u64,
+        mem_limit: u64,
+        cache: u64,
+    ) -> Stats {
+        Stats {
+            name: None,
+            id: None,
+            read: String::new(),
+            preread: String::new(),
+            pids_stats: None,
+            blkio_stats: None,
+            num_procs: None,
+            storage_stats: None,
+            cpu_stats: CPUStats {
+                cpu_usage: CPUUsage {
+                    total_usage: cpu_total,
+                    percpu_usage: Some(vec![0; percpu_len]),
+                    usage_in_kernelmode: 0,
+                    usage_in_usermode: 0,
+                },
+                system_cpu_usage: Some(system_cpu),
+                online_cups: None,
+                throttling_data: None,
+            },
+            precpu_stats: CPUStats {
+                cpu_usage: CPUUsage {
+                    total_usage: precpu_total,
+                    percpu_usage: Some(vec![0; percpu_len]),
+                    usage_in_kernelmode: 0,
+                    usage_in_usermode: 0,
+                },
+                system_cpu_usage: Some(pre_system_cpu),
+                online_cups: None,
+                throttling_data: None,
+            },
+            memory_stats: MemoryStats {
+                usage: mem_usage,
+                max_usage: mem_usage,
+                stats: {
+                    let mut m = HashMap::new();
+                    m.insert("cache".to_string(), cache);
+                    m
+                },
+                failcnt: None,
+                limit: mem_limit,
+                commit: None,
+                commit_peak_bytes: None,
+                privated_working_set: None,
+            },
+            networks: None,
+        }
+    }
+
+    // ========================================
+    // calc_cpu_usage tests
+    // ========================================
+
+    #[test]
+    fn test_calc_cpu_usage_normal() {
+        // cpu_delta = 100, system_cpu_delta = 1000, num_cpus = 2
+        // expected = (100/1000) * 2 * 100.0 = 20.0
+        let stats = create_test_stats(
+            1100,  // cpu_total
+            1000,  // precpu_total -> cpu_delta = 100
+            11000, // system_cpu
+            10000, // pre_system_cpu -> system_cpu_delta = 1000
+            2,     // percpu_len (2 CPUs)
+            0, 0, 0,
+        );
+        let result = calc_cpu_usage(&stats);
+        assert!((result - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_cpu_usage_single_cpu() {
+        // cpu_delta = 500, system_cpu_delta = 5000, num_cpus = 1
+        // expected = (500/5000) * 1 * 100.0 = 10.0
+        let stats = create_test_stats(
+            1500,  // cpu_total
+            1000,  // precpu_total -> cpu_delta = 500
+            15000, // system_cpu
+            10000, // pre_system_cpu -> system_cpu_delta = 5000
+            1,     // percpu_len (1 CPU)
+            0, 0, 0,
+        );
+        let result = calc_cpu_usage(&stats);
+        assert!((result - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_cpu_usage_zero_cpu_delta() {
+        // When cpu_delta is 0, result should be 0
+        // cpu_delta = 0, system_cpu_delta = 1000, num_cpus = 2
+        // expected = (0/1000) * 2 * 100.0 = 0.0
+        let stats = create_test_stats(
+            1000,  // cpu_total
+            1000,  // precpu_total -> cpu_delta = 0
+            11000, // system_cpu
+            10000, // pre_system_cpu -> system_cpu_delta = 1000
+            2,     // percpu_len (2 CPUs)
+            0, 0, 0,
+        );
+        let result = calc_cpu_usage(&stats);
+        assert!((result - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_cpu_usage_four_cpus() {
+        // cpu_delta = 1000, system_cpu_delta = 2000, num_cpus = 4
+        // expected = (1000/2000) * 4 * 100.0 = 200.0
+        let stats = create_test_stats(
+            2000,  // cpu_total
+            1000,  // precpu_total -> cpu_delta = 1000
+            12000, // system_cpu
+            10000, // pre_system_cpu -> system_cpu_delta = 2000
+            4,     // percpu_len (4 CPUs)
+            0, 0, 0,
+        );
+        let result = calc_cpu_usage(&stats);
+        assert!((result - 200.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_cpu_usage_precpu_system_none() {
+        // When precpu_stats.system_cpu_usage is None, it defaults to 0
+        // This tests the .unwrap_or(0) behavior
+        let mut stats = create_test_stats(
+            1100,  // cpu_total
+            1000,  // precpu_total
+            11000, // system_cpu
+            10000, // pre_system_cpu
+            2, 0, 0, 0,
+        );
+        stats.precpu_stats.system_cpu_usage = None;
+        // pre_system_cpu = 0, system_cpu_delta = 11000 - 0 = 11000
+        // cpu_delta = 100
+        // expected = (100/11000) * 2 * 100.0 ≈ 1.818
+        let result = calc_cpu_usage(&stats);
+        assert!((result - 1.8181818).abs() < 0.001);
+    }
+
+    // ========================================
+    // calc_mem_usage tests
+    // ========================================
+
+    #[test]
+    fn test_calc_mem_usage_normal() {
+        // usage = 1024, cache = 256, limit = 4096
+        // used_memory = 1024 - 256 = 768
+        // mem_percent = (768 / 4096) * 100.0 = 18.75
+        let stats = create_test_stats(0, 0, 0, 0, 1, 1024, 4096, 256);
+        let (used, percent) = calc_mem_usage(&stats);
+        assert_eq!(used, 768);
+        assert!((percent - 18.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_mem_usage_zero_cache() {
+        // usage = 1024, cache = 0, limit = 4096
+        // used_memory = 1024 - 0 = 1024
+        // mem_percent = (1024 / 4096) * 100.0 = 25.0
+        let stats = create_test_stats(0, 0, 0, 0, 1, 1024, 4096, 0);
+        let (used, percent) = calc_mem_usage(&stats);
+        assert_eq!(used, 1024);
+        assert!((percent - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_mem_usage_full_usage() {
+        // usage = 4096, cache = 0, limit = 4096
+        // used_memory = 4096 - 0 = 4096
+        // mem_percent = (4096 / 4096) * 100.0 = 100.0
+        let stats = create_test_stats(0, 0, 0, 0, 1, 4096, 4096, 0);
+        let (used, percent) = calc_mem_usage(&stats);
+        assert_eq!(used, 4096);
+        assert!((percent - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn test_calc_mem_usage_cache_exceeds_usage_panics() {
+        // usage = 256, cache = 512, limit = 4096
+        // This currently panics due to u64 underflow (cache > usage)
+        // Wave 1 fix should handle this edge case gracefully
+        let stats = create_test_stats(0, 0, 0, 0, 1, 256, 4096, 512);
+        calc_mem_usage(&stats);
+    }
+
+    #[test]
+    fn test_calc_mem_usage_zero_usage() {
+        // usage = 0, cache = 0, limit = 4096
+        // used_memory = 0
+        // mem_percent = 0.0
+        let stats = create_test_stats(0, 0, 0, 0, 1, 0, 4096, 0);
+        let (used, percent) = calc_mem_usage(&stats);
+        assert_eq!(used, 0);
+        assert!((percent - 0.0).abs() < 0.001);
+    }
+}
