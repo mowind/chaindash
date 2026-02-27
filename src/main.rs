@@ -74,7 +74,18 @@ fn cleanup_terminal() {
 fn setup_ui_events() -> Receiver<Event> {
     let (sender, receiver) = unbounded();
     thread::spawn(move || loop {
-        sender.send(crossterm::event::read().unwrap()).unwrap();
+        match crossterm::event::read() {
+            Ok(event) => {
+                if sender.send(event).is_err() {
+                    // Receiver dropped, exit thread
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to read terminal event: {}", e);
+                break;
+            }
+        }
     });
 
     receiver
@@ -83,8 +94,7 @@ fn setup_ui_events() -> Receiver<Event> {
 fn setup_ctrl_c() -> Receiver<()> {
     let (sender, receiver) = unbounded();
     ctrlc::set_handler(move || {
-        println!("press C-c");
-        sender.send(()).unwrap();
+        let _ = sender.send(());
     })
     .unwrap();
 
@@ -94,15 +104,23 @@ fn setup_ctrl_c() -> Receiver<()> {
 fn setup_logfile(
     logfile_path: &Path,
     debug: bool,
-) {
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut level = log::LevelFilter::Warn;
     if debug {
         level = log::LevelFilter::Debug;
     }
 
-    fs::create_dir_all(logfile_path.parent().unwrap()).unwrap();
-    let logfile =
-        fs::OpenOptions::new().write(true).create(true).truncate(true).open(logfile_path).unwrap();
+    // Handle case where path has no parent (e.g., "file.log" at root)
+    if let Some(parent) = logfile_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let logfile = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(logfile_path)?;
+
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -115,11 +133,12 @@ fn setup_logfile(
         })
         .chain(logfile)
         .level(level)
-        .apply()
-        .unwrap();
+        .apply()?;
+
+    Ok(())
 }
 
-fn setup_panci_hook() {
+fn setup_panic_hook() {
     panic::set_hook(Box::new(|panic_info| {
         cleanup_terminal();
         better_panic::Settings::auto().create_panic_handler()(panic_info);
@@ -134,15 +153,20 @@ async fn main() {
 
     let mut app = setup_app(&opts, PROGRAM_NAME);
 
-    setup_logfile(Path::new("./errors.log"), opts.debug);
+    if let Err(e) = setup_logfile(Path::new("./errors.log"), opts.debug) {
+        eprintln!("Failed to setup logfile: {}", e);
+        // Continue without logging - not fatal
+    }
 
     let draw_interval = Ratio::min(Ratio::from_integer(1), opts.interval);
 
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
+
+    setup_panic_hook();
+
     let mut terminal = Terminal::new(backend).unwrap();
 
-    setup_panci_hook();
     if let Err(e) = setup_terminal() {
         eprintln!("Failed to setup terminal: {e}");
         eprintln!(

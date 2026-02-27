@@ -538,7 +538,9 @@ impl Collector {
             if self.enable_docker_stats {
                 debug!("enable_docker_stats: {}", self.enable_docker_stats);
                 let host = url.1.clone();
-                let host = host.replace("ws://", "");
+                let host = host
+                    .replace("ws://", "")
+                    .replace("wss://", "");
                 let ip_port: Vec<&str> = host.as_str().split(':').collect();
                 let host = format!("http://{}:{}", ip_port[0], self.docker_port);
                 let data = self.data.clone();
@@ -633,8 +635,9 @@ async fn collect_node_state(
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
     let platon = web3.platon();
-    let host = url.replace("ws://", "");
-
+    let host = url
+        .replace("ws://", "")
+        .replace("wss://", "");
     let mut interval = time::interval(Duration::from_secs(1));
 
     loop {
@@ -684,7 +687,7 @@ async fn collect_node_stats(
             Some(chunk) = resp.body_mut().data() => {
                 let chunk = chunk?;
                 if chunk.has_remaining() {
-                    bufs.append(&mut chunk.to_vec().clone());
+                    bufs.append(&mut chunk.to_vec());
                     let stats: Stats = match serde_json::from_slice(bufs.as_ref()) {
                         Err(_) => continue,
                         Ok(stats) => stats,

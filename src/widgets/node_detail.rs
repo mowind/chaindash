@@ -141,9 +141,9 @@ impl NodeDetailWidget {
 impl UpdatableWidget for NodeDetailWidget {
     fn update(&mut self) {
         let data = self.collect_data.lock().unwrap();
-        if data.node_detail().is_some() {
-            self.loading = false;
-        }
+        // Update loading state: loading is true only when data is None
+        // This handles the case when data fetch fails after initial success
+        self.loading = data.node_detail().is_none();
     }
 
     fn get_update_interval(&self) -> Ratio<u64> {

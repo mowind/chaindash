@@ -22,6 +22,9 @@ use crate::{
     widgets::block,
 };
 
+/// Maximum number of data points to keep in memory.
+/// Older data points are discarded to prevent unbounded memory growth.
+const MAX_DATA_POINTS: usize = 200;
 pub struct TxsWidget {
     title: String,
     update_interval: Ratio<u64>,
@@ -71,6 +74,11 @@ impl UpdatableWidget for TxsWidget {
         for txs in data {
             self.data.push((self.update_count as f64, txs as f64));
             self.update_count += 1;
+        }
+
+        // Truncate data to prevent unbounded memory growth
+        if self.data.len() > MAX_DATA_POINTS {
+            self.data.drain(0..self.data.len() - MAX_DATA_POINTS);
         }
     }
 
