@@ -364,6 +364,7 @@ pub struct Collector {
     disk_alert_threshold: f32,
     disk_refresh_interval: u64,
     node_id: Option<String>,
+    explorer_api_url: String,
 }
 
 pub async fn run(collector: Collector) -> Result<()> {
@@ -373,7 +374,6 @@ pub async fn run(collector: Collector) -> Result<()> {
         }
     }
 }
-
 
 impl Default for Data {
     fn default() -> Data {
@@ -484,13 +484,13 @@ impl Collector {
         opts: &Opts,
         data: SharedData,
     ) -> Result<Self> {
-        let urls: Vec<&str> = opts.url.as_str().split(",").collect();
+        let urls: Vec<&str> = opts.url.as_str().split(',').collect();
         let urls: Vec<(String, String)> = urls
             .into_iter()
             .map(|url| {
-                let v: Vec<&str> = url.split("@").collect();
+                let v: Vec<&str> = url.split('@').collect();
                 if v.len() < 2 {
-                    return Err(format!("invalid url format: {}", url).into());
+                    return Err(format!("invalid url format: {url}").into());
                 }
                 Ok((v[0].into(), v[1].into()))
             })
@@ -502,6 +502,7 @@ impl Collector {
         let disk_alert_threshold = opts.disk_alert_threshold;
         let disk_refresh_interval = opts.disk_refresh_interval;
         let node_id = opts.node_id.clone();
+        let explorer_api_url = opts.explorer_api_url.clone();
 
         Ok(Collector {
             data,
@@ -513,6 +514,7 @@ impl Collector {
             disk_alert_threshold,
             disk_refresh_interval,
             node_id,
+            explorer_api_url,
         })
     }
 
@@ -522,39 +524,68 @@ impl Collector {
         let mut sub = web3.platon_subscribe().subscribe_new_heads().await?;
 
         let urls = self.urls.clone();
-        let _: Vec<_> = urls
-            .into_iter()
-            .map(|url| {
-                let name = url.0.clone();
-                tokio::spawn(collect_node_state(name.clone(), url.1.clone(), self.data.clone()));
-
-                debug!("enable_docker_stats: {}", self.enable_docker_stats);
-                if self.enable_docker_stats {
-                    debug!("enable_docker_stats: {}", self.enable_docker_stats);
-                    let host = url.1.clone();
-                    let host = host.replace("ws://", "");
-                    let ip_port: Vec<&str> = host.as_str().split(":").collect();
-                    let host = format!("http://{}:{}", ip_port[0], self.docker_port);
-                    tokio::spawn(collect_node_stats(name.clone(), host, self.data.clone()));
+        for url in urls {
+            let name = url.0.clone();
+            let url_str = url.1.clone();
+            let data = self.data.clone();
+            tokio::spawn(async move {
+                if let Err(e) = collect_node_state(name.clone(), url_str.clone(), data).await {
+                    warn!("collect_node_state failed for {}: {}", name, e);
                 }
-            })
-            .collect();
+            });
+
+            debug!("enable_docker_stats: {}", self.enable_docker_stats);
+            if self.enable_docker_stats {
+                debug!("enable_docker_stats: {}", self.enable_docker_stats);
+                let host = url.1.clone();
+                let host = host.replace("ws://", "");
+                let ip_port: Vec<&str> = host.as_str().split(':').collect();
+                let host = format!("http://{}:{}", ip_port[0], self.docker_port);
+                let data = self.data.clone();
+                let name = url.0.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = collect_node_stats(name.clone(), host, data).await {
+                        warn!("collect_node_stats failed for {}: {}", name, e);
+                    }
+                });
+            }
+        }
 
         // 启动节点详情监控
         if let Some(node_id) = &self.node_id {
             debug!("start collect node detail: {}", node_id);
-            tokio::spawn(collect_node_detail(node_id.clone(), self.data.clone()));
+            let node_id = node_id.clone();
+            let explorer_api_url = self.explorer_api_url.clone();
+            let data = self.data.clone();
+            tokio::spawn(async move {
+                if let Err(e) = collect_node_detail(node_id, data, explorer_api_url).await {
+                    warn!("collect_node_detail failed: {}", e);
+                }
+            });
         }
 
         // 启动本机系统监控
         #[cfg(target_family = "unix")]
-        tokio::spawn(collect_system_stats(
-            self.data.clone(),
-            self.disk_mount_points.clone(),
-            self.disk_auto_discovery,
-            self.disk_alert_threshold,
-            self.disk_refresh_interval,
-        ));
+        {
+            let data = self.data.clone();
+            let disk_mount_points = self.disk_mount_points.clone();
+            let disk_auto_discovery = self.disk_auto_discovery;
+            let disk_alert_threshold = self.disk_alert_threshold;
+            let disk_refresh_interval = self.disk_refresh_interval;
+            tokio::spawn(async move {
+                if let Err(e) = collect_system_stats(
+                    data,
+                    disk_mount_points,
+                    disk_auto_discovery,
+                    disk_alert_threshold,
+                    disk_refresh_interval,
+                )
+                .await
+                {
+                    warn!("collect_system_stats failed: {}", e);
+                }
+            });
+        }
 
         loop {
             tokio::select! {
@@ -639,7 +670,7 @@ async fn collect_node_stats(
     //let id = get_container_id(host.clone(), name.clone()).await?;
 
     let client = Client::new();
-    let uri = format!("{}/containers/{}/stats", host, name).parse()?;
+    let uri = format!("{host}/containers/{name}/stats").parse()?;
     debug!("uri: {:?}", uri);
 
     let mut resp = client.get(uri).await?;
@@ -712,9 +743,13 @@ fn calc_cpu_usage(stats: &Stats) -> f64 {
 fn calc_mem_usage(stats: &Stats) -> (u64, f64) {
     let memory_stat = &stats.memory_stats;
     let cache = *memory_stat.stats.get("cache").unwrap_or(&0);
-    let used_memory = memory_stat.usage - cache;
-    let avaliable_memory = memory_stat.limit;
-    (used_memory, (used_memory as f64 / avaliable_memory as f64) * 100.0)
+    let used_memory = memory_stat.usage.saturating_sub(cache);
+    let available_memory = memory_stat.limit;
+    if available_memory == 0 {
+        (used_memory, 0.0)
+    } else {
+        (used_memory, (used_memory as f64 / available_memory as f64) * 100.0)
+    }
 }
 
 fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
@@ -987,7 +1022,7 @@ fn discover_mount_points() -> Result<Vec<MountPointInfo>> {
         Err(e) => {
             // 如果/proc/mounts不可用，尝试使用sysinfo作为后备
             warn!("无法读取/proc/mounts: {}, 使用sysinfo作为后备", e);
-            return discover_mount_points_fallback();
+            return Ok(discover_mount_points_fallback());
         },
     };
 
@@ -1012,7 +1047,7 @@ fn discover_mount_points() -> Result<Vec<MountPointInfo>> {
 }
 
 /// 使用sysinfo作为后备的挂载点发现
-fn discover_mount_points_fallback() -> Result<Vec<MountPointInfo>> {
+fn discover_mount_points_fallback() -> Vec<MountPointInfo> {
     use sysinfo::Disks;
 
     let disks = Disks::new_with_refreshed_list();
@@ -1028,32 +1063,44 @@ fn discover_mount_points_fallback() -> Result<Vec<MountPointInfo>> {
         }
     }
 
-    Ok(mount_points)
+    mount_points
 }
 
 async fn collect_node_detail(
     node_id: String,
     data: SharedData,
+    explorer_api_url: String,
 ) -> Result<()> {
     use tokio::time::{
         self,
+        timeout,
         Duration,
     };
 
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
     let https = HttpsConnector::new();
     let client = hyper::Client::builder().build(https);
-    let url = "https://scan.platon.network/browser-server/staking/stakingDetails";
+    let url = format!("{explorer_api_url}/staking/stakingDetails");
     let mut interval = time::interval(Duration::from_secs(10)); // 每10秒更新一次
-    let ranking_url = "https://scan.platon.network/browser-server/staking/aliveStakingList";
+    let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
 
     // 立即获取一次，不等待第一次tick
-    fetch_node_detail(&client, url, &node_id, data.clone()).await;
-    fetch_node_ranking(&client, ranking_url, &node_id, data.clone()).await;
+    let _ =
+        timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await;
+    let _ =
+        timeout(REQUEST_TIMEOUT, fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()))
+            .await;
 
     loop {
         interval.tick().await;
-        fetch_node_detail(&client, url, &node_id, data.clone()).await;
-        fetch_node_ranking(&client, ranking_url, &node_id, data.clone()).await;
+        let _ = timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone()))
+            .await;
+        let _ = timeout(
+            REQUEST_TIMEOUT,
+            fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()),
+        )
+        .await;
     }
 }
 
@@ -1117,26 +1164,18 @@ async fn fetch_node_ranking(
             // 解析响应
             if node_list_resp.code == 0 {
                 if let Some(data_obj) = node_list_resp.data {
-                    match parse_node_ranking(&data_obj, node_id) {
-                        Ok(ranking) => {
-                            let mut data = data.lock().unwrap();
-                            if let Some(old_detail) = data.node_detail() {
-                                let mut new_detail = old_detail;
-                                new_detail.ranking = ranking;
-                                data.update_node_detail(Some(new_detail));
-                            } else {
-                                let detail = NodeDetail {
-                                    ranking,
-                                    ..Default::default()
-                                };
-                                data.update_node_detail(Some(detail));
-                            }
-                        },
-                        Err(e) => {
-                            warn!("Failed to parse node detail: {}", e);
-                            let mut data = data.lock().unwrap();
-                            data.update_node_detail(None);
-                        },
+                    let ranking = parse_node_ranking(&data_obj, node_id);
+                    let mut data = data.lock().unwrap();
+                    if let Some(old_detail) = data.node_detail() {
+                        let mut new_detail = old_detail;
+                        new_detail.ranking = ranking;
+                        data.update_node_detail(Some(new_detail));
+                    } else {
+                        let detail = NodeDetail {
+                            ranking,
+                            ..Default::default()
+                        };
+                        data.update_node_detail(Some(detail));
                     }
                 } else {
                     warn!("Node detail response missing data field");
@@ -1216,20 +1255,12 @@ async fn fetch_node_detail(
 
             if node_detail_resp.code == 0 {
                 if let Some(detail) = node_detail_resp.data {
-                    match parse_node_detail(&detail) {
-                        Ok(mut node_detail) => {
-                            let mut data = data.lock().unwrap();
-                            if let Some(old_detail) = data.node_detail() {
-                                node_detail.ranking = old_detail.ranking;
-                            }
-                            data.update_node_detail(Some(node_detail));
-                        },
-                        Err(e) => {
-                            warn!("Failed to parse node detail: {}", e);
-                            let mut data = data.lock().unwrap();
-                            data.update_node_detail(None);
-                        },
+                    let mut node_detail = parse_node_detail(&detail);
+                    let mut data = data.lock().unwrap();
+                    if let Some(old_detail) = data.node_detail() {
+                        node_detail.ranking = old_detail.ranking;
                     }
+                    data.update_node_detail(Some(node_detail));
                 } else {
                     warn!("Node detail response missing data field");
                     let mut data = data.lock().unwrap();
@@ -1252,7 +1283,7 @@ async fn fetch_node_detail(
     }
 }
 
-fn parse_node_detail(node_detail: &types::NodeDetail) -> Result<NodeDetail> {
+fn parse_node_detail(node_detail: &types::NodeDetail) -> NodeDetail {
     let node_name = node_detail.node_name.clone();
     let block_qty = node_detail.block_qty as u64;
     let expect_block_qty = node_detail.expect_block_qty;
@@ -1267,7 +1298,7 @@ fn parse_node_detail(node_detail: &types::NodeDetail) -> Result<NodeDetail> {
     let reward_address = node_detail.denefit_addr.clone();
     let verifier_time = node_detail.verifier_time as u64;
 
-    Ok(NodeDetail {
+    NodeDetail {
         node_name,
         ranking: 0,
         block_qty,
@@ -1277,16 +1308,16 @@ fn parse_node_detail(node_detail: &types::NodeDetail) -> Result<NodeDetail> {
         reward_value,
         reward_address,
         verifier_time,
-    })
+    }
 }
 
 fn parse_node_ranking(
     data: &[NodeInfo],
     node_id: &str,
-) -> Result<i32> {
+) -> i32 {
     match data.iter().find(|n| n.node_id == node_id) {
-        Some(node) => Ok(node.ranking as i32),
-        None => Ok(0),
+        Some(node) => node.ranking as i32,
+        None => 0,
     }
 }
 
@@ -1499,13 +1530,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attempt to subtract with overflow")]
-    fn test_calc_mem_usage_cache_exceeds_usage_panics() {
+    fn test_calc_mem_usage_cache_exceeds_usage_returns_zero() {
         // usage = 256, cache = 512, limit = 4096
-        // This currently panics due to u64 underflow (cache > usage)
-        // Wave 1 fix should handle this edge case gracefully
+        // After fix: saturating_sub returns 0 (no panic)
+        // used_memory = 256.saturating_sub(512) = 0
         let stats = create_test_stats(0, 0, 0, 0, 1, 256, 4096, 512);
-        calc_mem_usage(&stats);
+        let (used, percent) = calc_mem_usage(&stats);
+        assert_eq!(used, 0);
+        assert!((percent - 0.0).abs() < 0.001);
     }
 
     #[test]

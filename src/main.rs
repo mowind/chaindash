@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use app::*;
+use app::setup_app;
 use clap::Parser;
 use crossbeam_channel::{
     select,
@@ -35,7 +35,7 @@ use crossterm::{
     execute,
     terminal,
 };
-use draw::*;
+use draw::draw;
 //use log::{debug, info};
 use num_rational::Ratio;
 use opts::Opts;
@@ -43,7 +43,7 @@ use tui::{
     backend::CrosstermBackend,
     Terminal,
 };
-use update::*;
+use update::update_widgets;
 
 const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -63,13 +63,12 @@ fn setup_terminal() -> Result<(), Box<dyn std::error::Error>> {
 fn cleanup_terminal() {
     let mut stdout = io::stdout();
 
-    execute!(stdout, cursor::MoveTo(0, 0)).unwrap();
-    execute!(stdout, terminal::Clear(terminal::ClearType::All)).unwrap();
+    let _ = execute!(stdout, cursor::MoveTo(0, 0));
+    let _ = execute!(stdout, terminal::Clear(terminal::ClearType::All));
+    let _ = execute!(stdout, terminal::LeaveAlternateScreen);
+    let _ = execute!(stdout, cursor::Show);
 
-    execute!(stdout, terminal::LeaveAlternateScreen).unwrap();
-    execute!(stdout, cursor::Show).unwrap();
-
-    terminal::disable_raw_mode().unwrap();
+    let _ = terminal::disable_raw_mode();
 }
 
 fn setup_ui_events() -> Receiver<Event> {
@@ -145,7 +144,7 @@ async fn main() {
 
     setup_panci_hook();
     if let Err(e) = setup_terminal() {
-        eprintln!("Failed to setup terminal: {}", e);
+        eprintln!("Failed to setup terminal: {e}");
         eprintln!(
             "This may be because you're running in an environment without a proper terminal."
         );

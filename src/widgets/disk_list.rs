@@ -90,7 +90,7 @@ impl DiskListWidget {
                 .block(block::new(&title))
                 .header_style(
                     Style::default()
-                    .fg(Color::Indexed(249_u8))
+                        .fg(Color::Indexed(249_u8))
                         .bg(Color::Reset)
                         .modifier(Modifier::BOLD),
                 )
@@ -186,7 +186,7 @@ impl DiskListWidget {
         } else if bytes_f64 >= KB {
             format!("{:.1}K", bytes_f64 / KB)
         } else {
-            format!("{}B", bytes)
+            format!("{bytes}B")
         }
     }
 }

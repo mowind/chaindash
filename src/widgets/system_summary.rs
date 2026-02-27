@@ -124,23 +124,6 @@ impl SystemSummaryWidget {
             format!("\u{f1c0} {:.2}%", stats.disk_usage_percent)
         };
 
-        // 确定颜色：高使用率显示警告颜色
-        let _cpu_color = if stats.cpu_usage > 80.0 {
-            Color::Red
-        } else {
-            Color::Indexed(249_u8)
-        };
-        let _memory_color = if stats.memory_usage_percent > 80.0 {
-            Color::Red
-        } else {
-            Color::Indexed(249_u8)
-        };
-        let _disk_color = if stats.has_disk_alerts {
-            Color::Red
-        } else {
-            Color::Indexed(249_u8)
-        };
-
         let rows = vec![Row::StyledData(
             vec![
                 format!(" \u{f085}  {:.2}%", stats.cpu_usage),
@@ -188,27 +171,8 @@ impl SystemSummaryWidget {
         let stats = &self.system_stats;
 
         // 格式化数据
-        let _memory_used_gb = stats.memory_used as f64 / 1024.0 / 1024.0 / 1024.0;
-        let _memory_total_gb = stats.memory_total as f64 / 1024.0 / 1024.0 / 1024.0;
         let network_rx_mb = stats.network_rx as f64 / 1024.0 / 1024.0;
         let network_tx_mb = stats.network_tx as f64 / 1024.0 / 1024.0;
-
-        // 确定颜色：高使用率显示警告颜色
-        let _cpu_color = if stats.cpu_usage > 80.0 {
-            Color::Red
-        } else {
-            Color::Indexed(249_u8)
-        };
-        let _memory_color = if stats.memory_usage_percent > 80.0 {
-            Color::Red
-        } else {
-            Color::Indexed(249_u8)
-        };
-        let _disk_color = if stats.has_disk_alerts {
-            Color::Red
-        } else {
-            Color::Indexed(249_u8)
-        };
 
         let rows = vec![Row::StyledData(
             vec![

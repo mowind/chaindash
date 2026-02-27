@@ -84,10 +84,7 @@ impl NodeWidget {
         )
         .block(block::new(&self.title))
         .header_style(
-            Style::default()
-                .fg(Color::Indexed(249_u8))
-                .bg(Color::Reset)
-                .modifier(Modifier::BOLD),
+            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset).modifier(Modifier::BOLD),
         )
         .widths(&[
             Constraint::Length(20),
@@ -164,10 +161,7 @@ impl NodeWidget {
         )
         .block(block::new(&self.title))
         .header_style(
-            Style::default()
-                .fg(Color::Indexed(249_u8))
-                .bg(Color::Reset)
-                .modifier(Modifier::BOLD),
+            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset).modifier(Modifier::BOLD),
         )
         .widths(&[
             Constraint::Length(20),

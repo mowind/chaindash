@@ -44,7 +44,7 @@ impl TimeWidget {
         update_interval: Ratio<u64>,
         collect_data: SharedData,
     ) -> TimeWidget {
-TimeWidget {
+        TimeWidget {
             title: " Block Time(ms) ".to_string(),
             update_interval,
 
@@ -87,13 +87,11 @@ impl Widget for &TimeWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
-let dataset = vec![
-            Dataset::default()
-                .marker(Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Indexed(70)))
-                .data(&self.data),
-        ];
+        let dataset = vec![Dataset::default()
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Indexed(70)))
+            .data(&self.data)];
 
         Chart::<String, String>::default()
             .block(block::new(&self.title))

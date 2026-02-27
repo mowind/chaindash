@@ -4,7 +4,14 @@ use crate::{
         SharedData,
     },
     opts::Opts,
-    widgets::*,
+    widgets::{
+        DiskListWidget,
+        NodeDetailWidget,
+        NodeWidget,
+        SystemSummaryWidget,
+        TimeWidget,
+        TxsWidget,
+    },
 };
 
 pub struct App {

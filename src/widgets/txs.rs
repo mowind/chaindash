@@ -85,13 +85,11 @@ impl Widget for &TxsWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        let datasets = vec![
-            Dataset::default()
-                .marker(Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Indexed(81)))
-                .data(&self.data),
-        ];
+        let datasets = vec![Dataset::default()
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Indexed(81)))
+            .data(&self.data)];
 
         Chart::<String, String>::default()
             .block(block::new(&self.title))

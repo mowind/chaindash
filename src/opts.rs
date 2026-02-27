@@ -42,4 +42,8 @@ pub struct Opts {
     /// Node ID to show details for
     #[arg(long)]
     pub node_id: Option<String>,
+
+    /// PlatON Explorer API base URL
+    #[arg(long, default_value = "https://scan.platon.network/browser-server")]
+    pub explorer_api_url: String,
 }
