@@ -1,6 +1,7 @@
 mod app;
 mod collect;
 mod draw;
+mod error;
 mod opts;
 mod update;
 mod widgets;
@@ -9,10 +10,10 @@ use std::{
     fs,
     io::{
         self,
-        Write,
     },
     panic,
     path::Path,
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -36,10 +37,11 @@ use crossterm::{
     terminal,
 };
 use draw::draw;
+use error::ChaindashError;
 //use log::{debug, info};
 use num_rational::Ratio;
 use opts::Opts;
-use tui::{
+use ratatui::{
     backend::CrosstermBackend,
     Terminal,
 };
@@ -47,7 +49,7 @@ use update::update_widgets;
 
 const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 
-fn setup_terminal() -> Result<(), Box<dyn std::error::Error>> {
+fn setup_terminal() -> Result<(), ChaindashError> {
     let mut stdout = io::stdout();
 
     execute!(stdout, terminal::EnterAlternateScreen)?;
@@ -80,11 +82,11 @@ fn setup_ui_events() -> Receiver<Event> {
                     // Receiver dropped, exit thread
                     break;
                 }
-            }
+            },
             Err(e) => {
                 log::error!("Failed to read terminal event: {}", e);
                 break;
-            }
+            },
         }
     });
 
@@ -104,7 +106,7 @@ fn setup_ctrl_c() -> Receiver<()> {
 fn setup_logfile(
     logfile_path: &Path,
     debug: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), ChaindashError> {
     let mut level = log::LevelFilter::Warn;
     if debug {
         level = log::LevelFilter::Debug;
@@ -115,11 +117,8 @@ fn setup_logfile(
         fs::create_dir_all(parent)?;
     }
 
-    let logfile = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(logfile_path)?;
+    let logfile =
+        fs::OpenOptions::new().write(true).create(true).truncate(true).open(logfile_path)?;
 
     fern::Dispatch::new()
         .format(|out, message, record| {
@@ -185,8 +184,10 @@ async fn main() {
 
     let mut update_seconds = Ratio::from_integer(0);
 
-    let collector = collect::Collector::new(&opts, app.data.clone()).expect("Failed to parse URL");
-    tokio::spawn(collect::run(collector));
+    let collector =
+        Arc::new(collect::Collector::new(&opts, app.data.clone()).expect("Failed to parse URL"));
+    let collector_clone = Arc::clone(&collector);
+    tokio::spawn(collect::run(collector_clone));
 
     update_widgets(&mut app.widgets, update_seconds);
     draw(&mut terminal, &mut app);
@@ -238,5 +239,6 @@ async fn main() {
         }
     }
 
+    collector.stop();
     cleanup_terminal();
 }

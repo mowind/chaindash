@@ -1,6 +1,10 @@
 #[warn(dead_code)]
 use std::collections::HashMap;
 use std::sync::{
+    atomic::{
+        AtomicBool,
+        Ordering,
+    },
     Arc,
     Mutex,
 };
@@ -40,11 +44,9 @@ use web3::{
 use super::types::NodeInfo;
 use crate::{
     collect::types,
+    error::Result,
     Opts,
 };
-
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
-pub type Result<T> = std::result::Result<T, Error>;
 
 /// `NetworkStats` aggregates the network stats of one container
 #[derive(Serialize, Debug, Deserialize)]
@@ -365,9 +367,10 @@ pub struct Collector {
     disk_refresh_interval: u64,
     node_id: Option<String>,
     explorer_api_url: String,
+    stop_flag: Arc<AtomicBool>,
 }
 
-pub async fn run(collector: Collector) -> Result<()> {
+pub async fn run(collector: Arc<Collector>) -> Result<()> {
     tokio::select! {
         res = collector.run() => {
             res
@@ -515,7 +518,13 @@ impl Collector {
             disk_refresh_interval,
             node_id,
             explorer_api_url,
+            stop_flag: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Signal all spawned tasks to stop gracefully
+    pub fn stop(&self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
     }
 
     pub(crate) async fn run(&self) -> Result<()> {
@@ -528,8 +537,11 @@ impl Collector {
             let name = url.0.clone();
             let url_str = url.1.clone();
             let data = self.data.clone();
+            let stop_flag = self.stop_flag.clone();
             tokio::spawn(async move {
-                if let Err(e) = collect_node_state(name.clone(), url_str.clone(), data).await {
+                if let Err(e) =
+                    collect_node_state(name.clone(), url_str.clone(), data, stop_flag).await
+                {
                     warn!("collect_node_state failed for {}: {}", name, e);
                 }
             });
@@ -538,15 +550,14 @@ impl Collector {
             if self.enable_docker_stats {
                 debug!("enable_docker_stats: {}", self.enable_docker_stats);
                 let host = url.1.clone();
-                let host = host
-                    .replace("ws://", "")
-                    .replace("wss://", "");
+                let host = host.replace("ws://", "").replace("wss://", "");
                 let ip_port: Vec<&str> = host.as_str().split(':').collect();
                 let host = format!("http://{}:{}", ip_port[0], self.docker_port);
                 let data = self.data.clone();
                 let name = url.0.clone();
+                let stop_flag = self.stop_flag.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = collect_node_stats(name.clone(), host, data).await {
+                    if let Err(e) = collect_node_stats(name.clone(), host, data, stop_flag).await {
                         warn!("collect_node_stats failed for {}: {}", name, e);
                     }
                 });
@@ -559,8 +570,11 @@ impl Collector {
             let node_id = node_id.clone();
             let explorer_api_url = self.explorer_api_url.clone();
             let data = self.data.clone();
+            let stop_flag = self.stop_flag.clone();
             tokio::spawn(async move {
-                if let Err(e) = collect_node_detail(node_id, data, explorer_api_url).await {
+                if let Err(e) =
+                    collect_node_detail(node_id, data, explorer_api_url, stop_flag).await
+                {
                     warn!("collect_node_detail failed: {}", e);
                 }
             });
@@ -574,6 +588,7 @@ impl Collector {
             let disk_auto_discovery = self.disk_auto_discovery;
             let disk_alert_threshold = self.disk_alert_threshold;
             let disk_refresh_interval = self.disk_refresh_interval;
+            let stop_flag = self.stop_flag.clone();
             tokio::spawn(async move {
                 if let Err(e) = collect_system_stats(
                     data,
@@ -581,6 +596,7 @@ impl Collector {
                     disk_auto_discovery,
                     disk_alert_threshold,
                     disk_refresh_interval,
+                    stop_flag,
                 )
                 .await
                 {
@@ -590,6 +606,9 @@ impl Collector {
         }
 
         loop {
+            if self.stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
             tokio::select! {
                 Some(head) = sub.next() => {
                     let head = head.unwrap();
@@ -598,7 +617,7 @@ impl Collector {
                     let txs = web3.platon().block_transaction_count(number).await?;
                     let txs = txs.unwrap().as_u64();
 
-                    let mut data = self.data.lock().unwrap();
+                    let mut data = self.data.lock().expect("mutex poisoned - recovering");
                     data.cur_block_number = head.number.unwrap().as_u64();
                     if data.cur_block_time > 0 {
                         data.prev_block_time = data.cur_block_time;
@@ -623,6 +642,7 @@ impl Collector {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -630,17 +650,19 @@ async fn collect_node_state(
     name: String,
     url: String,
     data: SharedData,
+    stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     let ws = WebSocket::new(url.as_str()).await?;
     let web3 = web3::Web3::new(ws.clone());
     let debug = web3.debug();
     let platon = web3.platon();
-    let host = url
-        .replace("ws://", "")
-        .replace("wss://", "");
+    let host = url.replace("ws://", "").replace("wss://", "");
     let mut interval = time::interval(Duration::from_secs(1));
 
     loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
         tokio::select! {
             _ = interval.tick() => {
                 let state = debug.consensus_status().await?;
@@ -657,17 +679,19 @@ async fn collect_node_state(
                     validator: state.validator,
                 };
 
-                let mut data = data.lock().unwrap();
+                let mut data = data.lock().expect("mutex poisoned - recovering");
                 data.states.insert(name.clone(), node);
             }
         }
     }
+    Ok(())
 }
 
 async fn collect_node_stats(
     name: String,
     host: String,
     data: SharedData,
+    stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("name: {}, host: {}", name, host);
     //let id = get_container_id(host.clone(), name.clone()).await?;
@@ -683,6 +707,9 @@ async fn collect_node_stats(
     let mut bufs: Vec<u8> = Vec::new();
 
     loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
         tokio::select! {
             Some(chunk) = resp.body_mut().data() => {
                 let chunk = chunk?;
@@ -701,6 +728,7 @@ async fn collect_node_stats(
             }
         }
     }
+    Ok(())
 }
 
 fn update_node_stats(
@@ -724,7 +752,7 @@ fn update_node_stats(
         blk_write,
     };
 
-    let mut data = data.lock().unwrap();
+    let mut data = data.lock().expect("mutex poisoned - recovering");
     data.stats.insert(name.to_string(), node_stats);
 }
 
@@ -797,6 +825,7 @@ async fn collect_system_stats(
     disk_auto_discovery: bool,
     disk_alert_threshold: f32,
     disk_refresh_interval: u64,
+    stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut system = System::new_all();
     let mut interval = time::interval(Duration::from_secs(disk_refresh_interval));
@@ -811,6 +840,9 @@ async fn collect_system_stats(
     let auto_discovery_enabled = disk_auto_discovery; // 如果启用了自动发现
 
     loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
         tokio::select! {
             _ = interval.tick() => {
                 // 刷新系统信息
@@ -847,6 +879,9 @@ async fn collect_system_stats(
 
                 // 检查是否需要执行自动发现
                 if auto_discovery_enabled && last_discovery_time.elapsed() >= discovery_interval {
+                    // TODO(Phase 4): Use tokio::task::spawn_blocking after tokio 1.x upgrade
+                    // Current: Blocking I/O in async context - reads /proc/mounts
+                    // Impact: May block the async executor briefly (low impact, infrequent operation)
                     match discover_mount_points() {
                         Ok(mount_points) => {
                             discovered_mount_points = mount_points.iter()
@@ -943,7 +978,7 @@ async fn collect_system_stats(
                 };
 
                 // 更新系统统计，保留当前的磁盘索引
-                let mut data = data.lock().unwrap();
+                let mut data = data.lock().expect("mutex poisoned - recovering");
                 let current_index = data.system_stats.current_disk_index;
                 data.system_stats = SystemStats {
                     cpu_usage,
@@ -965,6 +1000,7 @@ async fn collect_system_stats(
             }
         }
     }
+    Ok(())
 }
 
 /// 检查是否为网络文件系统
@@ -1073,6 +1109,7 @@ async fn collect_node_detail(
     node_id: String,
     data: SharedData,
     explorer_api_url: String,
+    stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     use tokio::time::{
         self,
@@ -1096,6 +1133,9 @@ async fn collect_node_detail(
             .await;
 
     loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
         interval.tick().await;
         let _ = timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone()))
             .await;
@@ -1105,6 +1145,7 @@ async fn collect_node_detail(
         )
         .await;
     }
+    Ok(())
 }
 
 async fn fetch_node_ranking(
@@ -1168,7 +1209,7 @@ async fn fetch_node_ranking(
             if node_list_resp.code == 0 {
                 if let Some(data_obj) = node_list_resp.data {
                     let ranking = parse_node_ranking(&data_obj, node_id);
-                    let mut data = data.lock().unwrap();
+                    let mut data = data.lock().expect("mutex poisoned - recovering");
                     if let Some(old_detail) = data.node_detail() {
                         let mut new_detail = old_detail;
                         new_detail.ranking = ranking;
@@ -1182,7 +1223,7 @@ async fn fetch_node_ranking(
                     }
                 } else {
                     warn!("Node detail response missing data field");
-                    let mut data = data.lock().unwrap();
+                    let mut data = data.lock().expect("mutex poisoned - recovering");
                     data.update_node_detail(None);
                 }
             } else {
@@ -1190,13 +1231,13 @@ async fn fetch_node_ranking(
                     "Node detail API returned error code: {}, err_msg: {}",
                     node_list_resp.code, node_list_resp.err_msg
                 );
-                let mut data = data.lock().unwrap();
+                let mut data = data.lock().expect("mutex poisoned - recovering");
                 data.update_node_detail(None);
             }
         },
         Err(e) => {
             warn!("Failed to fetch node detail: {}", e);
-            let mut data = data.lock().unwrap();
+            let mut data = data.lock().expect("mutex poisoned - recovering");
             data.update_node_detail(None);
         },
     }
@@ -1259,14 +1300,14 @@ async fn fetch_node_detail(
             if node_detail_resp.code == 0 {
                 if let Some(detail) = node_detail_resp.data {
                     let mut node_detail = parse_node_detail(&detail);
-                    let mut data = data.lock().unwrap();
+                    let mut data = data.lock().expect("mutex poisoned - recovering");
                     if let Some(old_detail) = data.node_detail() {
                         node_detail.ranking = old_detail.ranking;
                     }
                     data.update_node_detail(Some(node_detail));
                 } else {
                     warn!("Node detail response missing data field");
-                    let mut data = data.lock().unwrap();
+                    let mut data = data.lock().expect("mutex poisoned - recovering");
                     data.update_node_detail(None);
                 }
             } else {
@@ -1274,13 +1315,13 @@ async fn fetch_node_detail(
                     "Node detail API returned error code: {}, err_msg: {}",
                     node_detail_resp.code, node_detail_resp.err_msg
                 );
-                let mut data = data.lock().unwrap();
+                let mut data = data.lock().expect("mutex poisoned - recovering");
                 data.update_node_detail(None);
             }
         },
         Err(e) => {
             warn!("Failed to fetch node detail: {}", e);
-            let mut data = data.lock().unwrap();
+            let mut data = data.lock().expect("mutex poisoned - recovering");
             data.update_node_detail(None);
         },
     }
@@ -1582,5 +1623,23 @@ mod tests {
 
         let result = Collector::new(&opts, data);
         assert!(result.is_ok());
+    }
+}
+
+/// Test-only methods for Data struct
+#[cfg(test)]
+#[cfg(target_family = "unix")]
+impl Data {
+    /// Set disk details for testing disk navigation
+    pub fn set_disk_details_for_test(
+        &mut self,
+        details: Vec<DiskDetail>,
+    ) {
+        self.system_stats.disk_details = details;
+    }
+
+    /// Get current disk index for testing
+    pub fn current_disk_index_for_test(&self) -> usize {
+        self.system_stats.current_disk_index
     }
 }

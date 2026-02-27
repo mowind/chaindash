@@ -1,4 +1,4 @@
-use tui::{
+use ratatui::{
     backend::Backend,
     layout::{
         Constraint,
@@ -23,17 +23,17 @@ pub fn draw<B: Backend>(
     app: &mut App,
 ) {
     terminal
-        .draw(|mut frame| {
+        .draw(|frame| {
             let chunks = Layout::default()
                 .constraints(vec![Constraint::Percentage(100)])
                 .split(frame.size());
-            draw_widgets(&mut frame, &mut app.widgets, app.data.clone(), chunks[0])
+            draw_widgets(frame, &mut app.widgets, app.data.clone(), chunks[0])
         })
         .unwrap();
 }
 
-pub fn draw_widgets<B: Backend>(
-    frame: &mut Frame<B>,
+pub fn draw_widgets(
+    frame: &mut Frame,
     widgets: &mut Widgets,
     data: SharedData,
     area: Rect,
@@ -79,8 +79,8 @@ pub fn draw_widgets<B: Backend>(
 }
 
 #[cfg(target_family = "unix")]
-pub fn draw_system_row_split<B: Backend>(
-    frame: &mut Frame<B>,
+pub fn draw_system_row_split(
+    frame: &mut Frame,
     widgets: &mut Widgets,
     _data: SharedData,
     area: Rect,
@@ -96,8 +96,8 @@ pub fn draw_system_row_split<B: Backend>(
     frame.render_widget(&widgets.disk_list, horizontal_chunks[1]);
 }
 
-pub fn draw_top_row<B: Backend>(
-    frame: &mut Frame<B>,
+pub fn draw_top_row(
+    frame: &mut Frame,
     widgets: &mut Widgets,
     area: Rect,
 ) {
@@ -110,8 +110,8 @@ pub fn draw_top_row<B: Backend>(
     frame.render_widget(&widgets.txs, horizontal_chunks[1]);
 }
 
-pub fn draw_bottom_row<B: Backend>(
-    frame: &mut Frame<B>,
+pub fn draw_bottom_row(
+    frame: &mut Frame,
     widgets: &mut Widgets,
     area: Rect,
 ) {
@@ -123,8 +123,8 @@ pub fn draw_bottom_row<B: Backend>(
     frame.render_widget(&widgets.node, horizontal_chunks[0]);
 }
 
-pub fn draw_bottom_down_row<B: Backend>(
-    frame: &mut Frame<B>,
+pub fn draw_bottom_down_row(
+    frame: &mut Frame,
     widgets: &mut Widgets,
     area: Rect,
 ) {

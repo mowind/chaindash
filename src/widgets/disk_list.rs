@@ -1,5 +1,5 @@
 use num_rational::Ratio;
-use tui::{
+use ratatui::{
     buffer::Buffer,
     layout::{
         Constraint,
@@ -44,7 +44,7 @@ impl DiskListWidget {
 
 impl UpdatableWidget for DiskListWidget {
     fn update(&mut self) {
-        let collect_data = self.collect_data.lock().unwrap();
+        let collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
         self.system_stats = collect_data.system_stats();
     }
 
@@ -81,22 +81,12 @@ impl DiskListWidget {
         if disk_details.is_empty() {
             // 无磁盘数据时显示友好消息
             let title = " Disk Details ".to_string();
-            let rows = vec![Row::StyledData(
-                vec![" No disk mount points found".to_string()].into_iter(),
-                Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
-            )];
+            let row = Row::new(vec![" No disk mount points found"])
+                .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset));
 
-            Table::new([""].iter(), rows.into_iter())
+            Table::new(vec![row], &[Constraint::Length(area.width)])
                 .block(block::new(&title))
-                .header_style(
-                    Style::default()
-                        .fg(Color::Indexed(249_u8))
-                        .bg(Color::Reset)
-                        .modifier(Modifier::BOLD),
-                )
-                .widths(&[Constraint::Length(area.width)])
                 .column_spacing(1)
-                .header_gap(0)
                 .render(area, buf);
             return;
         }
@@ -129,43 +119,43 @@ impl DiskListWidget {
 
             // 如果是当前选中的行，添加高亮
             if index == current_index {
-                style = style.modifier(Modifier::BOLD);
+                style = style.add_modifier(Modifier::BOLD);
             }
 
-            let row = Row::StyledData(
-                vec![
-                    format!(" {}", disk.mount_point),
-                    format!(" {}", total_str),
-                    format!(" {}", used_str),
-                    format!(" {}", available_str),
-                    format!(" {:.1}%", disk.usage_percent),
-                ]
-                .into_iter(),
-                style,
-            );
+            let row = Row::new(vec![
+                format!(" {}", disk.mount_point),
+                format!(" {}", total_str),
+                format!(" {}", used_str),
+                format!(" {}", available_str),
+                format!(" {:.1}%", disk.usage_percent),
+            ])
+            .style(style);
             rows.push(row);
         }
 
         // 动态计算列宽，基于可用空间
         let col_width = area.width / 5; // 5列
-        Table::new(header.iter(), rows.into_iter())
-            .block(block::new(&title))
-            .header_style(
-                Style::default()
-                    .fg(Color::Indexed(249_u8))
-                    .bg(Color::Reset)
-                    .modifier(Modifier::BOLD),
-            )
-            .widths(&[
+        let header_row = Row::new(header.iter().copied()).style(
+            Style::default()
+                .fg(Color::Indexed(249_u8))
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        Table::new(
+            rows,
+            &[
                 Constraint::Length(col_width),
                 Constraint::Length(col_width),
                 Constraint::Length(col_width),
                 Constraint::Length(col_width),
                 Constraint::Length(col_width),
-            ])
-            .column_spacing(1)
-            .header_gap(0)
-            .render(area, buf);
+            ],
+        )
+        .block(block::new(&title))
+        .header(header_row)
+        .column_spacing(1)
+        .render(area, buf);
     }
 
     /// 格式化大小为人类可读格式（类似 df -h）
@@ -188,5 +178,69 @@ impl DiskListWidget {
         } else {
             format!("{bytes}B")
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_family = "unix")]
+mod tests {
+    use super::*;
+    use crate::collect::Data;
+
+    fn create_shared_data() -> SharedData {
+        Data::new()
+    }
+
+    #[test]
+    fn test_disk_list_widget_new() {
+        let shared_data = create_shared_data();
+        let widget = DiskListWidget::new(shared_data);
+        assert_eq!(widget.update_interval, Ratio::from_integer(2));
+    }
+
+    #[test]
+    fn test_disk_list_widget_update_interval() {
+        let shared_data = create_shared_data();
+        let widget = DiskListWidget::new(shared_data);
+        let interval = widget.get_update_interval();
+        assert_eq!(interval, Ratio::from_integer(2));
+    }
+
+    #[test]
+    fn test_disk_list_widget_update_with_empty_data() {
+        let shared_data = create_shared_data();
+        let mut widget = DiskListWidget::new(shared_data);
+        widget.update();
+        assert!(widget.system_stats.disk_details.is_empty());
+    }
+
+    #[test]
+    fn test_disk_list_format_size_bytes() {
+        assert_eq!(DiskListWidget::format_size(512), "512B");
+        assert_eq!(DiskListWidget::format_size(0), "0B");
+    }
+
+    #[test]
+    fn test_disk_list_format_size_kilobytes() {
+        assert_eq!(DiskListWidget::format_size(1024), "1.0K");
+        assert_eq!(DiskListWidget::format_size(1536), "1.5K");
+    }
+
+    #[test]
+    fn test_disk_list_format_size_megabytes() {
+        assert_eq!(DiskListWidget::format_size(1048576), "1.0M");
+        assert_eq!(DiskListWidget::format_size(1572864), "1.5M");
+    }
+
+    #[test]
+    fn test_disk_list_format_size_gigabytes() {
+        assert_eq!(DiskListWidget::format_size(1073741824), "1.0G");
+        assert_eq!(DiskListWidget::format_size(1610612736), "1.5G");
+    }
+
+    #[test]
+    fn test_disk_list_format_size_terabytes() {
+        assert_eq!(DiskListWidget::format_size(1099511627776), "1.0T");
+        assert_eq!(DiskListWidget::format_size(1649267441664), "1.5T");
     }
 }

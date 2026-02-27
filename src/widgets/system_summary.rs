@@ -1,6 +1,6 @@
 use log::debug;
 use num_rational::Ratio;
-use tui::{
+use ratatui::{
     buffer::Buffer,
     layout::{
         Constraint,
@@ -47,7 +47,7 @@ impl SystemSummaryWidget {
 
 impl UpdatableWidget for SystemSummaryWidget {
     fn update(&mut self) {
-        let collect_data = self.collect_data.lock().unwrap();
+        let collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
         self.system_stats = collect_data.system_stats();
         debug!("update system stats: {:?}", &self.system_stats);
     }
@@ -124,29 +124,27 @@ impl SystemSummaryWidget {
             format!("\u{f1c0} {:.2}%", stats.disk_usage_percent)
         };
 
-        let rows = vec![Row::StyledData(
-            vec![
-                format!(" \u{f085}  {:.2}%", stats.cpu_usage),
-                format!("\u{f233} {:.2}%", stats.memory_usage_percent),
-                format!("\u{f02a1} {:.2}GB / {:.2}GB", memory_used_gb, memory_total_gb),
-                disk_usage_text,
-                format!("\u{f0a0f} {:.2}GB / {:.2}GB", disk_used_gb, disk_total_gb),
-                format!("\u{f0045} {:.2} MB/s", network_rx_mb),
-                format!("\u{f005d} {:.2} MB/s", network_tx_mb),
-            ]
-            .into_iter(),
-            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
-        )];
+        let rows = vec![Row::new(vec![
+            format!(" \u{f085}  {:.2}%", stats.cpu_usage),
+            format!("\u{f233} {:.2}%", stats.memory_usage_percent),
+            format!("\u{f02a1} {:.2}GB / {:.2}GB", memory_used_gb, memory_total_gb),
+            disk_usage_text,
+            format!("\u{f0a0f} {:.2}GB / {:.2}GB", disk_used_gb, disk_total_gb),
+            format!("\u{f0045} {:.2} MB/s", network_rx_mb),
+            format!("\u{f005d} {:.2} MB/s", network_tx_mb),
+        ])
+        .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))];
 
-        Table::new(header.iter(), rows.into_iter())
-            .block(block::new(&self.title))
-            .header_style(
-                Style::default()
-                    .fg(Color::Indexed(249_u8))
-                    .bg(Color::Reset)
-                    .modifier(Modifier::BOLD),
-            )
-            .widths(&[
+        let header_row = Row::new(header.iter().copied()).style(
+            Style::default()
+                .fg(Color::Indexed(249_u8))
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        Table::new(
+            rows,
+            &[
                 Constraint::Length(15),
                 Constraint::Length(15),
                 Constraint::Length(25),
@@ -154,10 +152,12 @@ impl SystemSummaryWidget {
                 Constraint::Length(25),
                 Constraint::Length(15),
                 Constraint::Length(15),
-            ])
-            .column_spacing(1)
-            .header_gap(0)
-            .render(area, buf);
+            ],
+        )
+        .block(block::new(&self.title))
+        .header(header_row)
+        .column_spacing(1)
+        .render(area, buf);
     }
 
     /// 渲染紧凑摘要视图（用于小宽度）
@@ -174,35 +174,80 @@ impl SystemSummaryWidget {
         let network_rx_mb = stats.network_rx as f64 / 1024.0 / 1024.0;
         let network_tx_mb = stats.network_tx as f64 / 1024.0 / 1024.0;
 
-        let rows = vec![Row::StyledData(
-            vec![
-                format!(" {:.1}%", stats.cpu_usage),
-                format!(" {:.1}%", stats.memory_usage_percent),
-                format!(" {:.1}%", stats.disk_usage_percent),
-                format!(" {:.1}M", network_rx_mb),
-                format!(" {:.1}M", network_tx_mb),
-            ]
-            .into_iter(),
-            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
-        )];
+        let rows = vec![Row::new(vec![
+            format!(" {:.1}%", stats.cpu_usage),
+            format!(" {:.1}%", stats.memory_usage_percent),
+            format!(" {:.1}%", stats.disk_usage_percent),
+            format!(" {:.1}M", network_rx_mb),
+            format!(" {:.1}M", network_tx_mb),
+        ])
+        .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))];
 
-        Table::new(header.iter(), rows.into_iter())
-            .block(block::new(&self.title))
-            .header_style(
-                Style::default()
-                    .fg(Color::Indexed(249_u8))
-                    .bg(Color::Reset)
-                    .modifier(Modifier::BOLD),
-            )
-            .widths(&[
+        let header_row = Row::new(header.iter().copied()).style(
+            Style::default()
+                .fg(Color::Indexed(249_u8))
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        Table::new(
+            rows,
+            &[
                 Constraint::Length(8),
                 Constraint::Length(8),
                 Constraint::Length(8),
                 Constraint::Length(10),
                 Constraint::Length(10),
-            ])
-            .column_spacing(1)
-            .header_gap(0)
-            .render(area, buf);
+            ],
+        )
+        .block(block::new(&self.title))
+        .header(header_row)
+        .column_spacing(1)
+        .render(area, buf);
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_family = "unix")]
+mod tests {
+    use super::*;
+    use crate::collect::Data;
+
+    fn create_shared_data() -> SharedData {
+        Data::new()
+    }
+
+    #[test]
+    fn test_system_summary_widget_new() {
+        let shared_data = create_shared_data();
+        let widget = SystemSummaryWidget::new(shared_data);
+        assert_eq!(widget.title, " System Stats ");
+    }
+
+    #[test]
+    fn test_system_summary_widget_update_interval() {
+        let shared_data = create_shared_data();
+        let widget = SystemSummaryWidget::new(shared_data);
+        let interval = widget.get_update_interval();
+        assert_eq!(interval, Ratio::from_integer(2));
+    }
+
+    #[test]
+    fn test_system_summary_widget_update_with_empty_data() {
+        let shared_data = create_shared_data();
+        let mut widget = SystemSummaryWidget::new(shared_data);
+        widget.update();
+        assert_eq!(widget.system_stats.cpu_usage, 0.0);
+        assert_eq!(widget.system_stats.memory_used, 0);
+        assert_eq!(widget.system_stats.memory_total, 0);
+    }
+
+    #[test]
+    fn test_system_summary_widget_initial_state() {
+        let shared_data = create_shared_data();
+        let widget = SystemSummaryWidget::new(shared_data);
+        assert_eq!(widget.system_stats.cpu_usage, 0.0);
+        assert_eq!(widget.system_stats.memory_usage_percent, 0.0);
+        assert_eq!(widget.system_stats.disk_usage_percent, 0.0);
     }
 }

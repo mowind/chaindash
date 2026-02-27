@@ -1,5 +1,5 @@
 use num_rational::Ratio;
-use tui::{
+use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{
@@ -64,7 +64,7 @@ impl TxsWidget {
 
 impl UpdatableWidget for TxsWidget {
     fn update(&mut self) {
-        let mut collect_data = self.collect_data.lock().unwrap();
+        let mut collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
         self.cur_num = collect_data.cur_block_number();
         self.cur_txs = collect_data.cur_txs();
         self.max = collect_data.max_txs();
@@ -93,20 +93,19 @@ impl Widget for &TxsWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        let datasets = vec![Dataset::default()
+        let dataset = Dataset::default()
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Indexed(81)))
-            .data(&self.data)];
+            .data(&self.data);
 
-        Chart::<String, String>::default()
+        Chart::new(vec![dataset])
             .block(block::new(&self.title))
             .x_axis(
                 Axis::default()
                     .bounds([self.update_count as f64 - 25.0, self.update_count as f64 + 1.0]),
             )
             .y_axis(Axis::default().bounds([0.0, 50000.0]))
-            .datasets(&datasets)
             .render(area, buf);
 
         buf.set_string(
@@ -129,5 +128,70 @@ impl Widget for &TxsWidget {
             format!("BLOCK {}", self.cur_num),
             Style::default().fg(Color::Indexed(208_u8)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collect::Data;
+
+    fn create_shared_data() -> SharedData {
+        Data::new()
+    }
+
+    #[test]
+    fn test_txs_widget_new() {
+        let shared_data = create_shared_data();
+        let interval = Ratio::from_integer(1);
+        let widget = TxsWidget::new(interval, shared_data);
+        assert_eq!(widget.title, " Block Transactions ");
+    }
+
+    #[test]
+    fn test_txs_widget_update_interval() {
+        let shared_data = create_shared_data();
+        let interval = Ratio::from_integer(5);
+        let widget = TxsWidget::new(interval, shared_data);
+        assert_eq!(widget.get_update_interval(), Ratio::from_integer(5));
+    }
+
+    #[test]
+    fn test_txs_widget_initial_state() {
+        let shared_data = create_shared_data();
+        let interval = Ratio::from_integer(1);
+        let widget = TxsWidget::new(interval, shared_data);
+        assert_eq!(widget.update_count, 0);
+        assert_eq!(widget.cur_num, 0);
+        assert_eq!(widget.cur_txs, 0);
+        assert_eq!(widget.max, 0);
+        assert_eq!(widget.max_block_number, 0);
+        assert_eq!(widget.data, vec![(0.0, 0.0)]);
+    }
+
+    #[test]
+    fn test_txs_widget_update_with_empty_data() {
+        let shared_data = create_shared_data();
+        let interval = Ratio::from_integer(1);
+        let mut widget = TxsWidget::new(interval, shared_data);
+        widget.update();
+        assert_eq!(widget.cur_num, 0);
+        assert_eq!(widget.cur_txs, 0);
+    }
+
+    #[test]
+    fn test_max_data_points_constant() {
+        assert_eq!(MAX_DATA_POINTS, 200);
+    }
+
+    #[test]
+    fn test_txs_widget_data_truncation() {
+        let mut data: Vec<(f64, f64)> = (0..250).map(|i| (i as f64, i as f64)).collect();
+        if data.len() > MAX_DATA_POINTS {
+            data.drain(0..data.len() - MAX_DATA_POINTS);
+        }
+        assert_eq!(data.len(), MAX_DATA_POINTS);
+        assert_eq!(data[0], (50.0, 50.0));
+        assert_eq!(data[199], (249.0, 249.0));
     }
 }

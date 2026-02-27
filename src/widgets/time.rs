@@ -1,5 +1,5 @@
 use num_rational::Ratio;
-use tui::{
+use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{
@@ -60,7 +60,7 @@ impl TimeWidget {
 
 impl UpdatableWidget for TimeWidget {
     fn update(&mut self) {
-        let mut collect_data = self.collect_data.lock().unwrap();
+        let mut collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
         self.cur_num = collect_data.cur_block_number();
         self.cur_time = collect_data.cur_interval();
         self.max_time = collect_data.max_interval();
@@ -87,20 +87,19 @@ impl Widget for &TimeWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        let dataset = vec![Dataset::default()
+        let dataset = Dataset::default()
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Indexed(70)))
-            .data(&self.data)];
+            .data(&self.data);
 
-        Chart::<String, String>::default()
+        Chart::new(vec![dataset])
             .block(block::new(&self.title))
             .x_axis(
                 Axis::default()
                     .bounds([self.update_count as f64 - 25.0, self.update_count as f64 + 1.0]),
             )
             .y_axis(Axis::default().bounds([0.0, 20000.0]))
-            .datasets(&dataset)
             .render(area, buf);
 
         buf.set_string(

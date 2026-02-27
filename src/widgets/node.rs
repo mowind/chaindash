@@ -1,10 +1,7 @@
-use std::{
-    collections::HashMap,
-    iter::IntoIterator,
-};
+use std::collections::HashMap;
 
 use num_rational::Ratio;
-use tui::{
+use ratatui::{
     buffer::Buffer,
     layout::{
         Constraint,
@@ -62,43 +59,45 @@ impl NodeWidget {
         let header =
             [" Name", "Host", "Block", "Epoch", "View", "Committed", "Locked", "QC", "Validator"];
 
+        let rows = self.nodes.iter().map(|node| {
+            Row::new(vec![
+                format!(" {}", &node.name),
+                format!("{}", &node.host),
+                format!("{}", node.current_number),
+                format!("{}", node.epoch),
+                format!("{}", node.view),
+                format!("{}", node.committed),
+                format!("{}", node.locked),
+                format!("{}", node.qc),
+                format!("{}", node.validator),
+            ])
+            .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))
+        });
+
+        let header_row = Row::new(header.iter().copied()).style(
+            Style::default()
+                .fg(Color::Indexed(249_u8))
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        );
+
         Table::new(
-            header.iter(),
-            self.nodes.iter().map(|node| {
-                Row::StyledData(
-                    vec![
-                        format!(" {}", &node.name),
-                        format!("{}", &node.host),
-                        format!("{}", node.current_number),
-                        format!("{}", node.epoch),
-                        format!("{}", node.view),
-                        format!("{}", node.committed),
-                        format!("{}", node.locked),
-                        format!("{}", node.qc),
-                        format!("{}", node.validator),
-                    ]
-                    .into_iter(),
-                    Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
-                )
-            }),
+            rows,
+            &[
+                Constraint::Length(20),
+                Constraint::Length(20),
+                Constraint::Length(u16::max((area.width as i16 - 2 - 100 - 8) as u16, 10)),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+            ],
         )
         .block(block::new(&self.title))
-        .header_style(
-            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset).modifier(Modifier::BOLD),
-        )
-        .widths(&[
-            Constraint::Length(20),
-            Constraint::Length(20),
-            Constraint::Length(u16::max((area.width as i16 - 2 - 100 - 8) as u16, 10)),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-        ])
+        .header(header_row)
         .column_spacing(1)
-        .header_gap(0)
         .render(area, buf);
     }
 
@@ -126,69 +125,71 @@ impl NodeWidget {
             "Disc Write",
         ];
 
+        let rows = self.nodes.iter().map(|node| {
+            let stat = stats.get(&node.name).unwrap_or_default();
+            let mem = stat.mem as f64 / 1024.0 / 1024.0 / 1024.0;
+            let mem_limit = stat.mem_limit as f64 / 1024.0 / 1024.0 / 1024.0;
+            let blk_read = stat.blk_read as f64 / 1024.0 / 1024.0 / 1024.0;
+            let blk_write = stat.blk_write as f64 / 1024.0 / 1024.0 / 1024.0;
+            let rx = stat.network_rx as f64 / 1024.0 / 1024.0 / 1024.0;
+            let tx = stat.network_tx as f64 / 1024.0 / 1024.0 / 1024.0;
+            Row::new(vec![
+                format!(" {}", &node.name),
+                format!("{}", &node.host),
+                format!("{}", node.current_number),
+                format!("{}", node.epoch),
+                format!("{}", node.view),
+                format!("{}", node.committed),
+                format!("{}", node.locked),
+                format!("{}", node.qc),
+                format!("{}", node.validator),
+                format!("{:.2}%", stat.cpu_percent),
+                format!("{:.2}% [{:.2}GB/{:.2}GB]", stat.mem_percent, mem, mem_limit),
+                format!("{:.2}GB", rx),
+                format!("{:.2}GB", tx),
+                format!("{:.2}GB", blk_read),
+                format!("{:.2}GB", blk_write),
+            ])
+            .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))
+        });
+
+        let header_row = Row::new(header.iter().copied()).style(
+            Style::default()
+                .fg(Color::Indexed(249_u8))
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        );
+
         Table::new(
-            header.iter(),
-            self.nodes.iter().map(|node| {
-                let stat = stats.get(&node.name).unwrap_or_default();
-                let mem = stat.mem as f64 / 1024.0 / 1024.0 / 1024.0;
-                let mem_limit = stat.mem_limit as f64 / 1024.0 / 1024.0 / 1024.0;
-                let blk_read = stat.blk_read as f64 / 1024.0 / 1024.0 / 1024.0;
-                let blk_write = stat.blk_write as f64 / 1024.0 / 1024.0 / 1024.0;
-                let rx = stat.network_rx as f64 / 1024.0 / 1024.0 / 1024.0;
-                let tx = stat.network_tx as f64 / 1024.0 / 1024.0 / 1024.0;
-                Row::StyledData(
-                    vec![
-                        format!(" {}", &node.name),
-                        format!("{}", &node.host),
-                        format!("{}", node.current_number),
-                        format!("{}", node.epoch),
-                        format!("{}", node.view),
-                        format!("{}", node.committed),
-                        format!("{}", node.locked),
-                        format!("{}", node.qc),
-                        format!("{}", node.validator),
-                        format!("{:.2}%", stat.cpu_percent),
-                        format!("{:.2}% [{:.2}GB/{:.2}GB]", stat.mem_percent, mem, mem_limit),
-                        format!("{:.2}GB", rx),
-                        format!("{:.2}GB", tx),
-                        format!("{:.2}GB", blk_read),
-                        format!("{:.2}GB", blk_write),
-                    ]
-                    .into_iter(),
-                    Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
-                )
-            }),
+            rows,
+            &[
+                Constraint::Length(20),
+                Constraint::Length(20),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(u16::max((area.width as i16 - 2 - 184 - 7) as u16, 10)),
+                Constraint::Length(10),
+                Constraint::Length(25),
+                Constraint::Length(10),
+                Constraint::Length(11),
+                Constraint::Length(10),
+                Constraint::Length(10),
+            ],
         )
         .block(block::new(&self.title))
-        .header_style(
-            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset).modifier(Modifier::BOLD),
-        )
-        .widths(&[
-            Constraint::Length(20),
-            Constraint::Length(20),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(u16::max((area.width as i16 - 2 - 184 - 7) as u16, 10)),
-            Constraint::Length(10),
-            Constraint::Length(25),
-            Constraint::Length(10),
-            Constraint::Length(11),
-            Constraint::Length(10),
-            Constraint::Length(10),
-        ])
+        .header(header_row)
         .column_spacing(1)
-        .header_gap(0)
         .render(area, buf);
     }
 }
 
 impl UpdatableWidget for NodeWidget {
     fn update(&mut self) {
-        let collect_data = self.collect_data.lock().unwrap();
+        let collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
         self.nodes = collect_data.states();
         self.stats = collect_data.stats();
     }
@@ -213,5 +214,54 @@ impl Widget for &NodeWidget {
         } else {
             self.render_without_stats(area, buf);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collect::Data;
+
+    fn create_shared_data() -> SharedData {
+        Data::new()
+    }
+
+    #[test]
+    fn test_node_widget_new() {
+        let shared_data = create_shared_data();
+        let widget = NodeWidget::new(shared_data);
+        assert_eq!(widget.title, " Nodes ");
+    }
+
+    #[test]
+    fn test_node_widget_update_interval() {
+        let shared_data = create_shared_data();
+        let widget = NodeWidget::new(shared_data);
+        let interval = widget.get_update_interval();
+        assert_eq!(interval, Ratio::from_integer(1));
+    }
+
+    #[test]
+    fn test_node_widget_update_with_empty_data() {
+        let shared_data = create_shared_data();
+        let mut widget = NodeWidget::new(shared_data);
+        widget.update();
+        assert!(widget.nodes.is_empty());
+        assert!(widget.stats.is_empty());
+    }
+
+    #[test]
+    fn test_node_widget_initial_state() {
+        let shared_data = create_shared_data();
+        let widget = NodeWidget::new(shared_data);
+        assert!(widget.nodes.is_empty());
+        assert!(widget.stats.is_empty());
+    }
+
+    #[test]
+    fn test_node_widget_stats_default() {
+        let shared_data = create_shared_data();
+        let widget = NodeWidget::new(shared_data);
+        assert!(widget.stats.get("nonexistent").is_none());
     }
 }
