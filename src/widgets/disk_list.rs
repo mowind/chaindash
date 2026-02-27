@@ -83,14 +83,14 @@ impl DiskListWidget {
             let title = " Disk Details ".to_string();
             let rows = vec![Row::StyledData(
                 vec![" No disk mount points found".to_string()].into_iter(),
-                Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+                Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
             )];
 
             Table::new([""].iter(), rows.into_iter())
                 .block(block::new(&title))
                 .header_style(
                     Style::default()
-                        .fg(Color::Indexed(249 as u8))
+                    .fg(Color::Indexed(249_u8))
                         .bg(Color::Reset)
                         .modifier(Modifier::BOLD),
                 )
@@ -120,7 +120,7 @@ impl DiskListWidget {
             let available_str = Self::format_size(disk.available);
 
             // 确定颜色：告警状态用红色，网络挂载点用黄色，当前选中行高亮
-            let mut style = Style::default().fg(Color::Indexed(249 as u8));
+            let mut style = Style::default().fg(Color::Indexed(249_u8));
             if disk.is_alert {
                 style = style.fg(Color::Red);
             } else if disk.is_network {
@@ -152,7 +152,7 @@ impl DiskListWidget {
             .block(block::new(&title))
             .header_style(
                 Style::default()
-                    .fg(Color::Indexed(249 as u8))
+                    .fg(Color::Indexed(249_u8))
                     .bg(Color::Reset)
                     .modifier(Modifier::BOLD),
             )

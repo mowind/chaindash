@@ -214,7 +214,7 @@ struct Stats {
     networks: Option<HashMap<String, NetworkStats>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConsensusState {
     pub name: String,
     pub host: String,
@@ -374,21 +374,6 @@ pub async fn run(collector: Collector) -> Result<()> {
     }
 }
 
-impl Default for ConsensusState {
-    fn default() -> Self {
-        ConsensusState {
-            name: String::from(""),
-            host: String::default(),
-            current_number: 0,
-            epoch: 0,
-            view: 0,
-            committed: 0,
-            locked: 0,
-            qc: 0,
-            validator: false,
-        }
-    }
-}
 
 impl Default for Data {
     fn default() -> Data {
@@ -462,13 +447,11 @@ impl Data {
     }
 
     pub fn states(&self) -> Vec<ConsensusState> {
-        let states: Vec<ConsensusState> = self.states.iter().map(|(_, val)| val.clone()).collect();
-        states
+        self.states.values().cloned().collect()
     }
 
     pub fn stats(&self) -> HashMap<String, NodeStats> {
-        let stats = self.stats.clone();
-        stats
+        self.stats.clone()
     }
 
     pub fn node_detail(&self) -> Option<NodeDetail> {
@@ -575,7 +558,7 @@ impl Collector {
 
         loop {
             tokio::select! {
-                Some(head) = (&mut sub).next() => {
+                Some(head) = sub.next() => {
                     let head = head.unwrap();
                     let number = head.number.unwrap();
                     let number = BlockId::from(number);
@@ -677,7 +660,7 @@ async fn collect_node_stats(
                     };
                     debug!("stats: {:#?}", stats);
                     //bufs.clear();
-                    let _ = std::mem::replace(&mut bufs, Default::default());
+                    let _ = std::mem::take(&mut bufs);
 
                     update_node_stats(name.as_str(), data.clone(), &stats);
                 }
@@ -691,13 +674,13 @@ fn update_node_stats(
     data: SharedData,
     stats: &Stats,
 ) {
-    let (mem, mem_usage) = calc_mem_usage(&stats);
+    let (mem, mem_usage) = calc_mem_usage(stats);
 
-    let (rx, tx) = get_network_rx_tx(&stats);
-    let (blk_read, blk_write) = get_blk(&stats);
+    let (rx, tx) = get_network_rx_tx(stats);
+    let (blk_read, blk_write) = get_blk(stats);
 
     let node_stats = NodeStats {
-        cpu_percent: calc_cpu_usage(&stats),
+        cpu_percent: calc_cpu_usage(stats),
         mem,
         mem_percent: mem_usage,
         mem_limit: stats.memory_stats.limit,
@@ -746,7 +729,7 @@ fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
 
             (rx, tx)
         },
-        None => return (0, 0),
+        None => (0, 0),
     }
 }
 
@@ -1142,8 +1125,10 @@ async fn fetch_node_ranking(
                                 new_detail.ranking = ranking;
                                 data.update_node_detail(Some(new_detail));
                             } else {
-                                let mut detail = NodeDetail::default();
-                                detail.ranking = ranking;
+                                let detail = NodeDetail {
+                                    ranking,
+                                    ..Default::default()
+                                };
                                 data.update_node_detail(Some(detail));
                             }
                         },
@@ -1296,11 +1281,11 @@ fn parse_node_detail(node_detail: &types::NodeDetail) -> Result<NodeDetail> {
 }
 
 fn parse_node_ranking(
-    data: &Vec<NodeInfo>,
+    data: &[NodeInfo],
     node_id: &str,
 ) -> Result<i32> {
-    match &data.into_iter().find(|ref n| n.node_id == node_id) {
-        Some(ref node) => Ok(node.ranking as i32),
+    match data.iter().find(|n| n.node_id == node_id) {
+        Some(node) => Ok(node.ranking as i32),
         None => Ok(0),
     }
 }

@@ -128,17 +128,17 @@ impl SystemSummaryWidget {
         let _cpu_color = if stats.cpu_usage > 80.0 {
             Color::Red
         } else {
-            Color::Indexed(249 as u8)
+            Color::Indexed(249_u8)
         };
         let _memory_color = if stats.memory_usage_percent > 80.0 {
             Color::Red
         } else {
-            Color::Indexed(249 as u8)
+            Color::Indexed(249_u8)
         };
         let _disk_color = if stats.has_disk_alerts {
             Color::Red
         } else {
-            Color::Indexed(249 as u8)
+            Color::Indexed(249_u8)
         };
 
         let rows = vec![Row::StyledData(
@@ -152,14 +152,14 @@ impl SystemSummaryWidget {
                 format!("\u{f005d} {:.2} MB/s", network_tx_mb),
             ]
             .into_iter(),
-            Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
         )];
 
         Table::new(header.iter(), rows.into_iter())
             .block(block::new(&self.title))
             .header_style(
                 Style::default()
-                    .fg(Color::Indexed(249 as u8))
+                    .fg(Color::Indexed(249_u8))
                     .bg(Color::Reset)
                     .modifier(Modifier::BOLD),
             )
@@ -197,17 +197,17 @@ impl SystemSummaryWidget {
         let _cpu_color = if stats.cpu_usage > 80.0 {
             Color::Red
         } else {
-            Color::Indexed(249 as u8)
+            Color::Indexed(249_u8)
         };
         let _memory_color = if stats.memory_usage_percent > 80.0 {
             Color::Red
         } else {
-            Color::Indexed(249 as u8)
+            Color::Indexed(249_u8)
         };
         let _disk_color = if stats.has_disk_alerts {
             Color::Red
         } else {
-            Color::Indexed(249 as u8)
+            Color::Indexed(249_u8)
         };
 
         let rows = vec![Row::StyledData(
@@ -219,14 +219,14 @@ impl SystemSummaryWidget {
                 format!(" {:.1}M", network_tx_mb),
             ]
             .into_iter(),
-            Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+            Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
         )];
 
         Table::new(header.iter(), rows.into_iter())
             .block(block::new(&self.title))
             .header_style(
                 Style::default()
-                    .fg(Color::Indexed(249 as u8))
+                    .fg(Color::Indexed(249_u8))
                     .bg(Color::Reset)
                     .modifier(Modifier::BOLD),
             )

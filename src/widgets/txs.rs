@@ -43,7 +43,7 @@ impl TxsWidget {
     ) -> TxsWidget {
         let update_count = 0;
 
-        let txs_widgets = TxsWidget {
+        TxsWidget {
             title: " Block Transactions ".to_string(),
             update_interval,
 
@@ -55,9 +55,7 @@ impl TxsWidget {
             max: 0,
             max_block_number: 0,
             data: vec![(0.0, 0.0)],
-        };
-
-        txs_widgets
+        }
     }
 }
 
@@ -87,14 +85,13 @@ impl Widget for &TxsWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        let mut datasets = Vec::new();
-        datasets.push(
+        let datasets = vec![
             Dataset::default()
                 .marker(Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Indexed(81)))
                 .data(&self.data),
-        );
+        ];
 
         Chart::<String, String>::default()
             .block(block::new(&self.title))
@@ -110,21 +107,21 @@ impl Widget for &TxsWidget {
             area.x + 2,
             area.y + 1,
             format!("CUR   {}", self.cur_txs),
-            Style::default().fg(Color::Indexed(81 as u8)),
+            Style::default().fg(Color::Indexed(81_u8)),
         );
 
         buf.set_string(
             area.x + 2,
             area.y + 2,
             format!("MAX   {} #{}", self.max, self.max_block_number),
-            Style::default().fg(Color::Indexed(141 as u8)),
+            Style::default().fg(Color::Indexed(141_u8)),
         );
 
         buf.set_string(
             area.x + 2,
             area.y + 3,
             format!("BLOCK {}", self.cur_num),
-            Style::default().fg(Color::Indexed(208 as u8)),
+            Style::default().fg(Color::Indexed(208_u8)),
         );
     }
 }

@@ -84,7 +84,7 @@ impl NodeDetailWidget {
                         rewards_str,
                     ]
                     .into_iter(),
-                    Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+                    Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
                 )]
             },
             None => {
@@ -107,7 +107,7 @@ impl NodeDetailWidget {
                         "".to_string(),
                     ]
                     .into_iter(),
-                    Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+                    Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
                 )]
             },
         };
@@ -116,7 +116,7 @@ impl NodeDetailWidget {
             .block(block::new(&self.title))
             .header_style(
                 Style::default()
-                    .fg(Color::Indexed(249 as u8))
+                    .fg(Color::Indexed(249_u8))
                     .bg(Color::Reset)
                     .modifier(Modifier::BOLD),
             )

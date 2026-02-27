@@ -194,20 +194,14 @@ async fn main() {
                                 _ => {}
                             }
                         } else if key_event.modifiers == KeyModifiers::SHIFT {
-                            match key_event.code {
-                                KeyCode::Tab => {
-                                    // Shift+Tab键切换到上一个磁盘
-                                    app.handle_shift_tab_key();
-                                    draw(&mut terminal, &mut app);
-                                }
-                                _ => {}
+                            if key_event.code == KeyCode::Tab {
+                                // Shift+Tab键切换到上一个磁盘
+                                app.handle_shift_tab_key();
+                                draw(&mut terminal, &mut app);
                             }
                         } else if key_event.modifiers == KeyModifiers::CONTROL {
-                            match key_event.code {
-                                KeyCode::Char('c') => {
-                                    break
-                                }
-                                _ => {}
+                            if let KeyCode::Char('c') = key_event.code {
+                                break
                             }
                         }
                     }

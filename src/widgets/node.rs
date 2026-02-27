@@ -78,14 +78,14 @@ impl NodeWidget {
                         format!("{}", node.validator),
                     ]
                     .into_iter(),
-                    Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+                    Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
                 )
             }),
         )
         .block(block::new(&self.title))
         .header_style(
             Style::default()
-                .fg(Color::Indexed(249 as u8))
+                .fg(Color::Indexed(249_u8))
                 .bg(Color::Reset)
                 .modifier(Modifier::BOLD),
         )
@@ -158,14 +158,14 @@ impl NodeWidget {
                         format!("{:.2}GB", blk_write),
                     ]
                     .into_iter(),
-                    Style::default().fg(Color::Indexed(249 as u8)).bg(Color::Reset),
+                    Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset),
                 )
             }),
         )
         .block(block::new(&self.title))
         .header_style(
             Style::default()
-                .fg(Color::Indexed(249 as u8))
+                .fg(Color::Indexed(249_u8))
                 .bg(Color::Reset)
                 .modifier(Modifier::BOLD),
         )
