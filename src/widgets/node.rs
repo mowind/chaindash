@@ -262,6 +262,6 @@ mod tests {
     fn test_node_widget_stats_default() {
         let shared_data = create_shared_data();
         let widget = NodeWidget::new(shared_data);
-        assert!(widget.stats.get("nonexistent").is_none());
+        assert!(!widget.stats.contains_key("nonexistent"));
     }
 }

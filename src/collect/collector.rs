@@ -1,4 +1,3 @@
-#[warn(dead_code)]
 use std::collections::HashMap;
 use std::sync::{
     atomic::{
@@ -22,10 +21,6 @@ use log::{
     debug,
     warn,
 };
-use serde::{
-    Deserialize,
-    Serialize,
-};
 #[cfg(target_family = "unix")]
 use sysinfo::{
     Disks,
@@ -43,178 +38,13 @@ use web3::{
 
 use super::types::NodeInfo;
 use crate::{
-    collect::types,
+    collect::{
+        docker_stats::Stats,
+        types,
+    },
     error::Result,
     Opts,
 };
-
-/// `NetworkStats` aggregates the network stats of one container
-#[derive(Serialize, Debug, Deserialize)]
-struct NetworkStats {
-    // Bytes received. Windows and Linux.
-    rx_bytes: u64,
-    // Packets received. Windows and Linux.
-    rx_packets: Option<u64>,
-    // Received errors. Not used on Windows.
-    rx_errors: u64,
-    // Incoming packets dropped. Windows and Linux.
-    rx_dropped: u64,
-    // Bytes sent. Windows and Linux.
-    tx_bytes: u64,
-    // Packets sent. Windows and Linux.
-    tx_packets: Option<u64>,
-    // Sent errors. Not used on Windows.
-    tx_errors: u64,
-    // Outgoing packets dropped. Windows and Linux.
-    tx_dropped: u64,
-    // Endpoint ID. Not used on Linux.
-    endpoint_id: Option<String>,
-    // Instance ID. Not used on Linux.
-    instance_id: Option<String>,
-}
-
-/// `PidsStats` contains the stats of a container's pids
-#[derive(Serialize, Deserialize, Debug)]
-struct PidsStats {
-    current: Option<u64>,
-    limit: Option<u64>,
-}
-
-/// `BlkioStatEntry` is one small entity to store a piece of Blkio stats.
-/// Not used on Windows.
-#[derive(Serialize, Deserialize, Debug)]
-struct BlkioStatEntry {
-    major: u64,
-    minor: u64,
-    op: String,
-    value: u64,
-}
-
-/// `BlkioStats` stores All IO service stats for data read and write.
-/// This is a Linux speicfic structure as the differences between expressing
-/// block I/O on Windows and Linux are sufficiently significant to make little
-/// sense attempting to morph into a combined structure.
-#[derive(Serialize, Deserialize, Debug)]
-struct BlkioStats {
-    // number of bytes transferred to and from the block device.
-    io_service_bytes_recursive: Vec<BlkioStatEntry>,
-    io_serviced_recursive: Vec<BlkioStatEntry>,
-    io_queue_recursive: Vec<BlkioStatEntry>,
-    io_wait_time_recursive: Vec<BlkioStatEntry>,
-    io_merged_recursive: Vec<BlkioStatEntry>,
-    io_time_recursive: Vec<BlkioStatEntry>,
-    sectors_recursive: Vec<BlkioStatEntry>,
-}
-
-/// `StorageStats` is the disk I/O stats for read/write on Windows.
-#[derive(Serialize, Deserialize, Debug)]
-struct StorageStats {
-    read_count_normalized: Option<u64>,
-    read_size_bytes: Option<u64>,
-    write_count_normalized: Option<u64>,
-    write_size_bytes: Option<u64>,
-}
-
-/// `CPUUsage` stores **All CPU** stats aggregated since container inception.
-#[derive(Serialize, Deserialize, Debug)]
-struct CPUUsage {
-    // Total CPU time consumed.
-    // Units: nanoseconds (Linux)
-    // Units: 100's of nanoseconds (Windows)
-    total_usage: u64,
-
-    // Total CPU time consumed per core (Linux). Not used on Windows.
-    // Units: nanoseconds.
-    percpu_usage: Option<Vec<u64>>,
-
-    // Time spent by tasks of the cgroup in kernel mode (Linux).
-    // Time spent by all container processes in kernel mod (Windows).
-    // Units: nanoseconds (Linux).
-    // Units: 100's of nanoseconds (Windows). Not populated for Hyper-V containers.
-    usage_in_kernelmode: u64,
-
-    // Time spent by tasks of the cgroup in user mode (Linux).
-    // Time spent by all container processes in user mode (Windows).
-    // Units: nanoseconds (Linux).
-    // Units: 100's of nanoseconds (Windows). Not populated for Hyper-V Containers
-    usage_in_usermode: u64,
-}
-
-/// `ThrottlingData` stores CPU throttling stats of one running container.
-/// Not used on Windows.
-#[derive(Serialize, Deserialize, Debug)]
-struct ThrottlingData {
-    // Number of periods with throttling active.
-    periods: u64,
-    throttled_periods: u64,
-    throtted_time: Option<u64>,
-}
-
-/// `CPUStats` aggregated and wraps all CPU related info of container.
-#[derive(Serialize, Deserialize, Debug)]
-struct CPUStats {
-    // CPU Usages. Linux and Windows.
-    cpu_usage: CPUUsage,
-
-    // System Usage. Linux only.
-    system_cpu_usage: Option<u64>,
-
-    // Online CPUs. Linux only.
-    online_cups: Option<u32>,
-
-    // Throttling Data. Linux only.
-    throttling_data: Option<ThrottlingData>,
-}
-
-/// `MemoryStats` aggregates all memory stats since container inception on Linux.
-/// Windows returns stats for commit and private working set only.
-#[derive(Serialize, Deserialize, Debug)]
-struct MemoryStats {
-    // current res_counter usage of memory.
-    usage: u64,
-    // maximum usage ever recorded.
-    max_usage: u64,
-    // all the stats exported via memory.stat.
-    stats: HashMap<String, u64>,
-    // number of times memory usage hits limits.
-    failcnt: Option<u64>,
-    limit: u64,
-
-    // committed bytes
-    commit: Option<u64>,
-    // peak committed bytes
-    #[serde(rename = "commitpeakbytes")]
-    commit_peak_bytes: Option<u64>,
-    // private working set
-    #[serde(rename = "privatedworkingset")]
-    privated_working_set: Option<u64>,
-}
-
-/// `Stats` is Ultimate struct aggregating all types of states of one container.
-#[derive(Serialize, Deserialize, Debug)]
-struct Stats {
-    name: Option<String>,
-    id: Option<String>,
-
-    // Common stats
-    read: String,
-    preread: String,
-
-    // Linux specific stats, not populated on Windows
-    pids_stats: Option<PidsStats>,
-    blkio_stats: Option<BlkioStats>,
-
-    // Windwos specific stats, not populated on Linux.
-    num_procs: Option<u32>,
-    storage_stats: Option<StorageStats>,
-
-    // Shared stats
-    cpu_stats: CPUStats,
-    precpu_stats: CPUStats,
-    memory_stats: MemoryStats,
-
-    networks: Option<HashMap<String, NetworkStats>>,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct ConsensusState {
@@ -430,15 +260,11 @@ impl Data {
     }
 
     pub fn txns_and_clear(&mut self) -> Vec<u64> {
-        let txns = self.txns.clone();
-        self.txns.clear();
-        txns
+        std::mem::take(&mut self.txns)
     }
 
     pub fn intervals_and_clear(&mut self) -> Vec<u64> {
-        let intervals = self.intervals.clone();
-        self.intervals.clear();
-        intervals
+        std::mem::take(&mut self.intervals)
     }
 
     pub fn cur_interval(&self) -> u64 {
@@ -1370,6 +1196,17 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::collect::docker_stats::{
+        BlkioStats,
+        CPUStats,
+        CPUUsage,
+        MemoryStats,
+        NetworkStats,
+        PidsStats,
+        Stats,
+        StorageStats,
+        ThrottlingData,
+    };
 
     /// Helper to create a minimal Stats struct for testing
     fn create_test_stats(

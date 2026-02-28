@@ -93,14 +93,14 @@ fn setup_ui_events() -> Receiver<Event> {
     receiver
 }
 
-fn setup_ctrl_c() -> Receiver<()> {
+fn setup_ctrl_c() -> Result<Receiver<()>, ChaindashError> {
     let (sender, receiver) = unbounded();
     ctrlc::set_handler(move || {
         let _ = sender.send(());
     })
-    .unwrap();
+    .map_err(|e| ChaindashError::Ctrlc(e.to_string()))?;
 
-    receiver
+    Ok(receiver)
 }
 
 fn setup_logfile(
@@ -145,7 +145,7 @@ fn setup_panic_hook() {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), ChaindashError> {
     better_panic::install();
 
     let opts: Opts = Opts::parse();
@@ -164,7 +164,8 @@ async fn main() {
 
     setup_panic_hook();
 
-    let mut terminal = Terminal::new(backend).unwrap();
+    let mut terminal = Terminal::new(backend)
+        .map_err(|e| ChaindashError::Terminal(e.to_string()))?;
 
     if let Err(e) = setup_terminal() {
         eprintln!("Failed to setup terminal: {e}");
@@ -180,7 +181,7 @@ async fn main() {
     ));
 
     let ui_event_receiver = setup_ui_events();
-    let ctrl_c_events = setup_ctrl_c();
+    let ctrl_c_events = setup_ctrl_c()?;
 
     let mut update_seconds = Ratio::from_integer(0);
 
@@ -203,7 +204,11 @@ async fn main() {
                 draw(&mut terminal, &mut app);
             }
             recv(ui_event_receiver) -> message => {
-                match message.unwrap() {
+                let Ok(event) = message else {
+                    // Channel closed, exit gracefully
+                    break;
+                };
+                match event {
                     Event::Key(key_event) => {
                         if key_event.modifiers.is_empty() {
                             match key_event.code {
@@ -241,4 +246,6 @@ async fn main() {
 
     collector.stop();
     cleanup_terminal();
+
+    Ok(())
 }

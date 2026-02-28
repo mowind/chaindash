@@ -1,4 +1,5 @@
 mod collector;
+mod docker_stats;
 mod types;
 
 // Exported for tests (Unix only)

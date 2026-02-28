@@ -20,6 +20,12 @@ pub enum ChaindashError {
     #[error("Logger error: {0}")]
     Logger(String),
 
+    #[error("Ctrl+C handler error: {0}")]
+    Ctrlc(String),
+
+    #[error("Terminal error: {0}")]
+    Terminal(String),
+
     #[error("{0}")]
     Other(String),
 }
