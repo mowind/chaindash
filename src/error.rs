@@ -5,8 +5,8 @@ pub enum ChaindashError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Web3 error: {0}")]
-    Web3(#[from] web3::Error),
+    #[error("RPC error: {0}")]
+    Rpc(String),
 
     #[error("HTTP error: {0}")]
     Http(String),
@@ -14,8 +14,8 @@ pub enum ChaindashError {
     #[error("JSON parse error: {0}")]
     Json(String),
 
-    #[error("URI parse error: {0}")]
-    UriParse(String),
+
+
 
     #[error("Logger error: {0}")]
     Logger(String),
@@ -30,15 +30,17 @@ pub enum ChaindashError {
     Other(String),
 }
 
-impl From<hyper::Error> for ChaindashError {
-    fn from(err: hyper::Error) -> Self {
-        ChaindashError::Http(err.to_string())
+impl From<alloy::transports::TransportError> for ChaindashError {
+    fn from(err: alloy::transports::TransportError) -> Self {
+        ChaindashError::Rpc(err.to_string())
     }
 }
 
-impl From<hyper::http::uri::InvalidUri> for ChaindashError {
-    fn from(err: hyper::http::uri::InvalidUri) -> Self {
-        ChaindashError::UriParse(err.to_string())
+
+
+impl From<reqwest::Error> for ChaindashError {
+    fn from(err: reqwest::Error) -> Self {
+        ChaindashError::Http(err.to_string())
     }
 }
 

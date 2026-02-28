@@ -8,15 +8,7 @@ use std::sync::{
     Mutex,
 };
 
-use hyper::{
-    body::{
-        Buf,
-        HttpBody as _,
-    },
-    client::HttpConnector,
-    Client,
-};
-use hyper_tls::HttpsConnector;
+
 use log::{
     debug,
     warn,
@@ -30,20 +22,16 @@ use tokio::time::{
     self,
     Duration,
 };
-use web3::{
-    futures::StreamExt,
-    transports::WebSocket,
-    types::BlockId,
-};
+use alloy::providers::{ext::DebugApi, Provider, ProviderBuilder, WsConnect};
+
+use alloy::eips::BlockNumberOrTag;
+use futures::StreamExt;
 
 use super::types::NodeInfo;
 use crate::{
-    collect::{
-        docker_stats::Stats,
-        types,
-    },
-    error::Result,
-    Opts,
+    collect::{docker_stats::Stats, types},
+    error::{ChaindashError, Result},
+    opts::Opts,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -316,7 +304,7 @@ impl Collector {
         let urls: Vec<&str> = opts.url.as_str().split(',').collect();
         let urls: Vec<(String, String)> = urls
             .into_iter()
-            .map(|url| {
+            .map(|url: &str| {
                 let v: Vec<&str> = url.split('@').collect();
                 if v.len() < 2 {
                     return Err(format!("invalid url format: {url}").into());
@@ -354,9 +342,13 @@ impl Collector {
     }
 
     pub(crate) async fn run(&self) -> Result<()> {
-        let ws = WebSocket::new(self.urls[0].1.as_str()).await?;
-        let web3 = web3::Web3::new(ws.clone());
-        let mut sub = web3.platon_subscribe().subscribe_new_heads().await?;
+        let ws = WsConnect::new(self.urls[0].1.as_str());
+        let provider = ProviderBuilder::new().connect_ws(ws).await?;
+        let sub = provider.subscribe_blocks().await?;
+        let mut sub = sub.into_stream();
+
+
+
 
         let urls = self.urls.clone();
         for url in urls {
@@ -437,25 +429,22 @@ impl Collector {
             }
             tokio::select! {
                 Some(head) = sub.next() => {
-                    let head = head.unwrap();
-                    let number = head.number.unwrap();
-                    let number = BlockId::from(number);
-                    let txs = web3.platon().block_transaction_count(number).await?;
-                    let txs = txs.unwrap().as_u64();
+                let number = BlockNumberOrTag::Number(head.number);
+                let block = provider.get_block_by_number(number).full().await?;
+                let txs = block.map(|b| b.transactions.len() as u64).unwrap_or(0);
 
                     let mut data = self.data.lock().expect("mutex poisoned - recovering");
-                    data.cur_block_number = head.number.unwrap().as_u64();
+                    data.cur_block_number = head.number;
                     if data.cur_block_time > 0 {
                         data.prev_block_time = data.cur_block_time;
                     }
-                    data.cur_block_time = head.timestamp.as_u64();
+                    data.cur_block_time = head.timestamp;
                     data.cur_txs = txs;
 
                     if txs > data.max_txs {
                         data.max_txs = txs;
-                        data.max_txs_block_number = head.number.unwrap().as_u64();
+                        data.max_txs_block_number = head.number;
                     }
-
                     data.txns.push(txs);
                     if data.prev_block_time > 0 {
                         let interval = data.cur_block_time - data.prev_block_time;
@@ -478,10 +467,8 @@ async fn collect_node_state(
     data: SharedData,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
-    let ws = WebSocket::new(url.as_str()).await?;
-    let web3 = web3::Web3::new(ws.clone());
-    let debug = web3.debug();
-    let platon = web3.platon();
+    let ws = WsConnect::new(url.as_str());
+    let provider = ProviderBuilder::new().connect_ws(ws).await?;
     let host = url.replace("ws://", "").replace("wss://", "");
     let mut interval = time::interval(Duration::from_secs(1));
 
@@ -491,18 +478,27 @@ async fn collect_node_state(
         }
         tokio::select! {
             _ = interval.tick() => {
-                let state = debug.consensus_status().await?;
-                let cur_number = platon.block_number().await?;
+                let status = provider.debug_consensus_status().await?;
+                let cur_number = provider.get_block_number().await?;
+                let epoch = status.state.view.as_ref().map(|v| v.epoch).unwrap_or(0);
+                let view = status.state.view.as_ref().and_then(|v| v.view_number).unwrap_or(0);
+                let committed = status.state.highest_commit_block.as_ref().map(|b| b.number).unwrap_or(0);
+                let locked = status.state.highest_lock_block.as_ref().map(|b| b.number).unwrap_or(0);
+                let qc = status.state.highest_qc_block.as_ref().map(|b| b.number).unwrap_or(0);
+                let validator = status.validator;
+
+
+
                 let node = ConsensusState{
                     name: name.clone(),
                     host: host.clone(),
-                    current_number: cur_number.as_u64(),
-                    epoch: state.state.view.epoch,
-                    view: state.state.view.view,
-                    committed: state.state.committed.number,
-                    locked: state.state.locked.number,
-                    qc: state.state.qc.number,
-                    validator: state.validator,
+                    current_number: cur_number,
+                    epoch: epoch,
+                    view: view,
+                    committed: committed,
+                    locked: locked,
+                    qc: qc,
+                    validator: validator,
                 };
 
                 let mut data = data.lock().expect("mutex poisoned - recovering");
@@ -520,39 +516,35 @@ async fn collect_node_stats(
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("name: {}, host: {}", name, host);
-    //let id = get_container_id(host.clone(), name.clone()).await?;
 
-    let client = Client::new();
-    let uri = format!("{host}/containers/{name}/stats").parse()?;
-    debug!("uri: {:?}", uri);
+    let client = reqwest::Client::new();
+    let url = format!("{host}/containers/{name}/stats");
+    debug!("url: {:?}", url);
 
-    let mut resp = client.get(uri).await?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await?;
+
     debug!("status: {:?}", resp.status());
-    debug!("headers: {:#?}", resp.headers());
 
-    let mut bufs: Vec<u8> = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = resp.bytes_stream();
 
-    loop {
+    while let Some(chunk_result) = stream.next().await {
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
-        tokio::select! {
-            Some(chunk) = resp.body_mut().data() => {
-                let chunk = chunk?;
-                if chunk.has_remaining() {
-                    bufs.append(&mut chunk.to_vec());
-                    let stats: Stats = match serde_json::from_slice(bufs.as_ref()) {
-                        Err(_) => continue,
-                        Ok(stats) => stats,
-                    };
-                    debug!("stats: {:#?}", stats);
-                    //bufs.clear();
-                    let _ = std::mem::take(&mut bufs);
+        let chunk = chunk_result.map_err(|e: reqwest::Error| ChaindashError::Http(e.to_string()))?;
+        buf.extend_from_slice(&chunk);
+        let stats: Stats = match serde_json::from_slice(buf.as_ref()) {
+            Err(_) => continue,
+            Ok(stats) => stats,
+        };
+        debug!("stats: {:#?}", stats);
+        let _ = std::mem::take(&mut buf);
 
-                    update_node_stats(name.as_str(), data.clone(), &stats);
-                }
-            }
-        }
+        update_node_stats(name.as_str(), data.clone(), &stats);
     }
     Ok(())
 }
@@ -945,8 +937,7 @@ async fn collect_node_detail(
 
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-    let https = HttpsConnector::new();
-    let client = hyper::Client::builder().build(https);
+    let client = reqwest::Client::new();
     let url = format!("{explorer_api_url}/staking/stakingDetails");
     let mut interval = time::interval(Duration::from_secs(10)); // 每10秒更新一次
     let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
@@ -974,55 +965,37 @@ async fn collect_node_detail(
     Ok(())
 }
 
-async fn fetch_node_ranking(
-    client: &hyper::Client<hyper_tls::HttpsConnector<HttpConnector>>,
-    url: &str,
-    node_id: &str,
-    data: SharedData,
-) {
-    use hyper::{
-        Body,
-        Method,
-        Request,
-    };
-
+async fn fetch_node_ranking(client: &reqwest::Client, url: &str, node_id: &str, data: SharedData) {
     let body = serde_json::json!({
         "pageNo": 1,
         "pageSize": 300,
         "key": "",
         "queryStatus": "all",
     });
-    let req = match Request::builder()
-        .method(Method::POST)
-        .uri(url)
+
+    debug!("fetch node ranking: {}", url);
+
+    match client
+        .post(url)
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .json(&body)
+        .send()
+        .await
     {
-        Ok(req) => req,
-        Err(e) => {
-            warn!("Failed to build request: {}", e);
-            return;
-        },
-    };
-
-    debug!("fetch node ranking: {:?}", req);
-
-    match client.request(req).await {
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
                 warn!("Node detail API returned error status: {}", resp.status());
                 return;
             }
-            let body_bytes = match hyper::body::to_bytes(resp.into_body()).await {
+            let body_bytes = match resp.bytes().await {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     warn!("Failed to read response body: {}", e);
                     return;
                 },
             };
-            let node_list_resp: types::NodeListResponse = match serde_json::from_slice(&body_bytes)
-            {
+            let node_list_resp: types::NodeListResponse = match serde_json::from_slice(&body_bytes) {
                 Ok(node_list_resp) => node_list_resp,
                 Err(e) => {
                     warn!("Failed to parse response JSON: {}", e);
@@ -1069,58 +1042,40 @@ async fn fetch_node_ranking(
     }
 }
 
-async fn fetch_node_detail(
-    client: &hyper::Client<hyper_tls::HttpsConnector<HttpConnector>>,
-    url: &str,
-    node_id: &str,
-    data: SharedData,
-) {
-    use hyper::{
-        Body,
-        Method,
-        Request,
-    };
-
+async fn fetch_node_detail(client: &reqwest::Client, url: &str, node_id: &str, data: SharedData) {
     let body = serde_json::json!({
         "nodeId": node_id
     });
-    let req = match Request::builder()
-        .method(Method::POST)
-        .uri(url)
+
+    debug!("fetch node detail: {}", url);
+
+    match client
+        .post(url)
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .json(&body)
+        .send()
+        .await
     {
-        Ok(req) => req,
-        Err(e) => {
-            warn!("Failed to build request: {}", e);
-            return;
-        },
-    };
-
-    debug!("fetch node detail: {:?}", req);
-
-    match client.request(req).await {
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
                 warn!("Node detail API returned error status: {}", resp.status());
                 return;
             }
-            let body_bytes = match hyper::body::to_bytes(resp.into_body()).await {
+            let body_bytes = match resp.bytes().await {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     warn!("Failed to read response body: {}", e);
                     return;
                 },
             };
-            let node_detail_resp: types::NodeDetailRespose =
-                match serde_json::from_slice(&body_bytes) {
-                    Ok(node_detail_resp) => node_detail_resp,
-                    Err(e) => {
-                        warn!("Failed to parse response JSON: {}", e);
-                        return;
-                    },
-                };
+            let node_detail_resp: types::NodeDetailRespose = match serde_json::from_slice(&body_bytes) {
+                Ok(node_detail_resp) => node_detail_resp,
+                Err(e) => {
+                    warn!("Failed to parse response JSON: {}", e);
+                    return;
+                },
+            };
             debug!("Node detail response: {:?}", node_detail_resp);
 
             if node_detail_resp.code == 0 {
