@@ -1,0 +1,194 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1772247490848,
+  "projectRoot": "/home/wangjw/repos/rust/chaindash",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Rust",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Cargo.toml"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "cargo",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "cargo build",
+    "testCommand": "cargo test",
+    "lintCommand": "cargo clippy",
+    "devCommand": "cargo run",
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "src",
+      "tests"
+    ],
+    "gitBranches": {
+      "defaultBranch": "master",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 6,
+      "lastAccessed": 1772247490833,
+      "keyFiles": [
+        "app.rs",
+        "draw.rs",
+        "error.rs",
+        "main.rs",
+        "opts.rs"
+      ]
+    },
+    "target": {
+      "path": "target",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1772247490837,
+      "keyFiles": [
+        "CACHEDIR.TAG"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 0,
+      "lastAccessed": 1772247490839,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/collect/collector.rs",
+      "accessCount": 25,
+      "lastAccessed": 1772250879713,
+      "type": "file"
+    },
+    {
+      "path": "src/main.rs",
+      "accessCount": 18,
+      "lastAccessed": 1772250043092,
+      "type": "file"
+    },
+    {
+      "path": "src",
+      "accessCount": 10,
+      "lastAccessed": 1772249381479,
+      "type": "directory"
+    },
+    {
+      "path": "src/widgets/node.rs",
+      "accessCount": 5,
+      "lastAccessed": 1772249350674,
+      "type": "file"
+    },
+    {
+      "path": "src/error.rs",
+      "accessCount": 4,
+      "lastAccessed": 1772249901523,
+      "type": "file"
+    },
+    {
+      "path": "src/collect/mod.rs",
+      "accessCount": 3,
+      "lastAccessed": 1772250535218,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1772247748831,
+      "type": "file"
+    },
+    {
+      "path": "src/app.rs",
+      "accessCount": 2,
+      "lastAccessed": 1772249363826,
+      "type": "file"
+    },
+    {
+      "path": "src/draw.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247618570,
+      "type": "file"
+    },
+    {
+      "path": "src/opts.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247618582,
+      "type": "file"
+    },
+    {
+      "path": "src/widgets/mod.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247629500,
+      "type": "file"
+    },
+    {
+      "path": "src/widgets/node_detail.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247629574,
+      "type": "file"
+    },
+    {
+      "path": "src/widgets/system_summary.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247629584,
+      "type": "file"
+    },
+    {
+      "path": "src/widgets/disk_list.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247629616,
+      "type": "file"
+    },
+    {
+      "path": "src/widgets/txs.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247639941,
+      "type": "file"
+    },
+    {
+      "path": "tests/common/mod.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247639989,
+      "type": "file"
+    },
+    {
+      "path": "src/widgets/time.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772247639993,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.lock",
+      "accessCount": 1,
+      "lastAccessed": 1772248989181,
+      "type": "file"
+    },
+    {
+      "path": "src/collect/docker_stats.rs",
+      "accessCount": 1,
+      "lastAccessed": 1772250509277,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

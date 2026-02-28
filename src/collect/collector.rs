@@ -349,7 +349,6 @@ impl Collector {
 
 
 
-
         let urls = self.urls.clone();
         for url in urls {
             let name = url.0.clone();
@@ -488,17 +487,16 @@ async fn collect_node_state(
                 let validator = status.validator;
 
 
-
                 let node = ConsensusState{
                     name: name.clone(),
                     host: host.clone(),
                     current_number: cur_number,
-                    epoch: epoch,
-                    view: view,
-                    committed: committed,
-                    locked: locked,
-                    qc: qc,
-                    validator: validator,
+                    epoch,
+                    view,
+                    committed,
+                    locked,
+                    qc,
+                    validator,
                 };
 
                 let mut data = data.lock().expect("mutex poisoned - recovering");
@@ -697,22 +695,24 @@ async fn collect_system_stats(
 
                 // 检查是否需要执行自动发现
                 if auto_discovery_enabled && last_discovery_time.elapsed() >= discovery_interval {
-                    // TODO(Phase 4): Use tokio::task::spawn_blocking after tokio 1.x upgrade
-                    // Current: Blocking I/O in async context - reads /proc/mounts
-                    // Impact: May block the async executor briefly (low impact, infrequent operation)
-                    match discover_mount_points() {
-                        Ok(mount_points) => {
+                    // 使用 spawn_blocking 包装阻塞 I/O 操作，避免阻塞异步执行器
+                    match tokio::task::spawn_blocking(discover_mount_points).await {
+                        Ok(Ok(mount_points)) => {
                             discovered_mount_points = mount_points.iter()
-                            .map(|mp| mp.mount_point.clone())
-                            .collect();
+                                .map(|mp| mp.mount_point.clone())
+                                .collect();
                             debug!("自动发现 {} 个挂载点: {:?}", discovered_mount_points.len(), discovered_mount_points);
                             last_discovery_time = std::time::Instant::now();
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("自动发现挂载点失败: {}", e);
+                        }
+                        Err(e) => {
+                            warn!("spawn_blocking 任务失败: {}", e);
                         }
                     }
                 }
+
 
                 // 调试：打印当前状态
                 debug!("disk_mount_points: {:?}", disk_mount_points);
