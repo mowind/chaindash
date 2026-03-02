@@ -6,6 +6,20 @@ use ratatui::{
         Layout,
         Rect,
     },
+    style::{
+        Color,
+        Modifier,
+        Style,
+    },
+    text::{
+        Line,
+        Span,
+    },
+    widgets::{
+        Block,
+        Borders,
+        Paragraph,
+    },
     Frame,
     Terminal,
 };
@@ -15,7 +29,11 @@ use crate::{
         App,
         Widgets,
     },
-    collect::SharedData,
+    collect::{
+        SharedData,
+        StatusLevel,
+        StatusMessage,
+    },
     error::{
         ChaindashError,
         Result,
@@ -26,16 +44,64 @@ pub fn draw<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
+    let status_message = {
+        let data = app.data.lock().expect("mutex poisoned - recovering");
+        data.status_message()
+    };
+
     terminal
         .draw(|frame| {
-            let chunks = Layout::default()
-                .constraints(vec![Constraint::Percentage(100)])
+            let mut constraints = Vec::new();
+            if status_message.is_some() {
+                constraints.push(Constraint::Length(3));
+            }
+            constraints.push(Constraint::Min(1));
+
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
                 .split(frame.size());
-            draw_widgets(frame, &mut app.widgets, app.data.clone(), chunks[0])
+
+            let mut main_area_index = 0;
+            if let Some(ref message) = status_message {
+                draw_status_bar(frame, layout[0], message);
+                main_area_index = 1;
+            }
+
+            draw_widgets(frame, &mut app.widgets, app.data.clone(), layout[main_area_index])
         })
         .map_err(|err| ChaindashError::Terminal(err.to_string()))?;
 
     Ok(())
+}
+
+fn draw_status_bar(
+    frame: &mut Frame,
+    area: Rect,
+    message: &StatusMessage,
+) {
+    let (label, color) = match message.level {
+        StatusLevel::Info => ("INFO", Color::Cyan),
+        StatusLevel::Warn => ("WARN", Color::Yellow),
+        StatusLevel::Error => ("ERROR", Color::Red),
+    };
+
+    let content = Line::from(vec![
+        Span::styled(
+            format!("[{label}] "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(message.text.as_str(), Style::default().fg(color)),
+    ]);
+
+    let paragraph = Paragraph::new(content).block(
+        Block::default()
+            .title("Status")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(color)),
+    );
+
+    frame.render_widget(paragraph, area);
 }
 
 pub fn draw_widgets(

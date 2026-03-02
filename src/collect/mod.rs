@@ -17,4 +17,6 @@ pub use self::collector::{
     Data,
     NodeStats,
     SharedData,
+    StatusLevel,
+    StatusMessage,
 };

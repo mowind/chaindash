@@ -106,6 +106,19 @@ impl Default for &NodeStats {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub level: StatusLevel,
+    pub text: String,
+}
+
 #[derive(Debug)]
 pub struct Data {
     cur_block_number: u64,
@@ -123,6 +136,7 @@ pub struct Data {
 
     states: HashMap<String, ConsensusState>,
     stats: HashMap<String, NodeStats>,
+    status_message: Option<StatusMessage>,
     node_detail: Option<NodeDetail>,
     #[cfg(target_family = "unix")]
     system_stats: SystemStats,
@@ -186,6 +200,24 @@ impl Default for SystemStats {
 
 pub type SharedData = Arc<Mutex<Data>>;
 
+fn record_status_message(
+    data: &SharedData,
+    level: StatusLevel,
+    text: impl Into<String>,
+) {
+    let mut data = data.lock().expect("mutex poisoned - recovering");
+    data.set_status_message(level, text);
+}
+
+fn warn_with_status(
+    data: &SharedData,
+    message: impl Into<String>,
+) {
+    let message = message.into();
+    warn!("{message}");
+    record_status_message(data, StatusLevel::Warn, message);
+}
+
 #[derive(Debug)]
 pub struct Collector {
     data: SharedData,
@@ -224,6 +256,7 @@ impl Default for Data {
             max_interval: 0,
             states: HashMap::new(),
             stats: HashMap::new(),
+            status_message: None,
             node_detail: None,
             #[cfg(target_family = "unix")]
             system_stats: SystemStats::default(),
@@ -306,6 +339,25 @@ impl Data {
         new_index: usize,
     ) {
         self.system_stats.current_disk_index = new_index;
+    }
+
+    pub fn status_message(&self) -> Option<StatusMessage> {
+        self.status_message.clone()
+    }
+
+    pub fn set_status_message(
+        &mut self,
+        level: StatusLevel,
+        text: impl Into<String>,
+    ) {
+        self.status_message = Some(StatusMessage {
+            level,
+            text: text.into(),
+        });
+    }
+
+    pub fn clear_status_message(&mut self) {
+        self.status_message = None;
     }
 }
 
@@ -537,6 +589,11 @@ async fn collect_node_stats(
         match client.get(&url).send().await {
             Ok(resp) => {
                 debug!("status: {:?}", resp.status());
+                record_status_message(
+                    &data,
+                    StatusLevel::Info,
+                    format!("Docker stats stream connected for {name}"),
+                );
                 let mut buf: Vec<u8> = Vec::new();
                 let mut stream = resp.bytes_stream();
                 let mut stream_error = false;
@@ -550,10 +607,12 @@ async fn collect_node_stats(
                         Ok(chunk) => chunk,
                         Err(err) => {
                             stream_error = true;
-                            warn!(
+                            let message = format!(
                                 "Docker stats stream error for {name} at {host}: {err}. Retrying \
                                  soon"
                             );
+                            warn!("{message}");
+                            record_status_message(&data, StatusLevel::Warn, message);
                             break;
                         },
                     };
@@ -575,13 +634,19 @@ async fn collect_node_stats(
 
                 backoff = Duration::from_secs(1);
                 if stream_error {
-                    warn!("Docker stats stream closed unexpectedly for {name}, reconnecting...");
+                    let message = format!(
+                        "Docker stats stream closed unexpectedly for {name}, reconnecting..."
+                    );
+                    warn!("{message}");
+                    record_status_message(&data, StatusLevel::Warn, message);
                 } else {
                     debug!("Docker stats stream for {name} ended, reconnecting...");
                 }
             },
             Err(err) => {
-                warn!("Failed to fetch docker stats for {name}: {err}");
+                let message = format!("Failed to fetch docker stats for {name}: {err}");
+                warn!("{message}");
+                record_status_message(&data, StatusLevel::Warn, message);
             },
         }
 
@@ -589,7 +654,9 @@ async fn collect_node_stats(
             break;
         }
 
-        warn!("Retrying docker stats for {name} in {:?}", backoff);
+        let retry_message = format!("Retrying docker stats for {name} in {:?}", backoff);
+        warn!("{retry_message}");
+        record_status_message(&data, StatusLevel::Warn, retry_message);
         time::sleep(backoff).await;
         backoff = (backoff * 2).min(max_backoff);
     }
@@ -740,10 +807,10 @@ async fn collect_system_stats(
                             last_discovery_time = std::time::Instant::now();
                         }
                         Ok(Err(e)) => {
-                            warn!("自动发现挂载点失败: {}", e);
+                            warn_with_status(&data, format!("自动发现挂载点失败: {}", e));
                         }
                         Err(e) => {
-                            warn!("spawn_blocking 任务失败: {}", e);
+                            warn_with_status(&data, format!("spawn_blocking 任务失败: {}", e));
                         }
                     }
                 }
@@ -770,6 +837,7 @@ async fn collect_system_stats(
 
                 let mount_points_clone = mount_points_to_monitor.clone();
                 let system_clone = Arc::clone(&system);
+                let snapshot_task_data = data.clone();
                 let snapshot = tokio::task::spawn_blocking(move || {
                     let mut system = system_clone.lock().expect("system mutex poisoned");
                     system.refresh_all();
@@ -863,7 +931,9 @@ async fn collect_system_stats(
                 })
                 .await
                 .map_err(|err| {
-                    ChaindashError::Other(format!("system stats task join error: {}", err))
+                    let message = format!("system stats task join error: {}", err);
+                    record_status_message(&snapshot_task_data, StatusLevel::Error, message.clone());
+                    ChaindashError::Other(message)
                 })?;
 
                 let network_rx_rate = snapshot.network_rx_total.saturating_sub(prev_network_rx);
@@ -871,25 +941,61 @@ async fn collect_system_stats(
                 prev_network_rx = snapshot.network_rx_total;
                 prev_network_tx = snapshot.network_tx_total;
 
-                let mut data = data.lock().expect("mutex poisoned - recovering");
-                let current_index = data.system_stats.current_disk_index;
-                data.system_stats = SystemStats {
-                    cpu_usage: snapshot.cpu_usage,
-                    memory_used: snapshot.memory_used,
-                    memory_total: snapshot.memory_total,
-                    memory_usage_percent: snapshot.memory_usage_percent,
-                    network_rx: network_rx_rate,
-                    network_tx: network_tx_rate,
-                    disk_used: snapshot.disk_used,
-                    disk_total: snapshot.disk_total,
-                    disk_usage_percent: snapshot.disk_usage_percent,
-                    disk_details: snapshot.disk_details,
-                    current_disk_index: current_index,
-                    alert_threshold: disk_alert_threshold,
-                    has_disk_alerts: snapshot.has_disk_alerts,
-                    auto_discovery_enabled,
+                let SystemSnapshot {
+                    cpu_usage,
+                    memory_used,
+                    memory_total,
+                    memory_usage_percent,
+                    disk_used,
+                    disk_total,
+                    disk_usage_percent,
+                    disk_details,
+                    has_disk_alerts,
+                    ..
+                } = snapshot;
+
+                let alert_disk_count = disk_details.iter().filter(|disk| disk.is_alert).count();
+
+                let previous_alert = {
+                    let mut data_guard = data.lock().expect("mutex poisoned - recovering");
+                    let previous_alert = data_guard.system_stats.has_disk_alerts;
+                    let current_index = data_guard.system_stats.current_disk_index;
+                    data_guard.system_stats = SystemStats {
+                        cpu_usage,
+                        memory_used,
+                        memory_total,
+                        memory_usage_percent,
+                        network_rx: network_rx_rate,
+                        network_tx: network_tx_rate,
+                        disk_used,
+                        disk_total,
+                        disk_usage_percent,
+                        disk_details,
+                        current_disk_index: current_index,
+                        alert_threshold: disk_alert_threshold,
+                        has_disk_alerts,
+                        auto_discovery_enabled,
+                    };
+                    debug!("collect system stats: {:?}", &data_guard.system_stats);
+                    previous_alert
                 };
-                debug!("collect system stats: {:?}", &data.system_stats);
+
+                if has_disk_alerts && !previous_alert {
+                    warn_with_status(
+                        &data,
+                        format!(
+                            "{} disk(s) exceed {:.0}% usage threshold",
+                            alert_disk_count,
+                            disk_alert_threshold,
+                        ),
+                    );
+                } else if !has_disk_alerts && previous_alert {
+                    record_status_message(
+                        &data,
+                        StatusLevel::Info,
+                        "Disk usage returned below alert threshold",
+                    );
+                }
             }
             else => break,
         }
@@ -1022,13 +1128,19 @@ async fn collect_node_detail(
     if let Err(err) =
         timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await
     {
-        warn!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+        warn_with_status(
+            &data,
+            format!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
+        );
     }
     if let Err(err) =
         timeout(REQUEST_TIMEOUT, fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()))
             .await
     {
-        warn!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+        warn_with_status(
+            &data,
+            format!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
+        );
     }
 
     loop {
@@ -1039,7 +1151,10 @@ async fn collect_node_detail(
         if let Err(err) =
             timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await
         {
-            warn!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+            warn_with_status(
+                &data,
+                format!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
+            );
         }
         if let Err(err) = timeout(
             REQUEST_TIMEOUT,
@@ -1047,7 +1162,10 @@ async fn collect_node_detail(
         )
         .await
         {
-            warn!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+            warn_with_status(
+                &data,
+                format!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
+            );
         }
     }
     Ok(())
@@ -1072,13 +1190,16 @@ async fn fetch_node_ranking(
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
-                warn!("Node detail API returned error status: {}", resp.status());
+                warn_with_status(
+                    &data,
+                    format!("Node detail API returned error status: {}", resp.status()),
+                );
                 return;
             }
             let body_bytes = match resp.bytes().await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    warn!("Failed to read response body: {}", e);
+                    warn_with_status(&data, format!("Failed to read response body: {}", e));
                     return;
                 },
             };
@@ -1086,7 +1207,7 @@ async fn fetch_node_ranking(
             {
                 Ok(node_list_resp) => node_list_resp,
                 Err(e) => {
-                    warn!("Failed to parse response JSON: {}", e);
+                    warn_with_status(&data, format!("Failed to parse response JSON: {}", e));
                     return;
                 },
             };
@@ -1109,21 +1230,24 @@ async fn fetch_node_ranking(
                         data.update_node_detail(Some(detail));
                     }
                 } else {
-                    warn!("Node detail response missing data field");
+                    warn_with_status(&data, "Node detail response missing data field");
                     let mut data = data.lock().expect("mutex poisoned - recovering");
                     data.update_node_detail(None);
                 }
             } else {
-                warn!(
-                    "Node detail API returned error code: {}, err_msg: {}",
-                    node_list_resp.code, node_list_resp.err_msg
+                warn_with_status(
+                    &data,
+                    format!(
+                        "Node detail API returned error code: {}, err_msg: {}",
+                        node_list_resp.code, node_list_resp.err_msg
+                    ),
                 );
                 let mut data = data.lock().expect("mutex poisoned - recovering");
                 data.update_node_detail(None);
             }
         },
         Err(e) => {
-            warn!("Failed to fetch node detail: {}", e);
+            warn_with_status(&data, format!("Failed to fetch node detail: {}", e));
             let mut data = data.lock().expect("mutex poisoned - recovering");
             data.update_node_detail(None);
         },
@@ -1146,13 +1270,16 @@ async fn fetch_node_detail(
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
-                warn!("Node detail API returned error status: {}", resp.status());
+                warn_with_status(
+                    &data,
+                    format!("Node detail API returned error status: {}", resp.status()),
+                );
                 return;
             }
             let body_bytes = match resp.bytes().await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    warn!("Failed to read response body: {}", e);
+                    warn_with_status(&data, format!("Failed to read response body: {}", e));
                     return;
                 },
             };
@@ -1160,7 +1287,7 @@ async fn fetch_node_detail(
                 match serde_json::from_slice(&body_bytes) {
                     Ok(node_detail_resp) => node_detail_resp,
                     Err(e) => {
-                        warn!("Failed to parse response JSON: {}", e);
+                        warn_with_status(&data, format!("Failed to parse response JSON: {}", e));
                         return;
                     },
                 };
@@ -1175,21 +1302,24 @@ async fn fetch_node_detail(
                     }
                     data.update_node_detail(Some(node_detail));
                 } else {
-                    warn!("Node detail response missing data field");
+                    warn_with_status(&data, "Node detail response missing data field");
                     let mut data = data.lock().expect("mutex poisoned - recovering");
                     data.update_node_detail(None);
                 }
             } else {
-                warn!(
-                    "Node detail API returned error code: {}, err_msg: {}",
-                    node_detail_resp.code, node_detail_resp.err_msg
+                warn_with_status(
+                    &data,
+                    format!(
+                        "Node detail API returned error code: {}, err_msg: {}",
+                        node_detail_resp.code, node_detail_resp.err_msg
+                    ),
                 );
                 let mut data = data.lock().expect("mutex poisoned - recovering");
                 data.update_node_detail(None);
             }
         },
         Err(e) => {
-            warn!("Failed to fetch node detail: {}", e);
+            warn_with_status(&data, format!("Failed to fetch node detail: {}", e));
             let mut data = data.lock().expect("mutex poisoned - recovering");
             data.update_node_detail(None);
         },
