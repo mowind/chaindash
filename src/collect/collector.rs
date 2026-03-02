@@ -1,14 +1,25 @@
-use std::collections::HashMap;
-use std::sync::{
-    atomic::{
-        AtomicBool,
-        Ordering,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+        Arc,
+        Mutex,
     },
-    Arc,
-    Mutex,
 };
 
-
+use alloy::{
+    eips::BlockNumberOrTag,
+    providers::{
+        ext::DebugApi,
+        Provider,
+        ProviderBuilder,
+        WsConnect,
+    },
+};
+use futures::StreamExt;
 use log::{
     debug,
     warn,
@@ -22,15 +33,17 @@ use tokio::time::{
     self,
     Duration,
 };
-use alloy::providers::{ext::DebugApi, Provider, ProviderBuilder, WsConnect};
-
-use alloy::eips::BlockNumberOrTag;
-use futures::StreamExt;
 
 use super::types::NodeInfo;
 use crate::{
-    collect::{docker_stats::Stats, types},
-    error::{ChaindashError, Result},
+    collect::{
+        docker_stats::Stats,
+        types,
+    },
+    error::{
+        ChaindashError,
+        Result,
+    },
     opts::Opts,
 };
 
@@ -347,8 +360,6 @@ impl Collector {
         let sub = provider.subscribe_blocks().await?;
         let mut sub = sub.into_stream();
 
-
-
         let urls = self.urls.clone();
         for url in urls {
             let name = url.0.clone();
@@ -519,31 +530,70 @@ async fn collect_node_stats(
     let url = format!("{host}/containers/{name}/stats");
     debug!("url: {:?}", url);
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await?;
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(30);
 
-    debug!("status: {:?}", resp.status());
+    while !stop_flag.load(Ordering::Relaxed) {
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                debug!("status: {:?}", resp.status());
+                let mut buf: Vec<u8> = Vec::new();
+                let mut stream = resp.bytes_stream();
+                let mut stream_error = false;
 
-    let mut buf: Vec<u8> = Vec::new();
-    let mut stream = resp.bytes_stream();
+                while let Some(chunk_result) = stream.next().await {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
 
-    while let Some(chunk_result) = stream.next().await {
+                    let chunk = match chunk_result {
+                        Ok(chunk) => chunk,
+                        Err(err) => {
+                            stream_error = true;
+                            warn!(
+                                "Docker stats stream error for {name} at {host}: {err}. Retrying \
+                                 soon"
+                            );
+                            break;
+                        },
+                    };
+
+                    buf.extend_from_slice(&chunk);
+                    let stats: Stats = match serde_json::from_slice(buf.as_ref()) {
+                        Err(_) => continue,
+                        Ok(stats) => stats,
+                    };
+                    debug!("stats: {:#?}", stats);
+                    let _ = std::mem::take(&mut buf);
+
+                    update_node_stats(name.as_str(), data.clone(), &stats);
+                }
+
+                if stop_flag.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+
+                backoff = Duration::from_secs(1);
+                if stream_error {
+                    warn!("Docker stats stream closed unexpectedly for {name}, reconnecting...");
+                } else {
+                    debug!("Docker stats stream for {name} ended, reconnecting...");
+                }
+            },
+            Err(err) => {
+                warn!("Failed to fetch docker stats for {name}: {err}");
+            },
+        }
+
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
-        let chunk = chunk_result.map_err(|e: reqwest::Error| ChaindashError::Http(e.to_string()))?;
-        buf.extend_from_slice(&chunk);
-        let stats: Stats = match serde_json::from_slice(buf.as_ref()) {
-            Err(_) => continue,
-            Ok(stats) => stats,
-        };
-        debug!("stats: {:#?}", stats);
-        let _ = std::mem::take(&mut buf);
 
-        update_node_stats(name.as_str(), data.clone(), &stats);
+        warn!("Retrying docker stats for {name} in {:?}", backoff);
+        time::sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
     }
+
     Ok(())
 }
 
@@ -643,17 +693,31 @@ async fn collect_system_stats(
     disk_refresh_interval: u64,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut system = System::new_all();
+    let system = Arc::new(Mutex::new(System::new_all()));
     let mut interval = time::interval(Duration::from_secs(disk_refresh_interval));
 
     let mut prev_network_rx: u64 = 0;
     let mut prev_network_tx: u64 = 0;
 
-    // 自动发现相关状态
     let mut last_discovery_time = std::time::Instant::now();
-    let discovery_interval = Duration::from_secs(5); // 5秒检测间隔
+    let discovery_interval = Duration::from_secs(5);
     let mut discovered_mount_points: Vec<String> = Vec::new();
-    let auto_discovery_enabled = disk_auto_discovery; // 如果启用了自动发现
+    let auto_discovery_enabled = disk_auto_discovery;
+
+    #[derive(Debug)]
+    struct SystemSnapshot {
+        cpu_usage: f32,
+        memory_used: u64,
+        memory_total: u64,
+        memory_usage_percent: f32,
+        network_rx_total: u64,
+        network_tx_total: u64,
+        disk_used: u64,
+        disk_total: u64,
+        disk_usage_percent: f32,
+        disk_details: Vec<DiskDetail>,
+        has_disk_alerts: bool,
+    }
 
     loop {
         if stop_flag.load(Ordering::Relaxed) {
@@ -661,47 +725,18 @@ async fn collect_system_stats(
         }
         tokio::select! {
             _ = interval.tick() => {
-                // 刷新系统信息
-                system.refresh_all();
-
-                // 获取CPU使用率
-                let cpu_usage = system.global_cpu_info().cpu_usage();
-
-                // 获取内存使用情况
-                let memory_used = system.used_memory();
-                let memory_total = system.total_memory();
-                let memory_usage_percent = if memory_total > 0 {
-                    (memory_used as f32 / memory_total as f32) * 100.0
-                } else {
-                    0.0
-                };
-
-                // 获取网络使用情况
-                let networks = sysinfo::Networks::new_with_refreshed_list();
-                let mut network_rx: u64 = 0;
-                let mut network_tx: u64 = 0;
-
-                for (_, network) in &networks {
-                    network_rx += network.total_received();
-                    network_tx += network.total_transmitted();
-                }
-
-                // 计算网络速率（字节/秒）
-                let network_rx_rate = network_rx.saturating_sub(prev_network_rx);
-                let network_tx_rate = network_tx.saturating_sub(prev_network_tx);
-
-                prev_network_rx = network_rx;
-                prev_network_tx = network_tx;
-
-                // 检查是否需要执行自动发现
                 if auto_discovery_enabled && last_discovery_time.elapsed() >= discovery_interval {
-                    // 使用 spawn_blocking 包装阻塞 I/O 操作，避免阻塞异步执行器
                     match tokio::task::spawn_blocking(discover_mount_points).await {
                         Ok(Ok(mount_points)) => {
-                            discovered_mount_points = mount_points.iter()
+                            discovered_mount_points = mount_points
+                                .iter()
                                 .map(|mp| mp.mount_point.clone())
                                 .collect();
-                            debug!("自动发现 {} 个挂载点: {:?}", discovered_mount_points.len(), discovered_mount_points);
+                            debug!(
+                                "自动发现 {} 个挂载点: {:?}",
+                                discovered_mount_points.len(),
+                                discovered_mount_points
+                            );
                             last_discovery_time = std::time::Instant::now();
                         }
                         Ok(Err(e)) => {
@@ -713,15 +748,11 @@ async fn collect_system_stats(
                     }
                 }
 
-
-                // 调试：打印当前状态
                 debug!("disk_mount_points: {:?}", disk_mount_points);
                 debug!("auto_discovery_enabled: {}", auto_discovery_enabled);
                 debug!("discovered_mount_points: {:?}", discovered_mount_points);
 
-                // 确定要监控的挂载点列表：自动发现的 + 用户指定的
                 let mount_points_to_monitor = if auto_discovery_enabled {
-                    // 合并自动发现的和用户指定的挂载点（去重）
                     let mut all_points = discovered_mount_points.clone();
                     for point in &disk_mount_points {
                         if !all_points.contains(point) {
@@ -737,18 +768,45 @@ async fn collect_system_stats(
 
                 debug!("最终监控的挂载点: {:?}", mount_points_to_monitor);
 
-                // 获取磁盘使用情况
-                let disks = Disks::new_with_refreshed_list();
-                let mut disk_used: u64 = 0;
-                let mut disk_total: u64 = 0;
-                let mut disk_details = Vec::new();
-                let mut has_disk_alerts = false;
+                let mount_points_clone = mount_points_to_monitor.clone();
+                let system_clone = Arc::clone(&system);
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    let mut system = system_clone.lock().expect("system mutex poisoned");
+                    system.refresh_all();
 
-                for disk in disks.list() {
-                    let mount_point = disk.mount_point().to_string_lossy();
+                    let cpu_usage = system.global_cpu_info().cpu_usage();
+                    let memory_used = system.used_memory();
+                    let memory_total = system.total_memory();
+                    let memory_usage_percent = if memory_total > 0 {
+                        (memory_used as f32 / memory_total as f32) * 100.0
+                    } else {
+                        0.0
+                    };
 
-                    // 使用自动发现或命令行参数过滤
-                    if mount_points_to_monitor.contains(&mount_point.to_string()) {
+                    drop(system);
+
+                    let networks = sysinfo::Networks::new_with_refreshed_list();
+                    let mut network_rx_total: u64 = 0;
+                    let mut network_tx_total: u64 = 0;
+                    for (_, network) in &networks {
+                        network_rx_total =
+                            network_rx_total.saturating_add(network.total_received());
+                        network_tx_total =
+                            network_tx_total.saturating_add(network.total_transmitted());
+                    }
+
+                    let disks = Disks::new_with_refreshed_list();
+                    let mut disk_used: u64 = 0;
+                    let mut disk_total: u64 = 0;
+                    let mut disk_details = Vec::new();
+                    let mut has_disk_alerts = false;
+
+                    for disk in disks.list() {
+                        let mount_point = disk.mount_point().to_string_lossy().to_string();
+                        if !mount_points_clone.contains(&mount_point) {
+                            continue;
+                        }
+
                         let total = disk.total_space();
                         let available = disk.available_space();
                         let used = total.saturating_sub(available);
@@ -758,21 +816,16 @@ async fn collect_system_stats(
                             0.0
                         };
 
-                        // 获取文件系统类型和设备名称
                         let filesystem = disk.file_system().to_string_lossy().to_string();
                         let device = disk.name().to_string_lossy().to_string();
-
-                        // 检查是否为网络文件系统
                         let is_network = is_network_filesystem(&filesystem);
-
-                        // 检查告警状态
                         let is_alert = usage_percent >= disk_alert_threshold;
                         if is_alert {
                             has_disk_alerts = true;
                         }
 
                         disk_details.push(DiskDetail {
-                            mount_point: mount_point.to_string(),
+                            mount_point,
                             filesystem,
                             total,
                             used,
@@ -787,35 +840,58 @@ async fn collect_system_stats(
                         disk_total = disk_total.saturating_add(total);
                         disk_used = disk_used.saturating_add(used);
                     }
-                }
 
-                let disk_usage_percent = if disk_total > 0 {
-                    (disk_used as f32 / disk_total as f32) * 100.0
-                } else {
-                    0.0
-                };
+                    let disk_usage_percent = if disk_total > 0 {
+                        (disk_used as f32 / disk_total as f32) * 100.0
+                    } else {
+                        0.0
+                    };
 
-                // 更新系统统计，保留当前的磁盘索引
+                    SystemSnapshot {
+                        cpu_usage,
+                        memory_used,
+                        memory_total,
+                        memory_usage_percent,
+                        network_rx_total,
+                        network_tx_total,
+                        disk_used,
+                        disk_total,
+                        disk_usage_percent,
+                        disk_details,
+                        has_disk_alerts,
+                    }
+                })
+                .await
+                .map_err(|err| {
+                    ChaindashError::Other(format!("system stats task join error: {}", err))
+                })?;
+
+                let network_rx_rate = snapshot.network_rx_total.saturating_sub(prev_network_rx);
+                let network_tx_rate = snapshot.network_tx_total.saturating_sub(prev_network_tx);
+                prev_network_rx = snapshot.network_rx_total;
+                prev_network_tx = snapshot.network_tx_total;
+
                 let mut data = data.lock().expect("mutex poisoned - recovering");
                 let current_index = data.system_stats.current_disk_index;
                 data.system_stats = SystemStats {
-                    cpu_usage,
-                    memory_used,
-                    memory_total,
-                    memory_usage_percent,
+                    cpu_usage: snapshot.cpu_usage,
+                    memory_used: snapshot.memory_used,
+                    memory_total: snapshot.memory_total,
+                    memory_usage_percent: snapshot.memory_usage_percent,
                     network_rx: network_rx_rate,
                     network_tx: network_tx_rate,
-                    disk_used,
-                    disk_total,
-                    disk_usage_percent,
-                    disk_details,
+                    disk_used: snapshot.disk_used,
+                    disk_total: snapshot.disk_total,
+                    disk_usage_percent: snapshot.disk_usage_percent,
+                    disk_details: snapshot.disk_details,
                     current_disk_index: current_index,
                     alert_threshold: disk_alert_threshold,
-                    has_disk_alerts,
+                    has_disk_alerts: snapshot.has_disk_alerts,
                     auto_discovery_enabled,
                 };
                 debug!("collect system stats: {:?}", &data.system_stats);
             }
+            else => break,
         }
     }
     Ok(())
@@ -943,29 +1019,46 @@ async fn collect_node_detail(
     let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
 
     // 立即获取一次，不等待第一次tick
-    let _ =
-        timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await;
-    let _ =
+    if let Err(err) =
+        timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await
+    {
+        warn!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+    }
+    if let Err(err) =
         timeout(REQUEST_TIMEOUT, fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()))
-            .await;
+            .await
+    {
+        warn!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+    }
 
     loop {
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
         interval.tick().await;
-        let _ = timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone()))
-            .await;
-        let _ = timeout(
+        if let Err(err) =
+            timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await
+        {
+            warn!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+        }
+        if let Err(err) = timeout(
             REQUEST_TIMEOUT,
             fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()),
         )
-        .await;
+        .await
+        {
+            warn!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err);
+        }
     }
     Ok(())
 }
 
-async fn fetch_node_ranking(client: &reqwest::Client, url: &str, node_id: &str, data: SharedData) {
+async fn fetch_node_ranking(
+    client: &reqwest::Client,
+    url: &str,
+    node_id: &str,
+    data: SharedData,
+) {
     let body = serde_json::json!({
         "pageNo": 1,
         "pageSize": 300,
@@ -975,13 +1068,7 @@ async fn fetch_node_ranking(client: &reqwest::Client, url: &str, node_id: &str, 
 
     debug!("fetch node ranking: {}", url);
 
-    match client
-        .post(url)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-    {
+    match client.post(url).header("content-type", "application/json").json(&body).send().await {
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
@@ -995,7 +1082,8 @@ async fn fetch_node_ranking(client: &reqwest::Client, url: &str, node_id: &str, 
                     return;
                 },
             };
-            let node_list_resp: types::NodeListResponse = match serde_json::from_slice(&body_bytes) {
+            let node_list_resp: types::NodeListResponse = match serde_json::from_slice(&body_bytes)
+            {
                 Ok(node_list_resp) => node_list_resp,
                 Err(e) => {
                     warn!("Failed to parse response JSON: {}", e);
@@ -1042,20 +1130,19 @@ async fn fetch_node_ranking(client: &reqwest::Client, url: &str, node_id: &str, 
     }
 }
 
-async fn fetch_node_detail(client: &reqwest::Client, url: &str, node_id: &str, data: SharedData) {
+async fn fetch_node_detail(
+    client: &reqwest::Client,
+    url: &str,
+    node_id: &str,
+    data: SharedData,
+) {
     let body = serde_json::json!({
         "nodeId": node_id
     });
 
     debug!("fetch node detail: {}", url);
 
-    match client
-        .post(url)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-    {
+    match client.post(url).header("content-type", "application/json").json(&body).send().await {
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
@@ -1069,13 +1156,14 @@ async fn fetch_node_detail(client: &reqwest::Client, url: &str, node_id: &str, d
                     return;
                 },
             };
-            let node_detail_resp: types::NodeDetailRespose = match serde_json::from_slice(&body_bytes) {
-                Ok(node_detail_resp) => node_detail_resp,
-                Err(e) => {
-                    warn!("Failed to parse response JSON: {}", e);
-                    return;
-                },
-            };
+            let node_detail_resp: types::NodeDetailRespose =
+                match serde_json::from_slice(&body_bytes) {
+                    Ok(node_detail_resp) => node_detail_resp,
+                    Err(e) => {
+                        warn!("Failed to parse response JSON: {}", e);
+                        return;
+                    },
+                };
             debug!("Node detail response: {:?}", node_detail_resp);
 
             if node_detail_resp.code == 0 {
@@ -1152,15 +1240,10 @@ mod tests {
 
     use super::*;
     use crate::collect::docker_stats::{
-        BlkioStats,
         CPUStats,
         CPUUsage,
         MemoryStats,
-        NetworkStats,
-        PidsStats,
         Stats,
-        StorageStats,
-        ThrottlingData,
     };
 
     /// Helper to create a minimal Stats struct for testing
