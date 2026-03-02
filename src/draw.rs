@@ -16,12 +16,16 @@ use crate::{
         Widgets,
     },
     collect::SharedData,
+    error::{
+        ChaindashError,
+        Result,
+    },
 };
 
 pub fn draw<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) {
+) -> Result<()> {
     terminal
         .draw(|frame| {
             let chunks = Layout::default()
@@ -29,7 +33,9 @@ pub fn draw<B: Backend>(
                 .split(frame.size());
             draw_widgets(frame, &mut app.widgets, app.data.clone(), chunks[0])
         })
-        .unwrap();
+        .map_err(|err| ChaindashError::Terminal(err.to_string()))?;
+
+    Ok(())
 }
 
 pub fn draw_widgets(

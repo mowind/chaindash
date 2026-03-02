@@ -38,6 +38,7 @@ use crossterm::{
 };
 use draw::draw;
 use error::ChaindashError;
+use log::error;
 //use log::{debug, info};
 use num_rational::Ratio;
 use opts::Opts;
@@ -164,8 +165,8 @@ async fn main() -> Result<(), ChaindashError> {
 
     setup_panic_hook();
 
-    let mut terminal = Terminal::new(backend)
-        .map_err(|e| ChaindashError::Terminal(e.to_string()))?;
+    let mut terminal =
+        Terminal::new(backend).map_err(|e| ChaindashError::Terminal(e.to_string()))?;
 
     if let Err(e) = setup_terminal() {
         eprintln!("Failed to setup terminal: {e}");
@@ -185,40 +186,52 @@ async fn main() -> Result<(), ChaindashError> {
 
     let mut update_seconds = Ratio::from_integer(0);
 
-    let collector =
-        Arc::new(collect::Collector::new(&opts, app.data.clone()).expect("Failed to parse URL"));
-    let collector_clone = Arc::clone(&collector);
-    tokio::spawn(collect::run(collector_clone));
+    let collector = Arc::new(collect::Collector::new(&opts, app.data.clone())?);
+    let collector_handle = {
+        let collector_clone = Arc::clone(&collector);
+        tokio::spawn(async move { collect::run(collector_clone).await })
+    };
 
     update_widgets(&mut app.widgets, update_seconds);
-    draw(&mut terminal, &mut app);
+    if let Err(err) = draw(&mut terminal, &mut app) {
+        collector.stop();
+        cleanup_terminal();
+        let _ = collector_handle.await;
+        return Err(err);
+    }
 
-    loop {
+    'event_loop: loop {
         select! {
             recv(ctrl_c_events) -> _ => {
-                break;
+                break 'event_loop;
             }
             recv(ticker)->_ => {
                 update_seconds = (update_seconds+draw_interval) % Ratio::from_integer(60);
                 update_widgets(&mut app.widgets, update_seconds);
-                draw(&mut terminal, &mut app);
+                if let Err(err) = draw(&mut terminal, &mut app) {
+                    error!("绘制界面失败: {err}");
+                    break 'event_loop;
+                }
             }
             recv(ui_event_receiver) -> message => {
                 let Ok(event) = message else {
                     // Channel closed, exit gracefully
-                    break;
+                    break 'event_loop;
                 };
                 match event {
                     Event::Key(key_event) => {
                         if key_event.modifiers.is_empty() {
                             match key_event.code {
                                 KeyCode::Char('q') => {
-                                    break
+                                    break 'event_loop
                                 }
                                 KeyCode::Tab => {
                                     // Tab键切换磁盘
                                     app.handle_tab_key();
-                                    draw(&mut terminal, &mut app);
+                                    if let Err(err) = draw(&mut terminal, &mut app) {
+                                        error!("绘制界面失败: {err}");
+                                        break 'event_loop;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -226,17 +239,23 @@ async fn main() -> Result<(), ChaindashError> {
                             if key_event.code == KeyCode::Tab {
                                 // Shift+Tab键切换到上一个磁盘
                                 app.handle_shift_tab_key();
-                                draw(&mut terminal, &mut app);
+                                if let Err(err) = draw(&mut terminal, &mut app) {
+                                    error!("绘制界面失败: {err}");
+                                    break 'event_loop;
+                                }
                             }
                         } else if key_event.modifiers == KeyModifiers::CONTROL {
                             if let KeyCode::Char('c') = key_event.code {
-                                break
+                                break 'event_loop
                             }
                         }
                     }
 
                     Event::Resize(_width, _height) => {
-                        draw(&mut terminal, &mut app);
+                        if let Err(err) = draw(&mut terminal, &mut app) {
+                            error!("绘制界面失败: {err}");
+                            break 'event_loop;
+                        }
                     }
                     _ => {}
                 }
@@ -245,7 +264,13 @@ async fn main() -> Result<(), ChaindashError> {
     }
 
     collector.stop();
+    let collector_join_result = collector_handle.await;
     cleanup_terminal();
+
+    match collector_join_result {
+        Ok(result) => result?,
+        Err(err) => return Err(ChaindashError::Other(format!("collector task join error: {err}"))),
+    }
 
     Ok(())
 }
