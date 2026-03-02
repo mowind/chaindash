@@ -3,7 +3,11 @@
 //! These types are used internally to parse the Docker stats API JSON response.
 
 use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
+
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 /// `NetworkStats` aggregates the network stats of one container
 #[derive(Serialize, Debug, Deserialize)]

@@ -14,9 +14,6 @@ pub enum ChaindashError {
     #[error("JSON parse error: {0}")]
     Json(String),
 
-
-
-
     #[error("Logger error: {0}")]
     Logger(String),
 
@@ -35,8 +32,6 @@ impl From<alloy::transports::TransportError> for ChaindashError {
         ChaindashError::Rpc(err.to_string())
     }
 }
-
-
 
 impl From<reqwest::Error> for ChaindashError {
     fn from(err: reqwest::Error) -> Self {
