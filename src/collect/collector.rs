@@ -509,12 +509,15 @@ impl Collector {
                     }
                     data.txns.push(txs);
                     if data.prev_block_time > 0 {
-                        let interval = data.cur_block_time - data.prev_block_time;
-                        data.cur_interval = interval;
-                        if interval > data.max_interval {
-                            data.max_interval = interval
+                        let interval_ms = data
+                            .cur_block_time
+                            .saturating_sub(data.prev_block_time)
+                            .saturating_mul(1000);
+                        data.cur_interval = interval_ms;
+                        if interval_ms > data.max_interval {
+                            data.max_interval = interval_ms
                         }
-                        data.intervals.push(interval);
+                        data.intervals.push(interval_ms);
                     }
                 }
             }

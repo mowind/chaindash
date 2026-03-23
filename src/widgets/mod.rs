@@ -1,4 +1,5 @@
 mod block;
+mod chart;
 #[cfg(target_family = "unix")]
 mod disk_list;
 mod node;
