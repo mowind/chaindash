@@ -150,6 +150,9 @@ async fn main() -> Result<(), ChaindashError> {
     better_panic::install();
 
     let opts: Opts = Opts::parse();
+    if opts.interval == Ratio::from_integer(0) {
+        return Err(ChaindashError::Other("interval must be greater than 0".to_string()));
+    }
 
     let mut app = setup_app(&opts, PROGRAM_NAME);
 
@@ -206,7 +209,7 @@ async fn main() -> Result<(), ChaindashError> {
                 break 'event_loop;
             }
             recv(ticker)->_ => {
-                update_seconds = (update_seconds+draw_interval) % Ratio::from_integer(60);
+                update_seconds += draw_interval;
                 update_widgets(&mut app.widgets, update_seconds);
                 if let Err(err) = draw(&mut terminal, &mut app) {
                     error!("绘制界面失败: {err}");

@@ -218,6 +218,51 @@ fn warn_with_status(
     record_status_message(data, StatusLevel::Warn, message);
 }
 
+const COLLECTOR_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+fn is_websocket_endpoint(url: &str) -> bool {
+    url.starts_with("ws://") || url.starts_with("wss://")
+}
+
+fn websocket_host(url: &str) -> String {
+    url.trim_start_matches("ws://").trim_start_matches("wss://").to_string()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NetworkSample {
+    rx_total: u64,
+    tx_total: u64,
+    collected_at: std::time::Instant,
+}
+
+fn compute_network_rates(
+    previous: Option<NetworkSample>,
+    rx_total: u64,
+    tx_total: u64,
+    collected_at: std::time::Instant,
+) -> (NetworkSample, u64, u64) {
+    let current = NetworkSample {
+        rx_total,
+        tx_total,
+        collected_at,
+    };
+
+    let Some(previous) = previous else {
+        return (current, 0, 0);
+    };
+
+    let elapsed = collected_at.saturating_duration_since(previous.collected_at);
+    let elapsed_secs = elapsed.as_secs_f64();
+    if elapsed_secs <= f64::EPSILON {
+        return (current, 0, 0);
+    }
+
+    let network_rx_rate = (rx_total.saturating_sub(previous.rx_total) as f64 / elapsed_secs) as u64;
+    let network_tx_rate = (tx_total.saturating_sub(previous.tx_total) as f64 / elapsed_secs) as u64;
+
+    (current, network_rx_rate, network_tx_rate)
+}
+
 #[derive(Debug)]
 pub struct Collector {
     data: SharedData,
@@ -328,6 +373,39 @@ impl Data {
         self.node_detail = detail;
     }
 
+    pub fn merge_node_ranking(
+        &mut self,
+        ranking: Option<i32>,
+    ) {
+        let Some(ranking) = ranking else {
+            return;
+        };
+
+        if let Some(detail) = self.node_detail.as_mut() {
+            detail.ranking = ranking;
+        } else {
+            self.node_detail = Some(NodeDetail {
+                ranking,
+                ..Default::default()
+            });
+        }
+    }
+
+    pub fn merge_node_detail(
+        &mut self,
+        detail: Option<NodeDetail>,
+    ) {
+        let Some(mut detail) = detail else {
+            return;
+        };
+
+        if let Some(existing) = self.node_detail.as_ref() {
+            detail.ranking = existing.ranking;
+        }
+
+        self.node_detail = Some(detail);
+    }
+
     #[cfg(target_family = "unix")]
     pub fn system_stats(&self) -> SystemStats {
         self.system_stats.clone()
@@ -370,11 +448,15 @@ impl Collector {
         let urls: Vec<(String, String)> = urls
             .into_iter()
             .map(|url: &str| {
-                let v: Vec<&str> = url.split('@').collect();
-                if v.len() < 2 {
+                let Some((name, endpoint)) = url.split_once('@') else {
                     return Err(format!("invalid url format: {url}").into());
+                };
+                if !is_websocket_endpoint(endpoint) {
+                    return Err(ChaindashError::Other(format!(
+                        "invalid websocket url for {name}: {endpoint}",
+                    )));
                 }
-                Ok((v[0].into(), v[1].into()))
+                Ok((name.into(), endpoint.into()))
             })
             .collect::<Result<Vec<_>>>()?;
         let enable_docker_stats = opts.enable_docker_stats;
@@ -407,11 +489,6 @@ impl Collector {
     }
 
     pub(crate) async fn run(&self) -> Result<()> {
-        let ws = WsConnect::new(self.urls[0].1.as_str());
-        let provider = ProviderBuilder::new().connect_ws(ws).await?;
-        let sub = provider.subscribe_blocks().await?;
-        let mut sub = sub.into_stream();
-
         let urls = self.urls.clone();
         for url in urls {
             let name = url.0.clone();
@@ -429,8 +506,7 @@ impl Collector {
             debug!("enable_docker_stats: {}", self.enable_docker_stats);
             if self.enable_docker_stats {
                 debug!("enable_docker_stats: {}", self.enable_docker_stats);
-                let host = url.1.clone();
-                let host = host.replace("ws://", "").replace("wss://", "");
+                let host = websocket_host(&url.1);
                 let ip_port: Vec<&str> = host.as_str().split(':').collect();
                 let host = format!("http://{}:{}", ip_port[0], self.docker_port);
                 let data = self.data.clone();
@@ -489,37 +565,128 @@ impl Collector {
             if self.stop_flag.load(Ordering::Relaxed) {
                 break;
             }
-            tokio::select! {
-                Some(head) = sub.next() => {
-                let number = BlockNumberOrTag::Number(head.number);
-                let block = provider.get_block_by_number(number).full().await?;
-                let txs = block.map(|b| b.transactions.len() as u64).unwrap_or(0);
 
-                    let mut data = self.data.lock().expect("mutex poisoned - recovering");
-                    data.cur_block_number = head.number;
-                    if data.cur_block_time > 0 {
-                        data.prev_block_time = data.cur_block_time;
-                    }
-                    data.cur_block_time = head.timestamp;
-                    data.cur_txs = txs;
+            let mut connection = None;
+            for (name, url) in &self.urls {
+                let ws = WsConnect::new(url.as_str());
+                let provider = match ProviderBuilder::new().connect_ws(ws).await {
+                    Ok(provider) => provider,
+                    Err(err) => {
+                        warn_with_status(
+                            &self.data,
+                            format!(
+                                "Failed to connect block subscription for {} at {}: {}",
+                                name, url, err
+                            ),
+                        );
+                        continue;
+                    },
+                };
 
-                    if txs > data.max_txs {
-                        data.max_txs = txs;
-                        data.max_txs_block_number = head.number;
-                    }
-                    data.txns.push(txs);
-                    if data.prev_block_time > 0 {
-                        let interval_ms = data
-                            .cur_block_time
-                            .saturating_sub(data.prev_block_time)
-                            .saturating_mul(1000);
-                        data.cur_interval = interval_ms;
-                        if interval_ms > data.max_interval {
-                            data.max_interval = interval_ms
+                let sub = match provider.subscribe_blocks().await {
+                    Ok(sub) => sub,
+                    Err(err) => {
+                        warn_with_status(
+                            &self.data,
+                            format!(
+                                "Failed to subscribe to blocks for {} at {}: {}",
+                                name, url, err
+                            ),
+                        );
+                        continue;
+                    },
+                };
+
+                record_status_message(
+                    &self.data,
+                    StatusLevel::Info,
+                    format!("Block subscription connected via {}", name),
+                );
+                connection = Some((name.clone(), provider, sub.into_stream()));
+                break;
+            }
+
+            let Some((endpoint_name, provider, mut sub)) = connection else {
+                time::sleep(COLLECTOR_RETRY_DELAY).await;
+                continue;
+            };
+
+            let mut reconnect_required = false;
+            loop {
+                if self.stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                tokio::select! {
+                    maybe_head = sub.next() => {
+                        let Some(head) = maybe_head else {
+                            warn_with_status(
+                                &self.data,
+                                format!(
+                                    "Block subscription stream ended for {}. Reconnecting soon",
+                                    endpoint_name
+                                ),
+                            );
+                            reconnect_required = true;
+                            break;
+                        };
+
+                        let number = BlockNumberOrTag::Number(head.number);
+                        let block = match provider.get_block_by_number(number).full().await {
+                            Ok(block) => block,
+                            Err(err) => {
+                                warn_with_status(
+                                    &self.data,
+                                    format!(
+                                        "Failed to fetch block {} via {}: {}. Reconnecting soon",
+                                        head.number, endpoint_name, err
+                                    ),
+                                );
+                                reconnect_required = true;
+                                break;
+                            },
+                        };
+                        let txs = block.map(|b| b.transactions.len() as u64).unwrap_or(0);
+
+                        let mut data = self.data.lock().expect("mutex poisoned - recovering");
+                        data.cur_block_number = head.number;
+                        if data.cur_block_time > 0 {
+                            data.prev_block_time = data.cur_block_time;
                         }
-                        data.intervals.push(interval_ms);
+                        data.cur_block_time = head.timestamp;
+                        data.cur_txs = txs;
+
+                        if txs > data.max_txs {
+                            data.max_txs = txs;
+                            data.max_txs_block_number = head.number;
+                        }
+                        data.txns.push(txs);
+                        if data.prev_block_time > 0 {
+                            let interval_ms = data
+                                .cur_block_time
+                                .saturating_sub(data.prev_block_time)
+                                .saturating_mul(1000);
+                            data.cur_interval = interval_ms;
+                            if interval_ms > data.max_interval {
+                                data.max_interval = interval_ms
+                            }
+                            data.intervals.push(interval_ms);
+                        }
+                    }
+                    _ = time::sleep(COLLECTOR_RETRY_DELAY) => {
+                        if self.stop_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
                     }
                 }
+            }
+
+            if self.stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            if reconnect_required {
+                time::sleep(COLLECTOR_RETRY_DELAY).await;
             }
         }
         Ok(())
@@ -532,44 +699,83 @@ async fn collect_node_state(
     data: SharedData,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
-    let ws = WsConnect::new(url.as_str());
-    let provider = ProviderBuilder::new().connect_ws(ws).await?;
-    let host = url.replace("ws://", "").replace("wss://", "");
-    let mut interval = time::interval(Duration::from_secs(1));
+    let host = websocket_host(&url);
 
-    loop {
-        if stop_flag.load(Ordering::Relaxed) {
-            break;
-        }
-        tokio::select! {
-            _ = interval.tick() => {
-                let status = provider.debug_consensus_status().await?;
-                let cur_number = provider.get_block_number().await?;
-                let epoch = status.state.view.as_ref().map(|v| v.epoch).unwrap_or(0);
-                let view = status.state.view.as_ref().and_then(|v| v.view_number).unwrap_or(0);
-                let committed = status.state.highest_commit_block.as_ref().map(|b| b.number).unwrap_or(0);
-                let locked = status.state.highest_lock_block.as_ref().map(|b| b.number).unwrap_or(0);
-                let qc = status.state.highest_qc_block.as_ref().map(|b| b.number).unwrap_or(0);
-                let validator = status.validator;
+    while !stop_flag.load(Ordering::Relaxed) {
+        let ws = WsConnect::new(url.as_str());
+        let provider = match ProviderBuilder::new().connect_ws(ws).await {
+            Ok(provider) => provider,
+            Err(err) => {
+                warn_with_status(
+                    &data,
+                    format!(
+                        "Failed to connect node state collector for {} at {}: {}",
+                        name, url, err
+                    ),
+                );
+                time::sleep(COLLECTOR_RETRY_DELAY).await;
+                continue;
+            },
+        };
+        let mut interval = time::interval(Duration::from_secs(1));
 
-
-                let node = ConsensusState{
-                    name: name.clone(),
-                    host: host.clone(),
-                    current_number: cur_number,
-                    epoch,
-                    view,
-                    committed,
-                    locked,
-                    qc,
-                    validator,
-                };
-
-                let mut data = data.lock().expect("mutex poisoned - recovering");
-                data.states.insert(name.clone(), node);
+        loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                return Ok(());
             }
+
+            interval.tick().await;
+
+            let status = match provider.debug_consensus_status().await {
+                Ok(status) => status,
+                Err(err) => {
+                    warn_with_status(
+                        &data,
+                        format!("Node state RPC failed for {}: {}. Reconnecting soon", name, err),
+                    );
+                    break;
+                },
+            };
+            let cur_number = match provider.get_block_number().await {
+                Ok(cur_number) => cur_number,
+                Err(err) => {
+                    warn_with_status(
+                        &data,
+                        format!(
+                            "Node block number RPC failed for {}: {}. Reconnecting soon",
+                            name, err
+                        ),
+                    );
+                    break;
+                },
+            };
+            let epoch = status.state.view.as_ref().map(|v| v.epoch).unwrap_or(0);
+            let view = status.state.view.as_ref().and_then(|v| v.view_number).unwrap_or(0);
+            let committed =
+                status.state.highest_commit_block.as_ref().map(|b| b.number).unwrap_or(0);
+            let locked = status.state.highest_lock_block.as_ref().map(|b| b.number).unwrap_or(0);
+            let qc = status.state.highest_qc_block.as_ref().map(|b| b.number).unwrap_or(0);
+            let validator = status.validator;
+
+            let node = ConsensusState {
+                name: name.clone(),
+                host: host.clone(),
+                current_number: cur_number,
+                epoch,
+                view,
+                committed,
+                locked,
+                qc,
+                validator,
+            };
+
+            let mut data = data.lock().expect("mutex poisoned - recovering");
+            data.states.insert(name.clone(), node);
         }
+
+        time::sleep(COLLECTOR_RETRY_DELAY).await;
     }
+
     Ok(())
 }
 
@@ -766,8 +972,7 @@ async fn collect_system_stats(
     let system = Arc::new(Mutex::new(System::new_all()));
     let mut interval = time::interval(Duration::from_secs(disk_refresh_interval));
 
-    let mut prev_network_rx: u64 = 0;
-    let mut prev_network_tx: u64 = 0;
+    let mut previous_network_sample: Option<NetworkSample> = None;
 
     let mut last_discovery_time = std::time::Instant::now();
     let discovery_interval = Duration::from_secs(5);
@@ -782,6 +987,7 @@ async fn collect_system_stats(
         memory_usage_percent: f32,
         network_rx_total: u64,
         network_tx_total: u64,
+        collected_at: std::time::Instant,
         disk_used: u64,
         disk_total: u64,
         disk_usage_percent: f32,
@@ -925,6 +1131,7 @@ async fn collect_system_stats(
                         memory_usage_percent,
                         network_rx_total,
                         network_tx_total,
+                        collected_at: std::time::Instant::now(),
                         disk_used,
                         disk_total,
                         disk_usage_percent,
@@ -939,10 +1146,13 @@ async fn collect_system_stats(
                     ChaindashError::Other(message)
                 })?;
 
-                let network_rx_rate = snapshot.network_rx_total.saturating_sub(prev_network_rx);
-                let network_tx_rate = snapshot.network_tx_total.saturating_sub(prev_network_tx);
-                prev_network_rx = snapshot.network_rx_total;
-                prev_network_tx = snapshot.network_tx_total;
+                let (network_sample, network_rx_rate, network_tx_rate) = compute_network_rates(
+                    previous_network_sample,
+                    snapshot.network_rx_total,
+                    snapshot.network_tx_total,
+                    snapshot.collected_at,
+                );
+                previous_network_sample = Some(network_sample);
 
                 let SystemSnapshot {
                     cpu_usage,
@@ -1195,7 +1405,7 @@ async fn fetch_node_ranking(
             if !resp.status().is_success() {
                 warn_with_status(
                     &data,
-                    format!("Node detail API returned error status: {}", resp.status()),
+                    format!("Node ranking API returned error status: {}", resp.status()),
                 );
                 return;
             }
@@ -1221,38 +1431,22 @@ async fn fetch_node_ranking(
                 if let Some(data_obj) = node_list_resp.data {
                     let ranking = parse_node_ranking(&data_obj, node_id);
                     let mut data = data.lock().expect("mutex poisoned - recovering");
-                    if let Some(old_detail) = data.node_detail() {
-                        let mut new_detail = old_detail;
-                        new_detail.ranking = ranking;
-                        data.update_node_detail(Some(new_detail));
-                    } else {
-                        let detail = NodeDetail {
-                            ranking,
-                            ..Default::default()
-                        };
-                        data.update_node_detail(Some(detail));
-                    }
+                    data.merge_node_ranking(Some(ranking));
                 } else {
-                    warn_with_status(&data, "Node detail response missing data field");
-                    let mut data = data.lock().expect("mutex poisoned - recovering");
-                    data.update_node_detail(None);
+                    warn_with_status(&data, "Node ranking response missing data field");
                 }
             } else {
                 warn_with_status(
                     &data,
                     format!(
-                        "Node detail API returned error code: {}, err_msg: {}",
+                        "Node ranking API returned error code: {}, err_msg: {}",
                         node_list_resp.code, node_list_resp.err_msg
                     ),
                 );
-                let mut data = data.lock().expect("mutex poisoned - recovering");
-                data.update_node_detail(None);
             }
         },
         Err(e) => {
-            warn_with_status(&data, format!("Failed to fetch node detail: {}", e));
-            let mut data = data.lock().expect("mutex poisoned - recovering");
-            data.update_node_detail(None);
+            warn_with_status(&data, format!("Failed to fetch node ranking: {}", e));
         },
     }
 }
@@ -1298,16 +1492,11 @@ async fn fetch_node_detail(
 
             if node_detail_resp.code == 0 {
                 if let Some(detail) = node_detail_resp.data {
-                    let mut node_detail = parse_node_detail(&detail);
+                    let node_detail = parse_node_detail(&detail);
                     let mut data = data.lock().expect("mutex poisoned - recovering");
-                    if let Some(old_detail) = data.node_detail() {
-                        node_detail.ranking = old_detail.ranking;
-                    }
-                    data.update_node_detail(Some(node_detail));
+                    data.merge_node_detail(Some(node_detail));
                 } else {
                     warn_with_status(&data, "Node detail response missing data field");
-                    let mut data = data.lock().expect("mutex poisoned - recovering");
-                    data.update_node_detail(None);
                 }
             } else {
                 warn_with_status(
@@ -1317,14 +1506,10 @@ async fn fetch_node_detail(
                         node_detail_resp.code, node_detail_resp.err_msg
                     ),
                 );
-                let mut data = data.lock().expect("mutex poisoned - recovering");
-                data.update_node_detail(None);
             }
         },
         Err(e) => {
             warn_with_status(&data, format!("Failed to fetch node detail: {}", e));
-            let mut data = data.lock().expect("mutex poisoned - recovering");
-            data.update_node_detail(None);
         },
     }
 }
@@ -1631,6 +1816,169 @@ mod tests {
 
         let result = Collector::new(&opts, data);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_collector_new_rejects_non_websocket_url() {
+        use clap::Parser;
+
+        use crate::Opts;
+
+        let opts = Opts::parse_from(["test", "--url", "test@http://127.0.0.1:6789"]);
+        let data: SharedData = Arc::new(Mutex::new(Data::default()));
+
+        let result = Collector::new(&opts, data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid websocket url"));
+    }
+
+    #[test]
+    fn test_collector_new_rejects_invalid_endpoint_in_list() {
+        use clap::Parser;
+
+        use crate::Opts;
+
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "main@ws://127.0.0.1:6789,backup@http://127.0.0.1:6790",
+        ]);
+        let data: SharedData = Arc::new(Mutex::new(Data::default()));
+
+        let result = Collector::new(&opts, data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid websocket url for backup"));
+    }
+
+    #[test]
+    fn test_merge_node_ranking_preserves_existing_detail_fields() {
+        let mut data = Data::default();
+        data.update_node_detail(Some(NodeDetail {
+            node_name: "node-a".to_string(),
+            ranking: 1,
+            block_qty: 12,
+            block_rate: "75.00%".to_string(),
+            daily_block_rate: "1/day".to_string(),
+            reward_per: 10.0,
+            reward_value: 20.0,
+            reward_address: "addr".to_string(),
+            verifier_time: 30,
+        }));
+
+        data.merge_node_ranking(Some(9));
+
+        let detail = data.node_detail().expect("node detail should exist");
+        assert_eq!(detail.ranking, 9);
+        assert_eq!(detail.node_name, "node-a");
+        assert_eq!(detail.block_qty, 12);
+    }
+
+    #[test]
+    fn test_merge_node_detail_preserves_existing_ranking() {
+        let mut data = Data::default();
+        data.update_node_detail(Some(NodeDetail {
+            node_name: "old-node".to_string(),
+            ranking: 7,
+            block_qty: 12,
+            block_rate: "75.00%".to_string(),
+            daily_block_rate: "1/day".to_string(),
+            reward_per: 10.0,
+            reward_value: 20.0,
+            reward_address: "old-addr".to_string(),
+            verifier_time: 30,
+        }));
+
+        data.merge_node_detail(Some(NodeDetail {
+            node_name: "new-node".to_string(),
+            ranking: 0,
+            block_qty: 24,
+            block_rate: "80.00%".to_string(),
+            daily_block_rate: "2/day".to_string(),
+            reward_per: 5.0,
+            reward_value: 40.0,
+            reward_address: "new-addr".to_string(),
+            verifier_time: 60,
+        }));
+
+        let detail = data.node_detail().expect("node detail should exist");
+        assert_eq!(detail.ranking, 7);
+        assert_eq!(detail.node_name, "new-node");
+        assert_eq!(detail.block_qty, 24);
+    }
+
+    #[test]
+    fn test_merge_node_ranking_none_preserves_existing_detail() {
+        let mut data = Data::default();
+        let existing = NodeDetail {
+            node_name: "node-a".to_string(),
+            ranking: 3,
+            block_qty: 12,
+            block_rate: "75.00%".to_string(),
+            daily_block_rate: "1/day".to_string(),
+            reward_per: 10.0,
+            reward_value: 20.0,
+            reward_address: "addr".to_string(),
+            verifier_time: 30,
+        };
+        data.update_node_detail(Some(existing.clone()));
+
+        data.merge_node_ranking(None);
+
+        assert_eq!(data.node_detail().expect("node detail should exist").ranking, existing.ranking);
+        assert_eq!(
+            data.node_detail().expect("node detail should exist").node_name,
+            existing.node_name
+        );
+    }
+
+    #[test]
+    fn test_merge_node_detail_none_preserves_existing_ranking() {
+        let mut data = Data::default();
+        let existing = NodeDetail {
+            node_name: "node-a".to_string(),
+            ranking: 3,
+            block_qty: 12,
+            block_rate: "75.00%".to_string(),
+            daily_block_rate: "1/day".to_string(),
+            reward_per: 10.0,
+            reward_value: 20.0,
+            reward_address: "addr".to_string(),
+            verifier_time: 30,
+        };
+        data.update_node_detail(Some(existing.clone()));
+
+        data.merge_node_detail(None);
+
+        assert_eq!(data.node_detail().expect("node detail should exist").ranking, existing.ranking);
+        assert_eq!(
+            data.node_detail().expect("node detail should exist").node_name,
+            existing.node_name
+        );
+    }
+
+    #[test]
+    fn test_compute_network_rates_first_sample_returns_zero() {
+        let collected_at = std::time::Instant::now();
+        let (_, rx_rate, tx_rate) = compute_network_rates(None, 2048, 4096, collected_at);
+
+        assert_eq!(rx_rate, 0);
+        assert_eq!(tx_rate, 0);
+    }
+
+    #[test]
+    fn test_compute_network_rates_normalizes_by_elapsed_time() {
+        let start = std::time::Instant::now();
+        let previous = Some(NetworkSample {
+            rx_total: 1_000_000,
+            tx_total: 2_000_000,
+            collected_at: start,
+        });
+        let end = start + std::time::Duration::from_secs(2);
+
+        let (_, rx_rate, tx_rate) = compute_network_rates(previous, 5_000_000, 8_000_000, end);
+
+        assert_eq!(rx_rate, 2_000_000);
+        assert_eq!(tx_rate, 3_000_000);
     }
 }
 

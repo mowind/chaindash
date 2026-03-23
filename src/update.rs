@@ -7,6 +7,22 @@ pub trait UpdatableWidget {
     fn get_update_interval(&self) -> Ratio<u64>;
 }
 
+fn should_update_widget_at(
+    seconds: Ratio<u64>,
+    interval: Ratio<u64>,
+) -> bool {
+    interval != Ratio::from_integer(0) && seconds % interval == Ratio::from_integer(0)
+}
+
+fn update_widget_if_due(
+    widget: &mut dyn UpdatableWidget,
+    seconds: Ratio<u64>,
+) {
+    if should_update_widget_at(seconds, widget.get_update_interval()) {
+        widget.update();
+    }
+}
+
 pub fn update_widgets(
     widgets: &mut Widgets,
     seconds: Ratio<u64>,
@@ -21,9 +37,7 @@ pub fn update_widgets(
     }
 
     for widget in widgets_to_update {
-        if seconds % widget.get_update_interval() == Ratio::from_integer(0) {
-            widget.update();
-        }
+        update_widget_if_due(widget, seconds);
     }
 }
 
@@ -91,6 +105,29 @@ mod tests {
     fn test_mock_widget_interval_zero() {
         let (widget, _) = MockWidget::new(Ratio::from_integer(0));
         assert_eq!(widget.get_update_interval(), Ratio::from_integer(0));
+    }
+
+    #[test]
+    fn test_should_update_widget_at_zero_interval_is_false() {
+        assert!(!should_update_widget_at(Ratio::from_integer(10), Ratio::from_integer(0),));
+    }
+
+    #[test]
+    fn test_update_widget_if_due_skips_zero_interval() {
+        let (mut widget, counter) = MockWidget::new(Ratio::from_integer(0));
+
+        update_widget_if_due(&mut widget, Ratio::from_integer(10));
+
+        assert_eq!(*counter.lock().expect("mutex poisoned"), 0);
+    }
+
+    #[test]
+    fn test_should_update_widget_at_long_interval() {
+        let interval = Ratio::from_integer(90);
+
+        assert!(!should_update_widget_at(Ratio::from_integer(60), interval));
+        assert!(should_update_widget_at(Ratio::from_integer(90), interval));
+        assert!(should_update_widget_at(Ratio::from_integer(180), interval));
     }
 
     // ========================================
