@@ -4,7 +4,7 @@ use serde::{
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub(crate) struct NodeDetailRespose {
+pub(crate) struct NodeDetailResponse {
     #[serde(rename = "errMsg")]
     pub err_msg: String,
     pub code: i32,
@@ -32,7 +32,7 @@ pub(crate) struct NodeDetail {
     #[serde(rename = "rewardValue")]
     pub reward_value: String,
     #[serde(rename = "denefitAddr")]
-    pub denefit_addr: String,
+    pub benefit_addr: String,
     #[serde(rename = "verifierTime")]
     pub verifier_time: i64,
 }

@@ -11,10 +11,13 @@ use ratatui::{
         Modifier,
         Style,
     },
+    text::Line,
     widgets::{
+        Paragraph,
         Row,
         Table,
         Widget,
+        Wrap,
     },
 };
 
@@ -33,6 +36,8 @@ pub struct NodeDetailWidget {
 }
 
 impl NodeDetailWidget {
+    const COMPACT_LAYOUT_WIDTH: u16 = 110;
+
     pub fn new(collect_data: SharedData) -> NodeDetailWidget {
         NodeDetailWidget {
             title: " Node Details".to_string(),
@@ -42,11 +47,24 @@ impl NodeDetailWidget {
         }
     }
 
+    fn empty_message(&self) -> &'static str {
+        if self.loading {
+            "Loading..."
+        } else {
+            "No node details found"
+        }
+    }
+
     fn render_node_details(
         &self,
         area: Rect,
         buf: &mut Buffer,
     ) {
+        if area.width < Self::COMPACT_LAYOUT_WIDTH {
+            self.render_compact_node_details(area, buf);
+            return;
+        }
+
         let headers = [
             " Name",
             "Ranking",
@@ -65,7 +83,7 @@ impl NodeDetailWidget {
 
         debug!("node detail: {:?}", node_detail);
 
-        let raws: Vec<Row> = match node_detail {
+        let rows: Vec<Row> = match node_detail {
             Some(detail) => {
                 let reward_per_str = format!("{:.2}%", detail.reward_per);
                 let reward_value_str = format!("{:.2}", detail.reward_value);
@@ -84,26 +102,19 @@ impl NodeDetailWidget {
                 ])
                 .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))]
             },
-            None => {
-                let message = if self.loading {
-                    "Loading..."
-                } else {
-                    "No node details found"
-                };
-                vec![Row::new(vec![
-                    message.to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                    "".to_string(),
-                ])
-                .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))]
-            },
+            None => vec![Row::new(vec![
+                self.empty_message().to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+            ])
+            .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))],
         };
 
         let header_row = Row::new(headers.iter().copied()).style(
@@ -114,7 +125,7 @@ impl NodeDetailWidget {
         );
 
         Table::new(
-            raws,
+            rows,
             &[
                 Constraint::Length(15),
                 Constraint::Length(10),
@@ -132,6 +143,37 @@ impl NodeDetailWidget {
         .header(header_row)
         .column_spacing(1)
         .render(area, buf);
+    }
+
+    fn compact_lines(&self) -> Vec<String> {
+        let data = self.collect_data.lock().expect("mutex poisoned - recovering");
+        match data.node_detail() {
+            Some(detail) => vec![
+                format!("Name: {}", detail.node_name),
+                format!("Rank: {}    Validator: {}", detail.ranking, detail.verifier_time),
+                format!("Blocks: {}    Rate: {}", detail.block_qty, detail.block_rate),
+                format!("24H: {}", detail.daily_block_rate),
+                format!("Reward Ratio: {:.2}%", detail.reward_per),
+                format!("System Reward: {:.2} LAT", detail.reward_value),
+                format!("Reward Address: {}", detail.reward_address),
+                format!("Rewards: {:.2} LAT", detail.rewards()),
+            ],
+            None => vec![self.empty_message().to_string()],
+        }
+    }
+
+    fn render_compact_node_details(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let lines: Vec<Line> = self.compact_lines().into_iter().map(Line::raw).collect();
+
+        Paragraph::new(lines)
+            .block(block::new(&self.title))
+            .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))
+            .wrap(Wrap { trim: true })
+            .render(area, buf);
     }
 }
 
@@ -165,7 +207,10 @@ impl Widget for &NodeDetailWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collect::Data;
+    use crate::collect::{
+        Data,
+        NodeDetail,
+    };
 
     fn create_shared_data() -> SharedData {
         Data::new()
@@ -199,5 +244,50 @@ mod tests {
         let mut widget = NodeDetailWidget::new(shared_data);
         widget.update();
         assert!(widget.loading);
+    }
+
+    #[test]
+    fn test_empty_message_reflects_loading_state() {
+        let shared_data = create_shared_data();
+        let mut widget = NodeDetailWidget::new(shared_data);
+        assert_eq!(widget.empty_message(), "Loading...");
+
+        widget.loading = false;
+        assert_eq!(widget.empty_message(), "No node details found");
+    }
+
+    #[test]
+    fn test_compact_lines_without_data_uses_empty_message() {
+        let shared_data = create_shared_data();
+        let widget = NodeDetailWidget::new(shared_data);
+
+        assert_eq!(widget.compact_lines(), vec!["Loading...".to_string()]);
+    }
+
+    #[test]
+    fn test_compact_lines_with_data_include_key_fields() {
+        let shared_data = create_shared_data();
+        {
+            let mut data = shared_data.lock().expect("mutex poisoned");
+            data.update_node_detail(Some(NodeDetail {
+                node_name: "node-a".to_string(),
+                ranking: 7,
+                block_qty: 123,
+                block_rate: "12.34%".to_string(),
+                daily_block_rate: "3/day".to_string(),
+                reward_per: 5.0,
+                reward_value: 42.5,
+                reward_address: "addr".to_string(),
+                verifier_time: 9,
+            }));
+        }
+
+        let widget = NodeDetailWidget::new(shared_data);
+        let lines = widget.compact_lines();
+
+        assert_eq!(lines[0], "Name: node-a");
+        assert_eq!(lines[1], "Rank: 7    Validator: 9");
+        assert_eq!(lines[2], "Blocks: 123    Rate: 12.34%");
+        assert_eq!(lines[7], "Rewards: 40.38 LAT");
     }
 }

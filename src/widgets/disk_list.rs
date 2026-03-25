@@ -10,10 +10,13 @@ use ratatui::{
         Modifier,
         Style,
     },
+    text::Line,
     widgets::{
+        Paragraph,
         Row,
         Table,
         Widget,
+        Wrap,
     },
 };
 
@@ -33,6 +36,8 @@ pub struct DiskListWidget {
 }
 
 impl DiskListWidget {
+    const COMPACT_LAYOUT_WIDTH: u16 = 50;
+
     pub fn new(collect_data: SharedData) -> DiskListWidget {
         DiskListWidget {
             update_interval: Ratio::from_integer(2),
@@ -98,6 +103,11 @@ impl DiskListWidget {
             " Disk Details ".to_string()
         };
 
+        if area.width < Self::COMPACT_LAYOUT_WIDTH {
+            self.render_compact_disk_list(area, buf, &title, current_index);
+            return;
+        }
+
         // 创建表头 - 类似 df -h 的格式
         let header = ["Mounted on", "Size", "Used", "Avail", "Use%"];
 
@@ -158,6 +168,44 @@ impl DiskListWidget {
         .render(area, buf);
     }
 
+    fn compact_lines(
+        &self,
+        current_index: usize,
+    ) -> Vec<String> {
+        let disk = &self.system_stats.disk_details[current_index];
+        vec![
+            format!("Mount: {}", disk.mount_point),
+            format!("Use: {:.1}%", disk.usage_percent),
+            format!("Used: {} / {}", Self::format_size(disk.used), Self::format_size(disk.total)),
+            format!("Avail: {}", Self::format_size(disk.available)),
+        ]
+    }
+
+    fn render_compact_disk_list(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        title: &str,
+        current_index: usize,
+    ) {
+        let disk = &self.system_stats.disk_details[current_index];
+        let lines: Vec<Line> =
+            self.compact_lines(current_index).into_iter().map(Line::raw).collect();
+
+        let mut paragraph = Paragraph::new(lines)
+            .block(block::new(title))
+            .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))
+            .wrap(Wrap { trim: true });
+
+        if disk.is_alert {
+            paragraph = paragraph.style(Style::default().fg(Color::Red).bg(Color::Reset));
+        } else if disk.is_network {
+            paragraph = paragraph.style(Style::default().fg(Color::Yellow).bg(Color::Reset));
+        }
+
+        paragraph.render(area, buf);
+    }
+
     /// 格式化大小为人类可读格式（类似 df -h）
     fn format_size(bytes: u64) -> String {
         const KB: f64 = 1024.0;
@@ -184,11 +232,31 @@ impl DiskListWidget {
 #[cfg(test)]
 #[cfg(target_family = "unix")]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
-    use crate::collect::Data;
+    use crate::collect::{
+        Data,
+        DiskDetail,
+    };
 
     fn create_shared_data() -> SharedData {
         Data::new()
+    }
+
+    fn create_disk_detail(mount_point: &str) -> DiskDetail {
+        DiskDetail {
+            mount_point: mount_point.to_string(),
+            filesystem: "ext4".to_string(),
+            total: 100 * 1024 * 1024 * 1024,
+            used: 40 * 1024 * 1024 * 1024,
+            available: 60 * 1024 * 1024 * 1024,
+            usage_percent: 40.0,
+            device: "/dev/sda1".to_string(),
+            is_alert: false,
+            is_network: false,
+            last_updated: Instant::now(),
+        }
     }
 
     #[test]
@@ -242,5 +310,19 @@ mod tests {
     fn test_disk_list_format_size_terabytes() {
         assert_eq!(DiskListWidget::format_size(1099511627776), "1.0T");
         assert_eq!(DiskListWidget::format_size(1649267441664), "1.5T");
+    }
+
+    #[test]
+    fn test_compact_lines_show_selected_disk_summary() {
+        let shared_data = create_shared_data();
+        let mut widget = DiskListWidget::new(shared_data);
+        widget.system_stats.disk_details = vec![create_disk_detail("/data")];
+
+        let lines = widget.compact_lines(0);
+
+        assert_eq!(lines[0], "Mount: /data");
+        assert_eq!(lines[1], "Use: 40.0%");
+        assert_eq!(lines[2], "Used: 40.0G / 100.0G");
+        assert_eq!(lines[3], "Avail: 60.0G");
     }
 }

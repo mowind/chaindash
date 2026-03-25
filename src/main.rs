@@ -7,6 +7,7 @@ mod update;
 mod widgets;
 
 use std::{
+    convert::TryFrom,
     fs,
     io::{
         self,
@@ -72,6 +73,79 @@ fn cleanup_terminal() {
     let _ = execute!(stdout, cursor::Show);
 
     let _ = terminal::disable_raw_mode();
+}
+
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Self {
+        Self { active: true }
+    }
+
+    fn cleanup(&mut self) {
+        if self.active {
+            cleanup_terminal();
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+fn gcd_u128(
+    mut left: u128,
+    mut right: u128,
+) -> u128 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+
+    left
+}
+
+fn lcm_u128(
+    left: u128,
+    right: u128,
+) -> Result<u128, ChaindashError> {
+    if left == 0 || right == 0 {
+        return Ok(0);
+    }
+
+    let gcd = gcd_u128(left, right);
+    left.checked_div(gcd)
+        .and_then(|value| value.checked_mul(right))
+        .ok_or_else(|| ChaindashError::Other("interval is too precise to schedule safely".into()))
+}
+
+fn scheduling_quantum(opts: &Opts) -> Result<Ratio<u64>, ChaindashError> {
+    let intervals = [opts.interval, Ratio::from_integer(1), Ratio::from_integer(2)];
+    let denominator_lcm = intervals
+        .iter()
+        .try_fold(1_u128, |acc, interval| lcm_u128(acc, u128::from(*interval.denom())))?;
+
+    let numerator_gcd = intervals
+        .iter()
+        .map(|interval| {
+            u128::from(*interval.numer()) * (denominator_lcm / u128::from(*interval.denom()))
+        })
+        .reduce(gcd_u128)
+        .unwrap_or(1);
+
+    let numerator = u64::try_from(numerator_gcd)
+        .map_err(|_| ChaindashError::Other("interval numerator exceeds supported range".into()))?;
+    let denominator = u64::try_from(denominator_lcm).map_err(|_| {
+        ChaindashError::Other("interval denominator exceeds supported range".into())
+    })?;
+
+    Ok(Ratio::new(numerator, denominator))
 }
 
 fn setup_ui_events() -> Receiver<Event> {
@@ -161,7 +235,7 @@ async fn main() -> Result<(), ChaindashError> {
         // Continue without logging - not fatal
     }
 
-    let draw_interval = Ratio::min(Ratio::from_integer(1), opts.interval);
+    let draw_interval = scheduling_quantum(&opts)?;
 
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -172,13 +246,16 @@ async fn main() -> Result<(), ChaindashError> {
         Terminal::new(backend).map_err(|e| ChaindashError::Terminal(e.to_string()))?;
 
     if let Err(e) = setup_terminal() {
+        cleanup_terminal();
         eprintln!("Failed to setup terminal: {e}");
         eprintln!(
             "This may be because you're running in an environment without a proper terminal."
         );
         eprintln!("Try running in a real terminal (not an IDE or pipe).");
-        std::process::exit(1);
+        return Err(e);
     }
+
+    let mut terminal_guard = TerminalGuard::new();
 
     let ticker = tick(Duration::from_secs_f64(
         *draw_interval.numer() as f64 / *draw_interval.denom() as f64,
@@ -198,7 +275,7 @@ async fn main() -> Result<(), ChaindashError> {
     update_widgets(&mut app.widgets, update_seconds);
     if let Err(err) = draw(&mut terminal, &mut app) {
         collector.stop();
-        cleanup_terminal();
+        terminal_guard.cleanup();
         let _ = collector_handle.await;
         return Err(err);
     }
@@ -223,23 +300,26 @@ async fn main() -> Result<(), ChaindashError> {
                 };
                 match event {
                     Event::Key(key_event) => {
-                        if key_event.modifiers.is_empty() {
-                            match key_event.code {
-                                KeyCode::Char('q') => {
-                                    break 'event_loop
+                        match key_event.code {
+                            KeyCode::BackTab => {
+                                app.handle_shift_tab_key();
+                                if let Err(err) = draw(&mut terminal, &mut app) {
+                                    error!("绘制界面失败: {err}");
+                                    break 'event_loop;
                                 }
-                                KeyCode::Tab => {
-                                    // Tab键切换磁盘
-                                    app.handle_tab_key();
-                                    if let Err(err) = draw(&mut terminal, &mut app) {
-                                        error!("绘制界面失败: {err}");
-                                        break 'event_loop;
-                                    }
-                                }
-                                _ => {}
                             }
-                        } else if key_event.modifiers == KeyModifiers::SHIFT {
-                            if key_event.code == KeyCode::Tab {
+                            KeyCode::Char('q') if key_event.modifiers.is_empty() => {
+                                break 'event_loop
+                            }
+                            KeyCode::Tab if key_event.modifiers.is_empty() => {
+                                // Tab键切换磁盘
+                                app.handle_tab_key();
+                                if let Err(err) = draw(&mut terminal, &mut app) {
+                                    error!("绘制界面失败: {err}");
+                                    break 'event_loop;
+                                }
+                            }
+                            KeyCode::Tab if key_event.modifiers == KeyModifiers::SHIFT => {
                                 // Shift+Tab键切换到上一个磁盘
                                 app.handle_shift_tab_key();
                                 if let Err(err) = draw(&mut terminal, &mut app) {
@@ -247,10 +327,10 @@ async fn main() -> Result<(), ChaindashError> {
                                     break 'event_loop;
                                 }
                             }
-                        } else if key_event.modifiers == KeyModifiers::CONTROL {
-                            if let KeyCode::Char('c') = key_event.code {
+                            KeyCode::Char('c') if key_event.modifiers == KeyModifiers::CONTROL => {
                                 break 'event_loop
                             }
+                            _ => {}
                         }
                     }
 
@@ -267,8 +347,8 @@ async fn main() -> Result<(), ChaindashError> {
     }
 
     collector.stop();
+    terminal_guard.cleanup();
     let collector_join_result = collector_handle.await;
-    cleanup_terminal();
 
     match collector_join_result {
         Ok(result) => result?,
@@ -276,4 +356,41 @@ async fn main() -> Result<(), ChaindashError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn test_scheduling_quantum_defaults_to_one_second_for_integer_intervals() {
+        let opts = Opts::parse_from(["test", "--interval", "5"]);
+
+        assert_eq!(
+            scheduling_quantum(&opts).expect("quantum should be computed"),
+            Ratio::from_integer(1)
+        );
+    }
+
+    #[test]
+    fn test_scheduling_quantum_supports_fractional_interval_above_one_second() {
+        let opts = Opts::parse_from(["test", "--interval", "3/2"]);
+
+        assert_eq!(
+            scheduling_quantum(&opts).expect("quantum should be computed"),
+            Ratio::new(1, 2)
+        );
+    }
+
+    #[test]
+    fn test_scheduling_quantum_supports_subsecond_interval() {
+        let opts = Opts::parse_from(["test", "--interval", "2/3"]);
+
+        assert_eq!(
+            scheduling_quantum(&opts).expect("quantum should be computed"),
+            Ratio::new(1, 3)
+        );
+    }
 }

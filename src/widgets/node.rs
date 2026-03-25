@@ -51,6 +51,14 @@ impl NodeWidget {
         }
     }
 
+    fn flexible_width(
+        area_width: u16,
+        reserved_width: u16,
+        min_width: u16,
+    ) -> u16 {
+        area_width.saturating_sub(2).saturating_sub(reserved_width).max(min_width)
+    }
+
     fn render_without_stats(
         &self,
         area: Rect,
@@ -86,7 +94,7 @@ impl NodeWidget {
             &[
                 Constraint::Length(20),
                 Constraint::Length(20),
-                Constraint::Length(u16::max((area.width as i16 - 2 - 100 - 8) as u16, 10)),
+                Constraint::Length(Self::flexible_width(area.width, 108, 10)),
                 Constraint::Length(10),
                 Constraint::Length(10),
                 Constraint::Length(10),
@@ -171,7 +179,7 @@ impl NodeWidget {
                 Constraint::Length(10),
                 Constraint::Length(10),
                 Constraint::Length(10),
-                Constraint::Length(u16::max((area.width as i16 - 2 - 184 - 7) as u16, 10)),
+                Constraint::Length(Self::flexible_width(area.width, 191, 10)),
                 Constraint::Length(10),
                 Constraint::Length(25),
                 Constraint::Length(10),
@@ -263,5 +271,11 @@ mod tests {
         let shared_data = create_shared_data();
         let widget = NodeWidget::new(shared_data);
         assert!(!widget.stats.contains_key("nonexistent"));
+    }
+
+    #[test]
+    fn test_flexible_width_saturates_for_narrow_area() {
+        assert_eq!(NodeWidget::flexible_width(20, 108, 10), 10);
+        assert_eq!(NodeWidget::flexible_width(140, 108, 10), 30);
     }
 }

@@ -19,42 +19,54 @@ pub fn new<'a>(title: &'a str) -> Block<'a> {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        style::Color,
+        widgets::Widget,
+    };
+
     use super::*;
 
-    #[test]
-    fn test_block_new_has_title() {
-        let title = " Test Title ";
-        let block = new(title);
-        let _ = block;
+    fn render_block(title: &str) -> Buffer {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        new(title).render(area, &mut buf);
+        buf
     }
 
     #[test]
-    fn test_block_new_empty_title() {
-        let block = new("");
-        let _ = block;
+    fn test_block_renders_borders_with_expected_color() {
+        let buf = render_block(" Test ");
+
+        assert_eq!(buf.get(0, 0).symbol(), "┌");
+        assert_eq!(buf.get(19, 0).symbol(), "┐");
+        assert_eq!(buf.get(0, 4).symbol(), "└");
+        assert_eq!(buf.get(19, 4).symbol(), "┘");
+        assert_eq!(buf.get(0, 0).fg, Color::Indexed(239));
+        assert_eq!(buf.get(19, 4).fg, Color::Indexed(239));
     }
 
     #[test]
-    fn test_block_new_with_unicode_title() {
-        let title = " 节点信息 ";
-        let block = new(title);
-        let _ = block;
+    fn test_block_renders_title_text_with_title_color() {
+        let buf = render_block(" Node ");
+
+        assert_eq!(buf.get(1, 0).symbol(), " ");
+        assert_eq!(buf.get(2, 0).symbol(), "N");
+        assert_eq!(buf.get(3, 0).symbol(), "o");
+        assert_eq!(buf.get(4, 0).symbol(), "d");
+        assert_eq!(buf.get(5, 0).symbol(), "e");
+        assert_eq!(buf.get(2, 0).fg, Color::Indexed(249));
+        assert_eq!(buf.get(5, 0).fg, Color::Indexed(249));
     }
 
     #[test]
-    fn test_block_new_with_special_chars() {
-        let title = " [Node] - (Status) ";
-        let block = new(title);
-        let _ = block;
-    }
+    fn test_block_with_empty_title_keeps_top_border() {
+        let buf = render_block("");
 
-    #[test]
-    fn test_block_border_color_index() {
-        assert_eq!(239_u8, 239_u8);
-    }
-
-    #[test]
-    fn test_block_title_color_index() {
-        assert_eq!(249_u8, 249_u8);
+        assert_eq!(buf.get(0, 0).symbol(), "┌");
+        assert_eq!(buf.get(1, 0).symbol(), "─");
+        assert_eq!(buf.get(18, 0).symbol(), "─");
+        assert_eq!(buf.get(19, 0).symbol(), "┐");
     }
 }

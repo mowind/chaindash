@@ -45,7 +45,7 @@ pub fn draw<B: Backend>(
     app: &mut App,
 ) -> Result<()> {
     let status_message = {
-        let data = app.data.lock().expect("mutex poisoned - recovering");
+        let mut data = app.data.lock().expect("mutex poisoned - recovering");
         data.status_message()
     };
 

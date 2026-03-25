@@ -21,6 +21,7 @@ pub struct App {
 
 impl App {
     /// 处理Tab键事件，切换当前选中的磁盘
+    #[cfg(target_family = "unix")]
     pub fn handle_tab_key(&self) {
         let mut data = self.data.lock().expect("mutex poisoned - recovering");
         let stats = data.system_stats();
@@ -35,7 +36,12 @@ impl App {
         }
     }
 
+    /// 处理Tab键事件，切换当前选中的磁盘
+    #[cfg(not(target_family = "unix"))]
+    pub fn handle_tab_key(&self) {}
+
     /// 处理Shift+Tab键事件，切换到上一个磁盘
+    #[cfg(target_family = "unix")]
     pub fn handle_shift_tab_key(&self) {
         let mut data = self.data.lock().expect("mutex poisoned - recovering");
         let stats = data.system_stats();
@@ -54,6 +60,10 @@ impl App {
             data.update_disk_index(prev_index);
         }
     }
+
+    /// 处理Shift+Tab键事件，切换到上一个磁盘
+    #[cfg(not(target_family = "unix"))]
+    pub fn handle_shift_tab_key(&self) {}
 }
 
 pub struct Widgets {
@@ -136,10 +146,7 @@ mod tests {
         let opts = create_test_opts();
         let app = setup_app(&opts, "chaindash");
 
-        assert!(
-            !app.data.lock().expect("mutex poisoned").cur_block_number() > 0
-                || app.data.lock().expect("mutex poisoned").cur_block_number() == 0
-        );
+        assert_eq!(app.data.lock().expect("mutex poisoned").cur_block_number(), 0);
     }
 
     #[test]

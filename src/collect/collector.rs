@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    convert::TryFrom,
     sync::{
         atomic::{
             AtomicBool,
@@ -7,6 +8,10 @@ use std::{
         },
         Arc,
         Mutex,
+    },
+    time::{
+        Duration as StdDuration,
+        Instant,
     },
 };
 
@@ -117,6 +122,7 @@ pub enum StatusLevel {
 pub struct StatusMessage {
     pub level: StatusLevel,
     pub text: String,
+    expires_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -219,6 +225,8 @@ fn warn_with_status(
 }
 
 const COLLECTOR_RETRY_DELAY: Duration = Duration::from_secs(1);
+const INFO_STATUS_TTL: StdDuration = StdDuration::from_secs(5);
+const WARN_STATUS_TTL: StdDuration = StdDuration::from_secs(15);
 
 fn is_websocket_endpoint(url: &str) -> bool {
     url.starts_with("ws://") || url.starts_with("wss://")
@@ -355,7 +363,14 @@ impl Data {
     }
 
     pub fn states(&self) -> Vec<ConsensusState> {
-        self.states.values().cloned().collect()
+        let mut states: Vec<_> = self.states.values().cloned().collect();
+        states.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.host.cmp(&right.host))
+                .then_with(|| left.current_number.cmp(&right.current_number))
+        });
+        states
     }
 
     pub fn stats(&self) -> HashMap<String, NodeStats> {
@@ -416,10 +431,23 @@ impl Data {
         &mut self,
         new_index: usize,
     ) {
-        self.system_stats.current_disk_index = new_index;
+        self.system_stats.current_disk_index = if self.system_stats.disk_details.is_empty() {
+            0
+        } else {
+            new_index.min(self.system_stats.disk_details.len().saturating_sub(1))
+        };
     }
 
-    pub fn status_message(&self) -> Option<StatusMessage> {
+    pub fn status_message(&mut self) -> Option<StatusMessage> {
+        if self
+            .status_message
+            .as_ref()
+            .and_then(|message| message.expires_at)
+            .is_some_and(|expires_at| Instant::now() >= expires_at)
+        {
+            self.status_message = None;
+        }
+
         self.status_message.clone()
     }
 
@@ -428,9 +456,16 @@ impl Data {
         level: StatusLevel,
         text: impl Into<String>,
     ) {
+        let expires_at = match level {
+            StatusLevel::Info => Some(Instant::now() + INFO_STATUS_TTL),
+            StatusLevel::Warn => Some(Instant::now() + WARN_STATUS_TTL),
+            StatusLevel::Error => None,
+        };
+
         self.status_message = Some(StatusMessage {
             level,
             text: text.into(),
+            expires_at,
         });
     }
 
@@ -901,9 +936,10 @@ fn update_node_stats(
 fn calc_cpu_usage(stats: &Stats) -> f64 {
     let cpu_usage = &stats.cpu_stats.cpu_usage;
     let precpu_usage = &stats.precpu_stats.cpu_usage;
-    let cpu_delta = cpu_usage.total_usage - precpu_usage.total_usage;
+    let cpu_delta = cpu_usage.total_usage.saturating_sub(precpu_usage.total_usage);
     let precpu_system_cpu_usage = stats.precpu_stats.system_cpu_usage.unwrap_or(0);
-    let system_cpu_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0) - precpu_system_cpu_usage;
+    let system_cpu_delta =
+        stats.cpu_stats.system_cpu_usage.unwrap_or(0).saturating_sub(precpu_system_cpu_usage);
     let num_cpus = cpu_usage.percpu_usage.as_ref().map(|v| v.len()).unwrap_or(1);
 
     if system_cpu_delta == 0 {
@@ -1172,7 +1208,14 @@ async fn collect_system_stats(
                 let previous_alert = {
                     let mut data_guard = data.lock().expect("mutex poisoned - recovering");
                     let previous_alert = data_guard.system_stats.has_disk_alerts;
-                    let current_index = data_guard.system_stats.current_disk_index;
+                    let current_index = if disk_details.is_empty() {
+                        0
+                    } else {
+                        data_guard
+                            .system_stats
+                            .current_disk_index
+                            .min(disk_details.len().saturating_sub(1))
+                    };
                     data_guard.system_stats = SystemStats {
                         cpu_usage,
                         memory_used,
@@ -1431,7 +1474,7 @@ async fn fetch_node_ranking(
                 if let Some(data_obj) = node_list_resp.data {
                     let ranking = parse_node_ranking(&data_obj, node_id);
                     let mut data = data.lock().expect("mutex poisoned - recovering");
-                    data.merge_node_ranking(Some(ranking));
+                    data.merge_node_ranking(ranking);
                 } else {
                     warn_with_status(&data, "Node ranking response missing data field");
                 }
@@ -1480,7 +1523,7 @@ async fn fetch_node_detail(
                     return;
                 },
             };
-            let node_detail_resp: types::NodeDetailRespose =
+            let node_detail_resp: types::NodeDetailResponse =
                 match serde_json::from_slice(&body_bytes) {
                     Ok(node_detail_resp) => node_detail_resp,
                     Err(e) => {
@@ -1516,18 +1559,19 @@ async fn fetch_node_detail(
 
 fn parse_node_detail(node_detail: &types::NodeDetail) -> NodeDetail {
     let node_name = node_detail.node_name.clone();
-    let block_qty = node_detail.block_qty as u64;
-    let expect_block_qty = node_detail.expect_block_qty;
-    let mut block_rate = String::new();
-    if block_qty > 0 && expect_block_qty > 0 {
-        let rate = (block_qty as f64) / (expect_block_qty as f64);
-        block_rate = format!("{:.2}%", rate * 100.0);
-    }
+    let block_qty = u64::try_from(node_detail.block_qty).unwrap_or(0);
+    let expect_block_qty = u64::try_from(node_detail.expect_block_qty).unwrap_or(0);
+    let block_rate = if expect_block_qty > 0 {
+        let rate = block_qty as f64 / expect_block_qty as f64;
+        format!("{:.2}%", rate * 100.0)
+    } else {
+        "0.00%".to_string()
+    };
     let daily_block_rate = node_detail.gen_blocks_rate.clone();
     let reward_per = node_detail.reward_per.parse::<f64>().ok().unwrap_or(0.0);
     let reward_value = node_detail.reward_value.parse::<f64>().ok().unwrap_or(0.0);
-    let reward_address = node_detail.denefit_addr.clone();
-    let verifier_time = node_detail.verifier_time as u64;
+    let reward_address = node_detail.benefit_addr.clone();
+    let verifier_time = u64::try_from(node_detail.verifier_time).unwrap_or(0);
 
     NodeDetail {
         node_name,
@@ -1545,10 +1589,27 @@ fn parse_node_detail(node_detail: &types::NodeDetail) -> NodeDetail {
 fn parse_node_ranking(
     data: &[NodeInfo],
     node_id: &str,
-) -> i32 {
-    match data.iter().find(|n| n.node_id == node_id) {
-        Some(node) => node.ranking as i32,
-        None => 0,
+) -> Option<i32> {
+    data.iter()
+        .find(|node| node.node_id == node_id)
+        .and_then(|node| i32::try_from(node.ranking).ok())
+}
+
+/// Test-only methods for Data struct
+#[cfg(test)]
+#[cfg(target_family = "unix")]
+impl Data {
+    /// Set disk details for testing disk navigation
+    pub fn set_disk_details_for_test(
+        &mut self,
+        details: Vec<DiskDetail>,
+    ) {
+        self.system_stats.disk_details = details;
+    }
+
+    /// Get current disk index for testing
+    pub fn current_disk_index_for_test(&self) -> usize {
+        self.system_stats.current_disk_index
     }
 }
 
@@ -1564,8 +1625,8 @@ mod tests {
         Stats,
     };
 
-    /// Helper to create a minimal Stats struct for testing
-    fn create_test_stats(
+    #[derive(Clone, Copy)]
+    struct TestStatsConfig {
         cpu_total: u64,
         precpu_total: u64,
         system_cpu: u64,
@@ -1574,7 +1635,25 @@ mod tests {
         mem_usage: u64,
         mem_limit: u64,
         cache: u64,
-    ) -> Stats {
+    }
+
+    impl Default for TestStatsConfig {
+        fn default() -> Self {
+            Self {
+                cpu_total: 0,
+                precpu_total: 0,
+                system_cpu: 0,
+                pre_system_cpu: 0,
+                percpu_len: 1,
+                mem_usage: 0,
+                mem_limit: 0,
+                cache: 0,
+            }
+        }
+    }
+
+    /// Helper to create a minimal Stats struct for testing
+    fn create_test_stats(config: TestStatsConfig) -> Stats {
         Stats {
             name: None,
             id: None,
@@ -1586,36 +1665,36 @@ mod tests {
             storage_stats: None,
             cpu_stats: CPUStats {
                 cpu_usage: CPUUsage {
-                    total_usage: cpu_total,
-                    percpu_usage: Some(vec![0; percpu_len]),
+                    total_usage: config.cpu_total,
+                    percpu_usage: Some(vec![0; config.percpu_len]),
                     usage_in_kernelmode: 0,
                     usage_in_usermode: 0,
                 },
-                system_cpu_usage: Some(system_cpu),
+                system_cpu_usage: Some(config.system_cpu),
                 online_cups: None,
                 throttling_data: None,
             },
             precpu_stats: CPUStats {
                 cpu_usage: CPUUsage {
-                    total_usage: precpu_total,
-                    percpu_usage: Some(vec![0; percpu_len]),
+                    total_usage: config.precpu_total,
+                    percpu_usage: Some(vec![0; config.percpu_len]),
                     usage_in_kernelmode: 0,
                     usage_in_usermode: 0,
                 },
-                system_cpu_usage: Some(pre_system_cpu),
+                system_cpu_usage: Some(config.pre_system_cpu),
                 online_cups: None,
                 throttling_data: None,
             },
             memory_stats: MemoryStats {
-                usage: mem_usage,
-                max_usage: mem_usage,
+                usage: config.mem_usage,
+                max_usage: config.mem_usage,
                 stats: {
                     let mut m = HashMap::new();
-                    m.insert("cache".to_string(), cache);
+                    m.insert("cache".to_string(), config.cache);
                     m
                 },
                 failcnt: None,
-                limit: mem_limit,
+                limit: config.mem_limit,
                 commit: None,
                 commit_peak_bytes: None,
                 privated_working_set: None,
@@ -1632,14 +1711,14 @@ mod tests {
     fn test_calc_cpu_usage_normal() {
         // cpu_delta = 100, system_cpu_delta = 1000, num_cpus = 2
         // expected = (100/1000) * 2 * 100.0 = 20.0
-        let stats = create_test_stats(
-            1100,  // cpu_total
-            1000,  // precpu_total -> cpu_delta = 100
-            11000, // system_cpu
-            10000, // pre_system_cpu -> system_cpu_delta = 1000
-            2,     // percpu_len (2 CPUs)
-            0, 0, 0,
-        );
+        let stats = create_test_stats(TestStatsConfig {
+            cpu_total: 1100,
+            precpu_total: 1000,
+            system_cpu: 11000,
+            pre_system_cpu: 10000,
+            percpu_len: 2,
+            ..Default::default()
+        });
         let result = calc_cpu_usage(&stats);
         assert!((result - 20.0).abs() < 0.001);
     }
@@ -1648,14 +1727,14 @@ mod tests {
     fn test_calc_cpu_usage_single_cpu() {
         // cpu_delta = 500, system_cpu_delta = 5000, num_cpus = 1
         // expected = (500/5000) * 1 * 100.0 = 10.0
-        let stats = create_test_stats(
-            1500,  // cpu_total
-            1000,  // precpu_total -> cpu_delta = 500
-            15000, // system_cpu
-            10000, // pre_system_cpu -> system_cpu_delta = 5000
-            1,     // percpu_len (1 CPU)
-            0, 0, 0,
-        );
+        let stats = create_test_stats(TestStatsConfig {
+            cpu_total: 1500,
+            precpu_total: 1000,
+            system_cpu: 15000,
+            pre_system_cpu: 10000,
+            percpu_len: 1,
+            ..Default::default()
+        });
         let result = calc_cpu_usage(&stats);
         assert!((result - 10.0).abs() < 0.001);
     }
@@ -1665,14 +1744,14 @@ mod tests {
         // When cpu_delta is 0, result should be 0
         // cpu_delta = 0, system_cpu_delta = 1000, num_cpus = 2
         // expected = (0/1000) * 2 * 100.0 = 0.0
-        let stats = create_test_stats(
-            1000,  // cpu_total
-            1000,  // precpu_total -> cpu_delta = 0
-            11000, // system_cpu
-            10000, // pre_system_cpu -> system_cpu_delta = 1000
-            2,     // percpu_len (2 CPUs)
-            0, 0, 0,
-        );
+        let stats = create_test_stats(TestStatsConfig {
+            cpu_total: 1000,
+            precpu_total: 1000,
+            system_cpu: 11000,
+            pre_system_cpu: 10000,
+            percpu_len: 2,
+            ..Default::default()
+        });
         let result = calc_cpu_usage(&stats);
         assert!((result - 0.0).abs() < 0.001);
     }
@@ -1681,14 +1760,14 @@ mod tests {
     fn test_calc_cpu_usage_four_cpus() {
         // cpu_delta = 1000, system_cpu_delta = 2000, num_cpus = 4
         // expected = (1000/2000) * 4 * 100.0 = 200.0
-        let stats = create_test_stats(
-            2000,  // cpu_total
-            1000,  // precpu_total -> cpu_delta = 1000
-            12000, // system_cpu
-            10000, // pre_system_cpu -> system_cpu_delta = 2000
-            4,     // percpu_len (4 CPUs)
-            0, 0, 0,
-        );
+        let stats = create_test_stats(TestStatsConfig {
+            cpu_total: 2000,
+            precpu_total: 1000,
+            system_cpu: 12000,
+            pre_system_cpu: 10000,
+            percpu_len: 4,
+            ..Default::default()
+        });
         let result = calc_cpu_usage(&stats);
         assert!((result - 200.0).abs() < 0.001);
     }
@@ -1697,13 +1776,14 @@ mod tests {
     fn test_calc_cpu_usage_precpu_system_none() {
         // When precpu_stats.system_cpu_usage is None, it defaults to 0
         // This tests the .unwrap_or(0) behavior
-        let mut stats = create_test_stats(
-            1100,  // cpu_total
-            1000,  // precpu_total
-            11000, // system_cpu
-            10000, // pre_system_cpu
-            2, 0, 0, 0,
-        );
+        let mut stats = create_test_stats(TestStatsConfig {
+            cpu_total: 1100,
+            precpu_total: 1000,
+            system_cpu: 11000,
+            pre_system_cpu: 10000,
+            percpu_len: 2,
+            ..Default::default()
+        });
         stats.precpu_stats.system_cpu_usage = None;
         // pre_system_cpu = 0, system_cpu_delta = 11000 - 0 = 11000
         // cpu_delta = 100
@@ -1717,16 +1797,30 @@ mod tests {
         // When system_cpu_delta is 0, return 0.0 to avoid division by zero
         // cpu_delta = 100, system_cpu_delta = 0, num_cpus = 2
         // expected = 0.0 (division avoided)
-        let stats = create_test_stats(
-            1100,  // cpu_total
-            1000,  // precpu_total -> cpu_delta = 100
-            10000, // system_cpu
-            10000, // pre_system_cpu -> system_cpu_delta = 0
-            2,     // percpu_len (2 CPUs)
-            0, 0, 0,
-        );
+        let stats = create_test_stats(TestStatsConfig {
+            cpu_total: 1100,
+            precpu_total: 1000,
+            system_cpu: 10000,
+            pre_system_cpu: 10000,
+            percpu_len: 2,
+            ..Default::default()
+        });
         let result = calc_cpu_usage(&stats);
         assert!((result - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_calc_cpu_usage_counter_reset_returns_zero() {
+        let stats = create_test_stats(TestStatsConfig {
+            cpu_total: 1000,
+            precpu_total: 2000,
+            system_cpu: 10000,
+            pre_system_cpu: 12000,
+            percpu_len: 2,
+            ..Default::default()
+        });
+
+        assert_eq!(calc_cpu_usage(&stats), 0.0);
     }
 
     // ========================================
@@ -1738,7 +1832,12 @@ mod tests {
         // usage = 1024, cache = 256, limit = 4096
         // used_memory = 1024 - 256 = 768
         // mem_percent = (768 / 4096) * 100.0 = 18.75
-        let stats = create_test_stats(0, 0, 0, 0, 1, 1024, 4096, 256);
+        let stats = create_test_stats(TestStatsConfig {
+            mem_usage: 1024,
+            mem_limit: 4096,
+            cache: 256,
+            ..Default::default()
+        });
         let (used, percent) = calc_mem_usage(&stats);
         assert_eq!(used, 768);
         assert!((percent - 18.75).abs() < 0.001);
@@ -1749,7 +1848,11 @@ mod tests {
         // usage = 1024, cache = 0, limit = 4096
         // used_memory = 1024 - 0 = 1024
         // mem_percent = (1024 / 4096) * 100.0 = 25.0
-        let stats = create_test_stats(0, 0, 0, 0, 1, 1024, 4096, 0);
+        let stats = create_test_stats(TestStatsConfig {
+            mem_usage: 1024,
+            mem_limit: 4096,
+            ..Default::default()
+        });
         let (used, percent) = calc_mem_usage(&stats);
         assert_eq!(used, 1024);
         assert!((percent - 25.0).abs() < 0.001);
@@ -1760,7 +1863,11 @@ mod tests {
         // usage = 4096, cache = 0, limit = 4096
         // used_memory = 4096 - 0 = 4096
         // mem_percent = (4096 / 4096) * 100.0 = 100.0
-        let stats = create_test_stats(0, 0, 0, 0, 1, 4096, 4096, 0);
+        let stats = create_test_stats(TestStatsConfig {
+            mem_usage: 4096,
+            mem_limit: 4096,
+            ..Default::default()
+        });
         let (used, percent) = calc_mem_usage(&stats);
         assert_eq!(used, 4096);
         assert!((percent - 100.0).abs() < 0.001);
@@ -1771,7 +1878,12 @@ mod tests {
         // usage = 256, cache = 512, limit = 4096
         // After fix: saturating_sub returns 0 (no panic)
         // used_memory = 256.saturating_sub(512) = 0
-        let stats = create_test_stats(0, 0, 0, 0, 1, 256, 4096, 512);
+        let stats = create_test_stats(TestStatsConfig {
+            mem_usage: 256,
+            mem_limit: 4096,
+            cache: 512,
+            ..Default::default()
+        });
         let (used, percent) = calc_mem_usage(&stats);
         assert_eq!(used, 0);
         assert!((percent - 0.0).abs() < 0.001);
@@ -1782,7 +1894,10 @@ mod tests {
         // usage = 0, cache = 0, limit = 4096
         // used_memory = 0
         // mem_percent = 0.0
-        let stats = create_test_stats(0, 0, 0, 0, 1, 0, 4096, 0);
+        let stats = create_test_stats(TestStatsConfig {
+            mem_limit: 4096,
+            ..Default::default()
+        });
         let (used, percent) = calc_mem_usage(&stats);
         assert_eq!(used, 0);
         assert!((percent - 0.0).abs() < 0.001);
@@ -1957,6 +2072,126 @@ mod tests {
     }
 
     #[test]
+    fn test_states_returns_stably_sorted_results() {
+        let mut data = Data::default();
+        data.states.insert(
+            "node-b".to_string(),
+            ConsensusState {
+                name: "node-b".to_string(),
+                host: "host-b".to_string(),
+                current_number: 2,
+                ..Default::default()
+            },
+        );
+        data.states.insert(
+            "node-a".to_string(),
+            ConsensusState {
+                name: "node-a".to_string(),
+                host: "host-a".to_string(),
+                current_number: 1,
+                ..Default::default()
+            },
+        );
+
+        let names: Vec<String> = data.states().into_iter().map(|state| state.name).collect();
+
+        assert_eq!(names, vec!["node-a".to_string(), "node-b".to_string()]);
+    }
+
+    #[test]
+    fn test_status_message_hides_expired_entries() {
+        let mut data = Data {
+            status_message: Some(StatusMessage {
+                level: StatusLevel::Info,
+                text: "expired".to_string(),
+                expires_at: Some(Instant::now() - StdDuration::from_secs(1)),
+            }),
+            ..Default::default()
+        };
+
+        assert!(data.status_message().is_none());
+        assert!(data.status_message.is_none());
+    }
+
+    #[test]
+    fn test_set_status_message_applies_ttl_by_level() {
+        let mut data = Data::default();
+
+        data.set_status_message(StatusLevel::Info, "info");
+        assert!(data.status_message.as_ref().and_then(|message| message.expires_at).is_some());
+
+        data.set_status_message(StatusLevel::Warn, "warn");
+        assert!(data.status_message.as_ref().and_then(|message| message.expires_at).is_some());
+
+        data.set_status_message(StatusLevel::Error, "error");
+        assert!(data.status_message.as_ref().is_some_and(|message| message.expires_at.is_none()));
+    }
+
+    #[test]
+    fn test_parse_node_ranking_missing_returns_none() {
+        let ranking = parse_node_ranking(&[], "missing-node");
+
+        assert_eq!(ranking, None);
+    }
+
+    #[test]
+    fn test_parse_node_detail_clamps_negative_values() {
+        let parsed = parse_node_detail(&types::NodeDetail {
+            node_name: "node-a".to_string(),
+            total_value: "0".to_string(),
+            delegate_value: "0".to_string(),
+            delegate_qty: 0,
+            block_qty: -1,
+            expect_block_qty: -10,
+            gen_blocks_rate: "1/day".to_string(),
+            reward_per: "10".to_string(),
+            reward_value: "20".to_string(),
+            benefit_addr: "addr".to_string(),
+            verifier_time: -5,
+        });
+
+        assert_eq!(parsed.block_qty, 0);
+        assert_eq!(parsed.block_rate, "0.00%");
+        assert_eq!(parsed.verifier_time, 0);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_update_disk_index_clamps_to_last_available_disk() {
+        let mut data = Data::default();
+        data.set_disk_details_for_test(vec![
+            DiskDetail {
+                mount_point: "/".to_string(),
+                filesystem: "ext4".to_string(),
+                total: 100,
+                used: 50,
+                available: 50,
+                usage_percent: 50.0,
+                device: "/dev/sda1".to_string(),
+                is_alert: false,
+                is_network: false,
+                last_updated: std::time::Instant::now(),
+            },
+            DiskDetail {
+                mount_point: "/data".to_string(),
+                filesystem: "ext4".to_string(),
+                total: 200,
+                used: 100,
+                available: 100,
+                usage_percent: 50.0,
+                device: "/dev/sdb1".to_string(),
+                is_alert: false,
+                is_network: false,
+                last_updated: std::time::Instant::now(),
+            },
+        ]);
+
+        data.update_disk_index(10);
+
+        assert_eq!(data.current_disk_index_for_test(), 1);
+    }
+
+    #[test]
     fn test_compute_network_rates_first_sample_returns_zero() {
         let collected_at = std::time::Instant::now();
         let (_, rx_rate, tx_rate) = compute_network_rates(None, 2048, 4096, collected_at);
@@ -1979,23 +2214,5 @@ mod tests {
 
         assert_eq!(rx_rate, 2_000_000);
         assert_eq!(tx_rate, 3_000_000);
-    }
-}
-
-/// Test-only methods for Data struct
-#[cfg(test)]
-#[cfg(target_family = "unix")]
-impl Data {
-    /// Set disk details for testing disk navigation
-    pub fn set_disk_details_for_test(
-        &mut self,
-        details: Vec<DiskDetail>,
-    ) {
-        self.system_stats.disk_details = details;
-    }
-
-    /// Get current disk index for testing
-    pub fn current_disk_index_for_test(&self) -> usize {
-        self.system_stats.current_disk_index
     }
 }

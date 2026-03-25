@@ -7,12 +7,17 @@ use ratatui::{
     },
     text::Span,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub const MAX_DATA_POINTS: usize = 200;
 pub const VISIBLE_DATA_POINTS: u64 = 25;
 pub const NARROW_CHART_WIDTH: u16 = 40;
 pub const ULTRA_NARROW_CHART_WIDTH: u16 = 32;
 const INLINE_FRAME_WIDTH: u16 = 2;
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
 
 pub fn trim_data_points(
     data: &mut Vec<(f64, f64)>,
@@ -130,6 +135,7 @@ pub fn recent_window_trend_symbol(
     }
 }
 
+#[cfg(test)]
 pub fn render_right_aligned_text_lines(
     buf: &mut Buffer,
     area: Rect,
@@ -145,7 +151,7 @@ pub fn render_right_aligned_text_lines(
     let has_frame = inner_width > INLINE_FRAME_WIDTH;
     let content_width = lines
         .iter()
-        .map(|(text, _)| text.len())
+        .map(|(text, _)| display_width(text))
         .max()
         .unwrap_or(0)
         .min(inner_width.saturating_sub(if has_frame { INLINE_FRAME_WIDTH } else { 0 }) as usize)
@@ -176,7 +182,7 @@ pub fn render_right_aligned_text_lines(
             buf.get_mut(box_x + total_width - 1, y).set_symbol(right).set_style(frame_style);
         }
 
-        let text_width = text.len().min(content_width as usize) as u16;
+        let text_width = display_width(text).min(content_width as usize) as u16;
         let text_x = content_x + content_width.saturating_sub(text_width);
         buf.set_stringn(text_x, y, text, content_width as usize, *style);
     }
@@ -220,7 +226,7 @@ pub fn render_right_aligned_segment_grid(
     let mut column_widths = vec![0usize; column_count];
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
-            let cell_width = cell.iter().map(|(text, _)| text.len()).sum::<usize>();
+            let cell_width = cell.iter().map(|(text, _)| display_width(text)).sum::<usize>();
             column_widths[index] = column_widths[index].max(cell_width);
         }
     }
@@ -266,11 +272,12 @@ pub fn render_right_aligned_segment_grid(
             let cell_start = cursor_x.saturating_sub(width);
 
             if let Some(cell) = row.get(column_index) {
-                let cell_width = cell.iter().map(|(text, _)| text.len()).sum::<usize>() as u16;
+                let cell_width =
+                    cell.iter().map(|(text, _)| display_width(text)).sum::<usize>() as u16;
                 let mut text_x = cell_start + width.saturating_sub(cell_width);
                 for (text, style) in cell {
-                    buf.set_stringn(text_x, y, text, text.len(), *style);
-                    text_x += text.len() as u16;
+                    buf.set_stringn(text_x, y, text, display_width(text), *style);
+                    text_x += display_width(text) as u16;
                 }
             }
 
@@ -279,6 +286,7 @@ pub fn render_right_aligned_segment_grid(
     }
 }
 
+#[cfg(test)]
 pub fn render_right_aligned_text_grid(
     buf: &mut Buffer,
     area: Rect,
@@ -300,7 +308,7 @@ pub fn render_right_aligned_text_grid(
     let mut column_widths = vec![0usize; column_count];
     for row in rows {
         for (index, (text, _)) in row.iter().enumerate() {
-            column_widths[index] = column_widths[index].max(text.len());
+            column_widths[index] = column_widths[index].max(display_width(text));
         }
     }
 
@@ -351,7 +359,7 @@ pub fn render_right_aligned_text_grid(
 
             if let Some((text, style)) = row.get(column_index) {
                 let available_width = cursor_x.saturating_sub(cell_start) as usize;
-                let text_width = text.len().min(available_width) as u16;
+                let text_width = display_width(text).min(available_width) as u16;
                 let text_x = cell_start + width.saturating_sub(text_width);
                 buf.set_stringn(text_x, y, text, available_width, *style);
             }
@@ -364,6 +372,13 @@ pub fn render_right_aligned_text_grid(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_display_width_uses_terminal_cell_width() {
+        assert_eq!(display_width("ABC"), 3);
+        assert_eq!(display_width("↑"), 1);
+        assert_eq!(display_width("节点"), 4);
+    }
 
     #[test]
     fn test_trim_data_points_keeps_latest_values() {
