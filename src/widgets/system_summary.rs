@@ -6,11 +6,6 @@ use ratatui::{
         Constraint,
         Rect,
     },
-    style::{
-        Color,
-        Modifier,
-        Style,
-    },
     widgets::{
         Row,
         Table,
@@ -133,14 +128,9 @@ impl SystemSummaryWidget {
             format!("\u{f0045} {:.2} MB/s", network_rx_mb),
             format!("\u{f005d} {:.2} MB/s", network_tx_mb),
         ])
-        .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))];
+        .style(block::content_style())];
 
-        let header_row = Row::new(header.iter().copied()).style(
-            Style::default()
-                .fg(Color::Indexed(249_u8))
-                .bg(Color::Reset)
-                .add_modifier(Modifier::BOLD),
-        );
+        let header_row = Row::new(header.iter().copied()).style(block::header_style());
 
         Table::new(
             rows,
@@ -181,14 +171,9 @@ impl SystemSummaryWidget {
             format!(" {:.1}M", network_rx_mb),
             format!(" {:.1}M", network_tx_mb),
         ])
-        .style(Style::default().fg(Color::Indexed(249_u8)).bg(Color::Reset))];
+        .style(block::content_style())];
 
-        let header_row = Row::new(header.iter().copied()).style(
-            Style::default()
-                .fg(Color::Indexed(249_u8))
-                .bg(Color::Reset)
-                .add_modifier(Modifier::BOLD),
-        );
+        let header_row = Row::new(header.iter().copied()).style(block::header_style());
 
         Table::new(
             rows,

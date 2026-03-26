@@ -38,6 +38,7 @@ use crate::{
         ChaindashError,
         Result,
     },
+    widgets::block,
 };
 
 pub fn draw<B: Backend>(
@@ -94,14 +95,41 @@ fn draw_status_bar(
         Span::styled(message.text.as_str(), Style::default().fg(color)),
     ]);
 
-    let paragraph = Paragraph::new(content).block(
+    let paragraph = Paragraph::new(content).style(Style::default().bg(block::PANEL_BG)).block(
         Block::default()
             .title("Status")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(color)),
+            .style(Style::default().bg(block::PANEL_BG))
+            .border_style(Style::default().fg(color).bg(block::PANEL_BG)),
     );
 
     frame.render_widget(paragraph, area);
+}
+
+fn content_row_heights(
+    total_height: u16,
+    system_height: u16,
+) -> (u16, u16) {
+    let remaining = total_height.saturating_sub(system_height);
+    if remaining <= 16 {
+        let bottom = remaining / 2;
+        let chart = remaining.saturating_sub(bottom);
+        return (chart, bottom);
+    }
+
+    let min_chart = 8;
+    let preferred_bottom = if remaining >= 28 {
+        remaining * 2 / 5
+    } else if remaining >= 22 {
+        10
+    } else {
+        8
+    };
+    let max_bottom = remaining.saturating_sub(min_chart);
+    let bottom = preferred_bottom.min(max_bottom).max(8);
+    let chart = remaining.saturating_sub(bottom);
+
+    (chart, bottom)
 }
 
 pub fn draw_widgets(
@@ -112,41 +140,35 @@ pub fn draw_widgets(
 ) {
     #[cfg(target_family = "unix")]
     {
+        let system_height = 5;
+        let (chart_height, bottom_height) = content_row_heights(area.height, system_height);
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(30),
+                    Constraint::Length(system_height),
+                    Constraint::Length(chart_height),
+                    Constraint::Length(bottom_height),
                 ]
                 .as_ref(),
             )
             .split(area);
-        // 使用新的左右分屏布局
         draw_system_row_split(frame, widgets, data, vertical_chunks[0]);
         draw_top_row(frame, widgets, vertical_chunks[1]);
-        draw_bottom_row(frame, widgets, vertical_chunks[2]);
-        draw_bottom_down_row(frame, widgets, vertical_chunks[3]);
+        draw_bottom_section(frame, widgets, vertical_chunks[2]);
     }
 
     #[cfg(not(target_family = "unix"))]
     {
+        let (chart_height, bottom_height) = content_row_heights(area.height, 0);
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
-                [
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(40),
-                    Constraint::Percentage(30),
-                ]
-                .as_ref(),
+                [Constraint::Length(chart_height), Constraint::Length(bottom_height)].as_ref(),
             )
             .split(area);
         draw_top_row(frame, widgets, vertical_chunks[0]);
-        draw_bottom_row(frame, widgets, vertical_chunks[1]);
-        draw_bottom_down_row(frame, widgets, vertical_chunks[2]);
+        draw_bottom_section(frame, widgets, vertical_chunks[1]);
     }
 }
 
@@ -182,28 +204,38 @@ pub fn draw_top_row(
     frame.render_widget(&widgets.txs, horizontal_chunks[1]);
 }
 
-pub fn draw_bottom_row(
+pub fn draw_bottom_section(
     frame: &mut Frame,
     widgets: &mut Widgets,
     area: Rect,
 ) {
+    let detail_percentage = if area.width >= 180 { 60 } else { 58 };
+    let node_percentage = 100 - detail_percentage;
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(100)].as_ref())
+        .constraints(
+            [Constraint::Percentage(node_percentage), Constraint::Percentage(detail_percentage)]
+                .as_ref(),
+        )
         .split(area);
 
     frame.render_widget(&widgets.node, horizontal_chunks[0]);
+    frame.render_widget(&widgets.node_details, horizontal_chunks[1]);
 }
 
-pub fn draw_bottom_down_row(
-    frame: &mut Frame,
-    widgets: &mut Widgets,
-    area: Rect,
-) {
-    let horizontal_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(100)].as_ref())
-        .split(area);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    frame.render_widget(&widgets.node_details, horizontal_chunks[0])
+    #[test]
+    fn test_content_row_heights_balances_tall_layouts() {
+        assert_eq!(content_row_heights(40, 5), (21, 14));
+        assert_eq!(content_row_heights(30, 5), (15, 10));
+    }
+
+    #[test]
+    fn test_content_row_heights_handles_small_layouts() {
+        assert_eq!(content_row_heights(16, 0), (8, 8));
+        assert_eq!(content_row_heights(15, 5), (5, 5));
+    }
 }

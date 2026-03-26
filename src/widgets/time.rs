@@ -132,6 +132,18 @@ fn info_labels(area_width: u16) -> (&'static str, &'static str, &'static str, &'
     }
 }
 
+fn format_block_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    formatted.chars().rev().collect()
+}
+
 fn average_recent_block_time(
     data: &[(f64, f64)],
     sample_count: usize,
@@ -163,12 +175,14 @@ impl Widget for &TimeWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
+        buf.set_style(area, block::content_style());
+
         let dataset = Dataset::default()
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Indexed(70)))
             .data(&self.data);
-        let x_bounds = chart::visible_x_bounds(self.update_count);
+        let x_bounds = chart::visible_x_bounds(self.update_count, area.width);
         let y_max = y_axis_upper_bound(&self.data);
         let avg_time = average_recent_block_time(&self.data, AVERAGE_WINDOW_DATA_POINTS);
         let trend = chart::recent_trend_symbol(&self.data);
@@ -209,7 +223,7 @@ impl Widget for &TimeWidget {
                     ),
                 ],
                 vec![(
-                    format!("{blk_label} {:>8}", self.cur_num),
+                    format!("{blk_label} {:>12}", format_block_number(self.cur_num)),
                     Style::default().fg(Color::DarkGray),
                 )],
             ],
@@ -328,5 +342,10 @@ mod tests {
     fn test_average_recent_block_time_uses_recent_window() {
         let data = vec![(0.0, 1000.0), (1.0, 2000.0), (2.0, 3000.0), (3.0, 7000.0)];
         assert_eq!(average_recent_block_time(&data, 2), 5000);
+    }
+
+    #[test]
+    fn test_format_block_number_adds_grouping_separators() {
+        assert_eq!(format_block_number(144706819), "144,706,819");
     }
 }

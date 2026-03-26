@@ -27,10 +27,16 @@ use crate::{
     },
 };
 
-const MIN_Y_AXIS_MAX_TXS: f64 = 100.0;
+const MIN_Y_AXIS_MAX_TXS: f64 = 10.0;
 const AVERAGE_WINDOW_DATA_POINTS: usize = 10;
-const Y_AXIS_STEPS_TXS: [(f64, f64); 5] =
-    [(1000.0, 100.0), (5000.0, 500.0), (20000.0, 1000.0), (50000.0, 5000.0), (f64::MAX, 10000.0)];
+const Y_AXIS_STEPS_TXS: [(f64, f64); 6] = [
+    (100.0, 10.0),
+    (500.0, 50.0),
+    (1000.0, 100.0),
+    (5000.0, 500.0),
+    (20000.0, 1000.0),
+    (f64::MAX, 5000.0),
+];
 
 pub struct TxsWidget {
     title: String,
@@ -152,6 +158,18 @@ fn format_max_txs(
     format!("{max_label} {:>7} #{max_block_number}", format_tx_count(max_txs))
 }
 
+fn format_block_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    formatted.chars().rev().collect()
+}
+
 fn average_recent_txs(
     data: &[(f64, f64)],
     sample_count: usize,
@@ -183,12 +201,14 @@ impl Widget for &TxsWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
+        buf.set_style(area, block::content_style());
+
         let dataset = Dataset::default()
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Indexed(81)))
             .data(&self.data);
-        let x_bounds = chart::visible_x_bounds(self.update_count);
+        let x_bounds = chart::visible_x_bounds(self.update_count, area.width);
         let y_max = y_axis_upper_bound(&self.data);
         let trend = chart::recent_trend_symbol(&self.data);
         let avg_txs = average_recent_txs(&self.data, AVERAGE_WINDOW_DATA_POINTS);
@@ -229,7 +249,7 @@ impl Widget for &TxsWidget {
                     ),
                 ],
                 vec![(
-                    format!("{blk_label} {:>8}", self.cur_num),
+                    format!("{blk_label} {:>12}", format_block_number(self.cur_num)),
                     Style::default().fg(Color::DarkGray),
                 )],
             ],
@@ -304,7 +324,7 @@ mod tests {
     #[test]
     fn test_y_axis_upper_bound_has_minimum() {
         assert_eq!(y_axis_upper_bound(&[]), MIN_Y_AXIS_MAX_TXS);
-        assert_eq!(y_axis_upper_bound(&[(0.0, 50.0)]), MIN_Y_AXIS_MAX_TXS);
+        assert_eq!(y_axis_upper_bound(&[(0.0, 5.0)]), MIN_Y_AXIS_MAX_TXS);
     }
 
     #[test]
@@ -374,5 +394,10 @@ mod tests {
         assert_eq!(labels.len(), 2);
         assert_eq!(labels[0].content, "0");
         assert_eq!(labels[1].content, "2.5k");
+    }
+
+    #[test]
+    fn test_format_block_number_adds_grouping_separators() {
+        assert_eq!(format_block_number(144706819), "144,706,819");
     }
 }

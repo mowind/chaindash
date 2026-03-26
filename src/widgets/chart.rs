@@ -10,7 +10,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 pub const MAX_DATA_POINTS: usize = 200;
-pub const VISIBLE_DATA_POINTS: u64 = 25;
+pub const MIN_VISIBLE_DATA_POINTS: u64 = 25;
+pub const MAX_VISIBLE_DATA_POINTS: u64 = 120;
 pub const NARROW_CHART_WIDTH: u16 = 40;
 pub const ULTRA_NARROW_CHART_WIDTH: u16 = 32;
 const INLINE_FRAME_WIDTH: u16 = 2;
@@ -28,8 +29,16 @@ pub fn trim_data_points(
     }
 }
 
-pub fn visible_x_bounds(update_count: u64) -> [f64; 2] {
-    [update_count.saturating_sub(VISIBLE_DATA_POINTS) as f64, update_count as f64 + 1.0]
+pub fn visible_data_points(area_width: u16) -> u64 {
+    u64::from(area_width.saturating_sub(2)).clamp(MIN_VISIBLE_DATA_POINTS, MAX_VISIBLE_DATA_POINTS)
+}
+
+pub fn visible_x_bounds(
+    update_count: u64,
+    area_width: u16,
+) -> [f64; 2] {
+    let visible_data_points = visible_data_points(area_width);
+    [update_count.saturating_sub(visible_data_points) as f64, update_count as f64 + 1.0]
 }
 
 pub fn y_axis_upper_bound(
@@ -388,9 +397,16 @@ mod tests {
     }
 
     #[test]
+    fn test_visible_data_points_scales_with_width() {
+        assert_eq!(visible_data_points(10), MIN_VISIBLE_DATA_POINTS);
+        assert_eq!(visible_data_points(60), 58);
+        assert_eq!(visible_data_points(200), MAX_VISIBLE_DATA_POINTS);
+    }
+
+    #[test]
     fn test_visible_x_bounds_avoids_negative_start() {
-        assert_eq!(visible_x_bounds(3), [0.0, 4.0]);
-        assert_eq!(visible_x_bounds(30), [5.0, 31.0]);
+        assert_eq!(visible_x_bounds(3, 40), [0.0, 4.0]);
+        assert_eq!(visible_x_bounds(30, 27), [5.0, 31.0]);
     }
 
     #[test]

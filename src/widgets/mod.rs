@@ -1,4 +1,4 @@
-mod block;
+pub(crate) mod block;
 mod chart;
 #[cfg(target_family = "unix")]
 mod disk_list;
