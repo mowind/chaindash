@@ -12,6 +12,7 @@ use ratatui::{
     style::{
         Color,
         Modifier,
+        Style,
     },
     text::{
         Line,
@@ -35,6 +36,9 @@ use crate::{
     update::UpdatableWidget,
     widgets::block,
 };
+
+const NODE_VALUE_COLOR: Color = Color::Indexed(153);
+const RUNTIME_VALUE_COLOR: Color = Color::Indexed(150);
 
 pub struct NodeWidget {
     title: String,
@@ -82,13 +86,18 @@ impl NodeWidget {
         format!("{:.2}G", value as f64 / 1024.0 / 1024.0 / 1024.0)
     }
 
-    fn info_line(
+    fn section_heading(title: &str) -> Line<'static> {
+        Line::from(vec![Span::styled(title.to_string(), block::header_style())])
+    }
+
+    fn info_line_with_style(
         label: &str,
         value: impl Into<String>,
+        value_style: Style,
     ) -> Line<'static> {
         Line::from(vec![
             Span::styled(format!("{label}: "), block::muted_style()),
-            Span::styled(value.into(), block::content_style()),
+            Span::styled(value.into(), value_style),
         ])
     }
 
@@ -115,6 +124,16 @@ impl NodeWidget {
             return;
         }
 
+        let content = Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        if content.width == 0 || content.height == 0 {
+            return;
+        }
+
         let columns = if stat.is_some() {
             Layout::default()
                 .direction(Direction::Horizontal)
@@ -126,34 +145,82 @@ impl NodeWidget {
                     ]
                     .as_ref(),
                 )
-                .split(inner)
+                .split(content)
         } else {
             Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(46), Constraint::Percentage(54)].as_ref())
-                .split(inner)
+                .constraints(
+                    [
+                        Constraint::Percentage(34),
+                        Constraint::Percentage(33),
+                        Constraint::Percentage(33),
+                    ]
+                    .as_ref(),
+                )
+                .split(content)
         };
 
+        let show_section_headings = content.height >= 7;
+        let node_value_style = block::content_style().add_modifier(Modifier::BOLD);
+        let metric_value_style =
+            block::content_style().fg(NODE_VALUE_COLOR).add_modifier(Modifier::BOLD);
+        let runtime_value_style =
+            block::content_style().fg(RUNTIME_VALUE_COLOR).add_modifier(Modifier::BOLD);
         let (role_text, role_color) = Self::role_badge(node);
-        let left_lines = vec![
-            Self::info_line("Name", node.name.clone()),
-            Self::info_line("Host", node.host.clone()),
-            Line::from(vec![
-                Span::styled("Role: ", block::muted_style()),
-                Span::styled(
-                    role_text.to_string(),
-                    block::content_style().fg(role_color).add_modifier(Modifier::BOLD),
-                ),
-            ]),
+
+        let mut left_lines = Vec::new();
+        if show_section_headings {
+            left_lines.push(Self::section_heading("Node"));
+        }
+        left_lines.push(Self::info_line_with_style("Name", node.name.clone(), node_value_style));
+        left_lines.push(Self::info_line_with_style(
+            "Host",
+            node.host.clone(),
+            block::content_style(),
+        ));
+        left_lines.push(Line::from(vec![
+            Span::styled("Role: ", block::muted_style()),
+            Span::styled(
+                role_text.to_string(),
+                block::content_style().fg(role_color).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+
+        let chain_primary_lines = [
+            Self::info_line_with_style(
+                "Block",
+                Self::format_number(node.current_number),
+                metric_value_style,
+            ),
+            Self::info_line_with_style(
+                "Epoch",
+                Self::format_number(node.epoch),
+                metric_value_style,
+            ),
+            Self::info_line_with_style("View", Self::format_number(node.view), metric_value_style),
         ];
-        let middle_lines = vec![
-            Self::info_line("Block", Self::format_number(node.current_number)),
-            Self::info_line("Epoch", Self::format_number(node.epoch)),
-            Self::info_line("View", Self::format_number(node.view)),
-            Self::info_line("QC", Self::format_number(node.qc)),
-            Self::info_line("Locked", Self::format_number(node.locked)),
-            Self::info_line("Committed", Self::format_number(node.committed)),
+        let chain_secondary_lines = [
+            Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style),
+            Self::info_line_with_style(
+                "Locked",
+                Self::format_number(node.locked),
+                metric_value_style,
+            ),
+            Self::info_line_with_style(
+                "Committed",
+                Self::format_number(node.committed),
+                metric_value_style,
+            ),
         ];
+
+        let mut middle_lines = Vec::new();
+        if show_section_headings {
+            middle_lines.push(Self::section_heading("Chain"));
+        }
+        middle_lines.extend(chain_primary_lines.clone());
+        if stat.is_some() {
+            middle_lines.extend(chain_secondary_lines.clone());
+        }
 
         let left =
             Paragraph::new(left_lines).style(block::content_style()).wrap(Wrap { trim: true });
@@ -166,20 +233,52 @@ impl NodeWidget {
         if let Some(stat) = stat {
             let mem = Self::format_gigabytes(stat.mem);
             let mem_limit = Self::format_gigabytes(stat.mem_limit);
-            let right_lines = vec![
-                Self::info_line("CPU", format!("{:.2}%", stat.cpu_percent)),
-                Self::info_line("Mem", format!("{:.2}%  {mem}/{mem_limit}", stat.mem_percent)),
-                Self::info_line(
+            let mut right_lines = Vec::new();
+            if show_section_headings {
+                right_lines.push(Self::section_heading("Runtime"));
+            }
+            right_lines.extend([
+                Self::info_line_with_style(
+                    "CPU",
+                    format!("{:.2}%", stat.cpu_percent),
+                    runtime_value_style,
+                ),
+                Self::info_line_with_style(
+                    "Mem",
+                    format!("{:.2}%  {mem}/{mem_limit}", stat.mem_percent),
+                    runtime_value_style,
+                ),
+                Self::info_line_with_style(
                     "RX",
                     format!("{:.2} MB/s", stat.network_rx as f64 / 1024.0 / 1024.0),
+                    runtime_value_style,
                 ),
-                Self::info_line(
+                Self::info_line_with_style(
                     "TX",
                     format!("{:.2} MB/s", stat.network_tx as f64 / 1024.0 / 1024.0),
+                    runtime_value_style,
                 ),
-                Self::info_line("Read", Self::format_gigabytes(stat.blk_read)),
-                Self::info_line("Write", Self::format_gigabytes(stat.blk_write)),
-            ];
+                Self::info_line_with_style(
+                    "Read",
+                    Self::format_gigabytes(stat.blk_read),
+                    runtime_value_style,
+                ),
+                Self::info_line_with_style(
+                    "Write",
+                    Self::format_gigabytes(stat.blk_write),
+                    runtime_value_style,
+                ),
+            ]);
+            Paragraph::new(right_lines)
+                .style(block::content_style())
+                .wrap(Wrap { trim: true })
+                .render(columns[2], buf);
+        } else {
+            let mut right_lines = Vec::new();
+            if show_section_headings {
+                right_lines.push(Self::section_heading("Consensus"));
+            }
+            right_lines.extend(chain_secondary_lines);
             Paragraph::new(right_lines)
                 .style(block::content_style())
                 .wrap(Wrap { trim: true })

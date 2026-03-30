@@ -34,7 +34,7 @@ pub fn new<'a>(title: &'a str) -> Block<'a> {
         .style(Style::default().bg(PANEL_BG))
         .border_style(Style::default().fg(PANEL_BORDER).bg(PANEL_BG))
         .title(title)
-        .title_style(Style::default().fg(PANEL_TITLE).bg(PANEL_BG))
+        .title_style(Style::default().fg(PANEL_TITLE).bg(PANEL_BG).add_modifier(Modifier::BOLD))
 }
 
 #[cfg(test)]

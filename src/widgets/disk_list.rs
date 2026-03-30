@@ -79,11 +79,24 @@ impl DiskListWidget {
         let current_index = stats.current_disk_index.min(disk_details.len().saturating_sub(1));
 
         if disk_details.is_empty() {
+            let outer_block = block::new(" Disk Details ");
+            let inner = outer_block.inner(area);
+            outer_block.render(area, buf);
+
+            if inner.width == 0 || inner.height == 0 {
+                return;
+            }
+
+            let content = Rect::new(
+                inner.x,
+                inner.y.saturating_add(1),
+                inner.width,
+                inner.height.saturating_sub(1),
+            );
             Paragraph::new(vec![Line::raw("No disk mount points found")])
-                .block(block::new(" Disk Details "))
                 .style(block::content_style())
                 .wrap(Wrap { trim: true })
-                .render(area, buf);
+                .render(content, buf);
             return;
         }
 
@@ -146,15 +159,20 @@ impl DiskListWidget {
             format!("Mount: {}", disk.mount_point)
         };
         let usage_label = if disk.is_alert {
-            format!("{:.1}% used [alert]", disk.usage_percent)
+            format!("{:.1}% [alert]", disk.usage_percent)
         } else {
-            format!("{:.1}% used", disk.usage_percent)
+            format!("{:.1}%", disk.usage_percent)
         };
 
         vec![
             mount_label,
-            format!("{} / {} used", Self::format_size(disk.used), Self::format_size(disk.total)),
-            format!("{} free · {}", Self::format_size(disk.available), usage_label),
+            format!(
+                "Used: {} / {} · {}",
+                Self::format_size(disk.used),
+                Self::format_size(disk.total),
+                usage_label
+            ),
+            format!("Free: {} · FS {}", Self::format_size(disk.available), disk.filesystem),
         ]
     }
 
@@ -168,11 +186,25 @@ impl DiskListWidget {
         let lines: Vec<Line> =
             self.summary_lines(current_index).into_iter().map(Line::raw).collect();
 
+        let outer_block = block::new(title);
+        let inner = outer_block.inner(area);
+        outer_block.render(area, buf);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let content = Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+
         Paragraph::new(lines)
-            .block(block::new(title))
             .style(block::content_style())
             .wrap(Wrap { trim: true })
-            .render(area, buf);
+            .render(content, buf);
     }
 
     fn format_size(bytes: u64) -> String {
@@ -295,7 +327,7 @@ mod tests {
         let lines = widget.summary_lines(0);
 
         assert_eq!(lines[0], "Mount: /data");
-        assert_eq!(lines[1], "40.0G / 100.0G used");
-        assert_eq!(lines[2], "60.0G free · 40.0% used");
+        assert_eq!(lines[1], "Used: 40.0G / 100.0G · 40.0%");
+        assert_eq!(lines[2], "Free: 60.0G · FS ext4");
     }
 }

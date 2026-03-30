@@ -3,21 +3,498 @@ use ratatui::{
     layout::Rect,
     style::{
         Color,
+        Modifier,
         Style,
     },
-    text::Span,
+    widgets::Widget,
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::widgets::block;
+
 pub const MAX_DATA_POINTS: usize = 200;
-pub const MIN_VISIBLE_DATA_POINTS: u64 = 25;
-pub const MAX_VISIBLE_DATA_POINTS: u64 = 120;
 pub const NARROW_CHART_WIDTH: u16 = 40;
 pub const ULTRA_NARROW_CHART_WIDTH: u16 = 32;
+pub const PLOT_FILL_COLOR: Color = Color::Rgb(214, 106, 206);
+pub const PLOT_CREST_COLOR: Color = Color::Rgb(232, 224, 255);
+pub const AXIS_LABEL_COLOR: Color = Color::Indexed(245);
+pub const INFO_FRAME_COLOR: Color = Color::Indexed(241);
+pub const INFO_LABEL_COLOR: Color = Color::Indexed(247);
 const INLINE_FRAME_WIDTH: u16 = 2;
+
+pub type StyledSegment = (String, Style);
+pub type StyledSegments = Vec<StyledSegment>;
+pub type LabeledBoxRow = (String, Style, StyledSegments);
+pub type SegmentGridRow = Vec<StyledSegments>;
+
+#[derive(Clone, Copy)]
+pub struct StandardMetricPalette {
+    pub trend_up: Color,
+    pub trend_down: Color,
+    pub current_fallback: Color,
+    pub top_fallback: Color,
+    pub avg: Color,
+    pub block: Color,
+}
+
+impl StandardMetricPalette {
+    pub fn trend_style(
+        self,
+        trend: &str,
+    ) -> Style {
+        trend_style(trend, self.trend_up, self.trend_down)
+    }
+
+    pub fn current_box_style(self) -> Style {
+        Style::default().fg(PLOT_FILL_COLOR).add_modifier(Modifier::BOLD)
+    }
+
+    pub fn current_fallback_style(self) -> Style {
+        Style::default().fg(self.current_fallback).add_modifier(Modifier::BOLD)
+    }
+
+    pub fn top_box_style(self) -> Style {
+        Style::default().fg(PLOT_CREST_COLOR)
+    }
+
+    pub fn top_fallback_style(self) -> Style {
+        Style::default().fg(self.top_fallback)
+    }
+
+    pub fn avg_style(self) -> Style {
+        Style::default().fg(self.avg)
+    }
+
+    pub fn block_style(self) -> Style {
+        Style::default().fg(self.block)
+    }
+}
+
+pub struct StandardMetricValues<'a> {
+    pub trend: &'a str,
+    pub current_box_value: String,
+    pub current_fallback_value: String,
+    pub top_box_value: String,
+    pub top_fallback: String,
+    pub avg_trend: &'a str,
+    pub avg_box_value: String,
+    pub avg_fallback_value: String,
+    pub block_box_value: String,
+    pub block_fallback: String,
+}
+
+pub fn styled_segment<S>(
+    text: S,
+    style: Style,
+) -> StyledSegment
+where
+    S: Into<String>,
+{
+    (text.into(), style)
+}
+
+pub fn single_segment<S>(
+    text: S,
+    style: Style,
+) -> StyledSegments
+where
+    S: Into<String>,
+{
+    vec![styled_segment(text, style)]
+}
+
+pub fn labeled_info_row(
+    label: &str,
+    value_segments: StyledSegments,
+) -> LabeledBoxRow {
+    (label.to_string(), Style::default().fg(INFO_LABEL_COLOR), value_segments)
+}
+
+pub fn two_column_segment_grid(
+    top_left: StyledSegments,
+    top_right: StyledSegments,
+    bottom_left: StyledSegments,
+    bottom_right: StyledSegments,
+) -> Vec<SegmentGridRow> {
+    vec![vec![top_left, top_right], vec![bottom_left, bottom_right]]
+}
+
+pub fn standard_metric_rows(
+    labels: (&str, &str, &str, &str),
+    values: &StandardMetricValues<'_>,
+    palette: StandardMetricPalette,
+) -> (Vec<LabeledBoxRow>, Vec<SegmentGridRow>) {
+    let (cur_label, _max_label, avg_label, _blk_label) = labels;
+
+    let box_rows = vec![
+        labeled_info_row(
+            "now:",
+            vec![
+                styled_segment(values.trend, palette.trend_style(values.trend)),
+                styled_segment(values.current_box_value.clone(), palette.current_box_style()),
+            ],
+        ),
+        labeled_info_row(
+            "top:",
+            single_segment(values.top_box_value.clone(), palette.top_box_style()),
+        ),
+        labeled_info_row(
+            "avg:",
+            vec![
+                styled_segment(values.avg_trend, palette.trend_style(values.avg_trend)),
+                styled_segment(values.avg_box_value.clone(), palette.avg_style()),
+            ],
+        ),
+        labeled_info_row(
+            "blk:",
+            single_segment(values.block_box_value.clone(), palette.block_style()),
+        ),
+    ];
+
+    let fallback_rows = two_column_segment_grid(
+        vec![
+            styled_segment(format!("{cur_label} "), palette.current_fallback_style()),
+            styled_segment(values.trend, palette.trend_style(values.trend)),
+            styled_segment(values.current_fallback_value.clone(), palette.current_fallback_style()),
+        ],
+        single_segment(values.top_fallback.clone(), palette.top_fallback_style()),
+        vec![
+            styled_segment(format!("{avg_label} "), palette.avg_style()),
+            styled_segment(values.avg_trend, palette.trend_style(values.avg_trend)),
+            styled_segment(values.avg_fallback_value.clone(), palette.avg_style()),
+        ],
+        single_segment(values.block_fallback.clone(), palette.block_style()),
+    );
+
+    (box_rows, fallback_rows)
+}
+
+pub struct MetricPanel<'a> {
+    pub outer_title: &'a str,
+    pub y_max: f64,
+    pub top_label: &'a str,
+    pub box_rows: &'a [LabeledBoxRow],
+    pub box_options: LabeledBoxOptions<'a>,
+    pub fallback_rows: &'a [SegmentGridRow],
+    pub plot_fill_style: Style,
+    pub plot_crest_style: Style,
+    pub band_rows: Option<u16>,
+}
+
+pub struct LabeledBoxOptions<'a> {
+    pub start_y_offset: u16,
+    pub title: &'a str,
+    pub title_style: Style,
+    pub frame_style: Style,
+    pub background_style: Style,
+    pub column_gap: u16,
+    pub right_inset: u16,
+}
+
+pub fn default_labeled_box_options<'a>(title: &'a str) -> LabeledBoxOptions<'a> {
+    LabeledBoxOptions {
+        start_y_offset: 2,
+        title,
+        title_style: Style::default()
+            .fg(block::PANEL_TITLE)
+            .bg(block::PANEL_BG)
+            .add_modifier(Modifier::BOLD),
+        frame_style: Style::default().fg(INFO_FRAME_COLOR).bg(block::PANEL_BG),
+        background_style: block::content_style(),
+        column_gap: 2,
+        right_inset: 2,
+    }
+}
+
+pub fn lower_band_rows(area_height: u16) -> u16 {
+    area_height.saturating_mul(3).saturating_div(4).max(2)
+}
+
+pub fn lighter_band_rows(area_height: u16) -> u16 {
+    area_height.saturating_mul(2).saturating_div(3).max(2)
+}
+
+pub fn info_labels(area_width: u16) -> (&'static str, &'static str, &'static str, &'static str) {
+    if area_width < ULTRA_NARROW_CHART_WIDTH {
+        ("C", "M", "A", "B")
+    } else {
+        ("CUR", "MAX", "AVG", "BLK")
+    }
+}
+
+pub fn format_grouped_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    formatted.chars().rev().collect()
+}
 
 fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
+}
+
+pub fn clear_area(
+    buf: &mut Buffer,
+    area: Rect,
+    style: Style,
+) {
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf.get_mut(x, y).set_symbol(" ").set_style(style);
+        }
+    }
+}
+
+pub fn render_left_axis_labels(
+    buf: &mut Buffer,
+    area: Rect,
+    top_label: &str,
+    bottom_label: &str,
+    style: Style,
+) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+
+    let label_width = display_width(top_label).max(display_width(bottom_label)) as u16;
+    let gutter_width = label_width.saturating_add(1);
+    if label_width == 0 || area.width.saturating_sub(gutter_width) < 4 {
+        return area;
+    }
+
+    let label_area_width = gutter_width.saturating_sub(1) as usize;
+    let top_x = area.x + label_area_width.saturating_sub(display_width(top_label)) as u16;
+    buf.set_stringn(top_x, area.y, top_label, label_area_width, style);
+
+    if area.height > 1 {
+        let bottom_y = area.y + area.height - 1;
+        let bottom_x = area.x + label_area_width.saturating_sub(display_width(bottom_label)) as u16;
+        buf.set_stringn(bottom_x, bottom_y, bottom_label, label_area_width, style);
+    }
+
+    Rect::new(area.x + gutter_width, area.y, area.width.saturating_sub(gutter_width), area.height)
+}
+
+fn braille_fill_symbol(filled_rows: u16) -> &'static str {
+    match filled_rows {
+        0 => " ",
+        1 => "⣀",
+        2 => "⣤",
+        3 => "⣶",
+        _ => "⣿",
+    }
+}
+
+pub fn render_bottom_band_dotted_plot(
+    buf: &mut Buffer,
+    area: Rect,
+    data: &[(f64, f64)],
+    y_max: f64,
+    band_rows: u16,
+    fill_style: Style,
+    crest_style: Style,
+) {
+    if area.width == 0 || area.height == 0 || data.is_empty() || y_max <= 0.0 {
+        return;
+    }
+
+    let visible_width = area.width as usize;
+    let visible_count = visible_width.min(data.len());
+    let start_index = data.len().saturating_sub(visible_count);
+    let start_x = area.x + area.width.saturating_sub(visible_count as u16);
+    let band_rows = band_rows.clamp(1, area.height);
+    let band_units = band_rows.saturating_mul(4);
+
+    let visible_data = &data[start_index..];
+
+    for (column_index, (_, value)) in visible_data.iter().enumerate() {
+        let x = start_x + column_index as u16;
+        let prev = if column_index > 0 {
+            visible_data[column_index - 1].1
+        } else {
+            *value
+        };
+        let next = if column_index + 1 < visible_data.len() {
+            visible_data[column_index + 1].1
+        } else {
+            *value
+        };
+        let smoothed_value = ((prev + *value * 2.0 + next) / 4.0).max(0.0).min(y_max);
+        let ratio = (smoothed_value / y_max).clamp(0.0, 1.0);
+        let mut filled_units = (ratio * f64::from(band_units)).round() as u16;
+        if smoothed_value > 0.0 && filled_units == 0 {
+            filled_units = 1;
+        }
+
+        for cell_offset in 0..band_rows {
+            let y = area.y + area.height - 1 - cell_offset;
+            let cell_start = cell_offset.saturating_mul(4);
+            let filled_rows = filled_units.saturating_sub(cell_start).min(4);
+            if filled_rows > 0 {
+                let is_crest = filled_units > cell_start && filled_units <= cell_start + 4;
+                let style = if is_crest { crest_style } else { fill_style };
+                buf.get_mut(x, y).set_symbol(braille_fill_symbol(filled_rows)).set_style(style);
+            }
+        }
+    }
+}
+
+pub fn default_metric_panel<'a>(
+    outer_title: &'a str,
+    box_title: &'a str,
+    y_max: f64,
+    top_label: &'a str,
+    box_rows: &'a [LabeledBoxRow],
+    fallback_rows: &'a [SegmentGridRow],
+) -> MetricPanel<'a> {
+    MetricPanel {
+        outer_title,
+        y_max,
+        top_label,
+        box_rows,
+        box_options: default_labeled_box_options(box_title),
+        fallback_rows,
+        plot_fill_style: Style::default().fg(PLOT_FILL_COLOR).bg(block::PANEL_BG),
+        plot_crest_style: Style::default().fg(PLOT_CREST_COLOR).bg(block::PANEL_BG),
+        band_rows: None,
+    }
+}
+
+pub fn render_metric_panel(
+    buf: &mut Buffer,
+    area: Rect,
+    data: &[(f64, f64)],
+    panel: &MetricPanel<'_>,
+) {
+    buf.set_style(area, block::content_style());
+
+    let outer_block = block::new(panel.outer_title);
+    let inner = outer_block.inner(area);
+    outer_block.render(area, buf);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    clear_area(buf, inner, block::content_style());
+
+    let plot_area = render_left_axis_labels(
+        buf,
+        inner,
+        panel.top_label,
+        "0",
+        Style::default().fg(AXIS_LABEL_COLOR).bg(block::PANEL_BG),
+    );
+    let band_rows = panel.band_rows.unwrap_or_else(|| lower_band_rows(plot_area.height));
+
+    render_bottom_band_dotted_plot(
+        buf,
+        plot_area,
+        data,
+        panel.y_max,
+        band_rows,
+        panel.plot_fill_style,
+        panel.plot_crest_style,
+    );
+
+    if !render_right_aligned_labeled_box(buf, inner, panel.box_rows, &panel.box_options) {
+        render_right_aligned_segment_grid(buf, inner, 0, panel.fallback_rows, 2);
+    }
+}
+
+pub fn render_right_aligned_labeled_box(
+    buf: &mut Buffer,
+    area: Rect,
+    rows: &[LabeledBoxRow],
+    options: &LabeledBoxOptions<'_>,
+) -> bool {
+    let inner_width = area.width.saturating_sub(2);
+    if inner_width == 0 || rows.is_empty() {
+        return false;
+    }
+
+    let label_width = rows.iter().map(|(label, _, _)| display_width(label)).max().unwrap_or(0);
+    let value_width = rows
+        .iter()
+        .map(|(_, _, value)| value.iter().map(|(text, _)| display_width(text)).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+    let content_width = label_width
+        .saturating_add(options.column_gap as usize)
+        .saturating_add(value_width)
+        .max(display_width(options.title).saturating_add(2));
+    if content_width == 0 {
+        return false;
+    }
+
+    let available_content_width = inner_width.saturating_sub(2) as usize;
+    if content_width > available_content_width {
+        return false;
+    }
+
+    let total_rows = rows.len().saturating_add(2) as u16;
+    let available_rows = area.height.saturating_sub(options.start_y_offset.saturating_add(1));
+    if total_rows == 0 || total_rows > available_rows {
+        return false;
+    }
+
+    let content_width = content_width as u16;
+    let label_width = label_width as u16;
+    let total_width = content_width.saturating_add(2);
+    let box_x = area.x + area.width.saturating_sub(total_width.saturating_add(options.right_inset));
+    let content_x = box_x.saturating_add(1);
+    let top_y = area.y + options.start_y_offset;
+    let bottom_y = top_y + total_rows - 1;
+
+    for y in top_y..=bottom_y {
+        for x in box_x..box_x + total_width {
+            buf.get_mut(x, y).set_symbol(" ").set_style(options.background_style);
+        }
+    }
+
+    buf.get_mut(box_x, top_y).set_symbol("╭").set_style(options.frame_style);
+    buf.get_mut(box_x + total_width - 1, top_y).set_symbol("╮").set_style(options.frame_style);
+    for x in box_x + 1..box_x + total_width - 1 {
+        buf.get_mut(x, top_y).set_symbol("─").set_style(options.frame_style);
+    }
+
+    let title_text = format!(" {} ", options.title);
+    let title_width = display_width(&title_text) as u16;
+    let title_x = content_x + if content_width > title_width { 1 } else { 0 };
+    buf.set_stringn(title_x, top_y, &title_text, title_text.len(), options.title_style);
+
+    for (index, (label, label_style, value_segments)) in rows.iter().enumerate() {
+        let y = top_y + index as u16 + 1;
+        buf.get_mut(box_x, y).set_symbol("│").set_style(options.frame_style);
+        buf.get_mut(box_x + total_width - 1, y).set_symbol("│").set_style(options.frame_style);
+
+        buf.set_stringn(content_x, y, label, label_width as usize, *label_style);
+
+        let row_width = value_segments
+            .iter()
+            .map(|(text, _)| display_width(text))
+            .sum::<usize>()
+            .min(content_width as usize);
+        let mut text_x = content_x + content_width.saturating_sub(row_width as u16);
+        for (text, style) in value_segments {
+            let segment_width = display_width(text);
+            buf.set_stringn(text_x, y, text, segment_width, *style);
+            text_x += segment_width as u16;
+        }
+    }
+
+    buf.get_mut(box_x, bottom_y).set_symbol("╰").set_style(options.frame_style);
+    buf.get_mut(box_x + total_width - 1, bottom_y).set_symbol("╯").set_style(options.frame_style);
+    for x in box_x + 1..box_x + total_width - 1 {
+        buf.get_mut(x, bottom_y).set_symbol("─").set_style(options.frame_style);
+    }
+
+    true
 }
 
 pub fn trim_data_points(
@@ -29,16 +506,31 @@ pub fn trim_data_points(
     }
 }
 
-pub fn visible_data_points(area_width: u16) -> u64 {
-    u64::from(area_width.saturating_sub(2)).clamp(MIN_VISIBLE_DATA_POINTS, MAX_VISIBLE_DATA_POINTS)
+pub fn append_u64_samples<I>(
+    data: &mut Vec<(f64, f64)>,
+    update_count: &mut u64,
+    samples: I,
+) where
+    I: IntoIterator<Item = u64>,
+{
+    for sample in samples {
+        data.push((*update_count as f64, sample as f64));
+        *update_count += 1;
+    }
+
+    trim_data_points(data, MAX_DATA_POINTS);
 }
 
-pub fn visible_x_bounds(
-    update_count: u64,
-    area_width: u16,
-) -> [f64; 2] {
-    let visible_data_points = visible_data_points(area_width);
-    [update_count.saturating_sub(visible_data_points) as f64, update_count as f64 + 1.0]
+pub fn trend_style(
+    trend: &str,
+    up_color: Color,
+    down_color: Color,
+) -> Style {
+    match trend {
+        "↑" => Style::default().fg(up_color).add_modifier(Modifier::BOLD),
+        "↓" => Style::default().fg(down_color).add_modifier(Modifier::BOLD),
+        _ => Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+    }
 }
 
 pub fn y_axis_upper_bound(
@@ -63,30 +555,8 @@ pub fn y_axis_upper_bound(
     (value_with_headroom / step).ceil() * step
 }
 
-pub fn y_axis_labels_with_count<F>(
-    y_max: f64,
-    formatter: F,
-    label_count: usize,
-) -> Vec<Span<'static>>
-where
-    F: Fn(u64) -> String,
-{
-    match label_count {
-        0 => Vec::new(),
-        1 => vec![Span::raw(formatter(y_max.round() as u64))],
-        2 => vec![Span::raw("0"), Span::raw(formatter(y_max.round() as u64))],
-        _ => vec![
-            Span::raw("0"),
-            Span::raw(formatter((y_max / 2.0).round() as u64)),
-            Span::raw(formatter(y_max.round() as u64)),
-        ],
-    }
-}
-
-pub fn recent_trend_symbol(data: &[(f64, f64)]) -> &'static str {
-    let recent_values: Vec<u64> = data
-        .iter()
-        .rev()
+fn rounded_nonzero_values(data: &[(f64, f64)]) -> Vec<u64> {
+    data.iter()
         .filter_map(|(_, value)| {
             if *value > 0.0 {
                 Some(value.round() as u64)
@@ -94,8 +564,26 @@ pub fn recent_trend_symbol(data: &[(f64, f64)]) -> &'static str {
                 None
             }
         })
-        .take(2)
-        .collect();
+        .collect()
+}
+
+pub fn average_recent_nonzero_rounded(
+    data: &[(f64, f64)],
+    sample_count: usize,
+) -> u64 {
+    let recent_values: Vec<u64> =
+        rounded_nonzero_values(data).into_iter().rev().take(sample_count).collect();
+
+    if recent_values.is_empty() {
+        return 0;
+    }
+
+    let sum: u64 = recent_values.iter().sum();
+    sum / recent_values.len() as u64
+}
+
+pub fn recent_trend_symbol(data: &[(f64, f64)]) -> &'static str {
+    let recent_values: Vec<u64> = rounded_nonzero_values(data).into_iter().rev().take(2).collect();
 
     if recent_values.len() < 2 {
         return "→";
@@ -114,16 +602,7 @@ pub fn recent_window_trend_symbol(
     data: &[(f64, f64)],
     sample_count: usize,
 ) -> &'static str {
-    let values: Vec<u64> = data
-        .iter()
-        .filter_map(|(_, value)| {
-            if *value > 0.0 {
-                Some(value.round() as u64)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let values = rounded_nonzero_values(data);
 
     if sample_count == 0 || values.len() < sample_count * 2 {
         return "→";
@@ -218,7 +697,7 @@ pub fn render_right_aligned_segment_grid(
     buf: &mut Buffer,
     area: Rect,
     start_y_offset: u16,
-    rows: &[Vec<Vec<(String, Style)>>],
+    rows: &[SegmentGridRow],
     column_gap: u16,
 ) {
     let inner_width = area.width.saturating_sub(2);
@@ -390,6 +869,175 @@ mod tests {
     }
 
     #[test]
+    fn test_braille_fill_symbol_progression() {
+        assert_eq!(braille_fill_symbol(0), " ");
+        assert_eq!(braille_fill_symbol(1), "⣀");
+        assert_eq!(braille_fill_symbol(2), "⣤");
+        assert_eq!(braille_fill_symbol(3), "⣶");
+        assert_eq!(braille_fill_symbol(4), "⣿");
+        assert_eq!(braille_fill_symbol(9), "⣿");
+    }
+
+    #[test]
+    fn test_clear_area_replaces_symbols_and_style() {
+        let area = Rect::new(0, 0, 3, 2);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(0, 0, "XXX", Style::default().fg(Color::Red));
+        let style = Style::default().fg(Color::Green);
+
+        clear_area(&mut buf, area, style);
+
+        assert_eq!(buf.get(0, 0).symbol(), " ");
+        assert_eq!(buf.get(2, 1).symbol(), " ");
+        assert_eq!(buf.get(0, 0).fg, Color::Green);
+        assert_eq!(buf.get(2, 1).fg, Color::Green);
+    }
+
+    #[test]
+    fn test_format_grouped_number_adds_grouping_separators() {
+        assert_eq!(format_grouped_number(0), "0");
+        assert_eq!(format_grouped_number(1_234), "1,234");
+        assert_eq!(format_grouped_number(144_706_819), "144,706,819");
+    }
+
+    #[test]
+    fn test_segment_helpers_build_expected_shapes() {
+        let value = single_segment("123", Style::default().fg(Color::Yellow));
+        let row = labeled_info_row("now:", value.clone());
+        let grid = two_column_segment_grid(value.clone(), value.clone(), value.clone(), value);
+
+        assert_eq!(styled_segment("x", Style::default()).0, "x");
+        assert_eq!(row.0, "now:");
+        assert_eq!(row.1.fg, Some(INFO_LABEL_COLOR));
+        assert_eq!(row.2[0].0, "123");
+        assert_eq!(grid.len(), 2);
+        assert_eq!(grid[0].len(), 2);
+        assert_eq!(grid[1].len(), 2);
+    }
+
+    #[test]
+    fn test_standard_metric_rows_builds_box_and_fallback_layouts() {
+        let values = StandardMetricValues {
+            trend: "↑",
+            current_box_value: " 5.2s".to_string(),
+            current_fallback_value: "   5.2s".to_string(),
+            top_box_value: "8.1s".to_string(),
+            top_fallback: "MAX    8.1s".to_string(),
+            avg_trend: "→",
+            avg_box_value: " 6.0s".to_string(),
+            avg_fallback_value: "   6.0s".to_string(),
+            block_box_value: "144,706,819".to_string(),
+            block_fallback: "BLK  144,706,819".to_string(),
+        };
+        let palette = StandardMetricPalette {
+            trend_up: Color::Green,
+            trend_down: Color::Red,
+            current_fallback: Color::Cyan,
+            top_fallback: Color::Gray,
+            avg: Color::Blue,
+            block: Color::DarkGray,
+        };
+
+        let (box_rows, fallback_rows) =
+            standard_metric_rows(("CUR", "MAX", "AVG", "BLK"), &values, palette);
+
+        assert_eq!(box_rows.len(), 4);
+        assert_eq!(box_rows[0].0, "now:");
+        assert_eq!(box_rows[0].2[0].0, "↑");
+        assert_eq!(box_rows[0].2[1].0, " 5.2s");
+        assert_eq!(box_rows[0].2[0].1.fg, Some(Color::Green));
+        assert_eq!(box_rows[3].2[0].0, "144,706,819");
+        assert_eq!(fallback_rows.len(), 2);
+        assert_eq!(fallback_rows[0][0][0].0, "CUR ");
+        assert_eq!(fallback_rows[0][1][0].0, "MAX    8.1s");
+        assert_eq!(fallback_rows[1][0][0].0, "AVG ");
+        assert_eq!(fallback_rows[1][1][0].0, "BLK  144,706,819");
+    }
+
+    #[test]
+    fn test_render_left_axis_labels_reserves_gutter() {
+        let area = Rect::new(0, 0, 12, 4);
+        let mut buf = Buffer::empty(area);
+        let plot_area =
+            render_left_axis_labels(&mut buf, area, "2.5s", "0", Style::default().fg(Color::Cyan));
+
+        assert_eq!(plot_area, Rect::new(5, 0, 7, 4));
+        assert_eq!(buf.get(0, 0).symbol(), "2");
+        assert_eq!(buf.get(3, 0).symbol(), "s");
+        assert_eq!(buf.get(3, 3).symbol(), "0");
+    }
+
+    #[test]
+    fn test_render_left_axis_labels_skips_when_too_narrow() {
+        let area = Rect::new(0, 0, 6, 4);
+        let mut buf = Buffer::empty(area);
+        let plot_area = render_left_axis_labels(&mut buf, area, "9999", "0", Style::default());
+
+        assert_eq!(plot_area, area);
+        assert_eq!(buf.get(0, 0).symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_bottom_band_dotted_plot_only_draws_bottom_band() {
+        let area = Rect::new(0, 0, 3, 4);
+        let mut buf = Buffer::empty(area);
+        let data = vec![(0.0, 100.0)];
+
+        render_bottom_band_dotted_plot(
+            &mut buf,
+            area,
+            &data,
+            100.0,
+            2,
+            Style::default().fg(Color::Magenta),
+            Style::default().fg(Color::Cyan),
+        );
+
+        assert_eq!(buf.get(2, 3).fg, Color::Magenta);
+        assert_eq!(buf.get(2, 2).fg, Color::Cyan);
+        assert_eq!(buf.get(2, 1).symbol(), " ");
+        assert_eq!(buf.get(2, 0).symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_right_aligned_labeled_box_aligns_labels_and_values() {
+        let area = Rect::new(0, 0, 26, 8);
+        let mut buf = Buffer::empty(area);
+        let rows = vec![
+            (
+                "now:".to_string(),
+                Style::default().fg(Color::Gray),
+                vec![("5.2s".to_string(), Style::default().fg(Color::Green))],
+            ),
+            (
+                "blk:".to_string(),
+                Style::default().fg(Color::Gray),
+                vec![("123,456".to_string(), Style::default().fg(Color::Yellow))],
+            ),
+        ];
+
+        let options = LabeledBoxOptions {
+            start_y_offset: 1,
+            title: "block time",
+            title_style: Style::default().fg(Color::White),
+            frame_style: Style::default().fg(Color::DarkGray),
+            background_style: Style::default().bg(Color::Black),
+            column_gap: 2,
+            right_inset: 1,
+        };
+
+        let rendered = render_right_aligned_labeled_box(&mut buf, area, &rows, &options);
+
+        assert!(rendered);
+        assert_eq!(buf.get(10, 1).symbol(), "╭");
+        assert_eq!(buf.get(15, 1).symbol(), "o");
+        assert_eq!(buf.get(11, 2).symbol(), "n");
+        assert_eq!(buf.get(20, 2).symbol(), "5");
+        assert_eq!(buf.get(17, 3).symbol(), "1");
+        assert_eq!(buf.get(24, 4).symbol(), "╯");
+    }
+
+    #[test]
     fn test_trim_data_points_keeps_latest_values() {
         let mut data: Vec<(f64, f64)> = (0..5).map(|i| (i as f64, i as f64)).collect();
         trim_data_points(&mut data, 3);
@@ -397,24 +1045,33 @@ mod tests {
     }
 
     #[test]
-    fn test_visible_data_points_scales_with_width() {
-        assert_eq!(visible_data_points(10), MIN_VISIBLE_DATA_POINTS);
-        assert_eq!(visible_data_points(60), 58);
-        assert_eq!(visible_data_points(200), MAX_VISIBLE_DATA_POINTS);
+    fn test_append_u64_samples_increments_x_and_trims_to_max() {
+        let mut data: Vec<(f64, f64)> =
+            (0..MAX_DATA_POINTS).map(|i| (i as f64, i as f64)).collect();
+        let mut update_count = MAX_DATA_POINTS as u64;
+
+        append_u64_samples(&mut data, &mut update_count, vec![200, 201]);
+
+        assert_eq!(update_count, 202);
+        assert_eq!(data.len(), MAX_DATA_POINTS);
+        assert_eq!(data[0], (2.0, 2.0));
+        assert_eq!(data[MAX_DATA_POINTS - 1], (201.0, 201.0));
     }
 
     #[test]
-    fn test_visible_x_bounds_avoids_negative_start() {
-        assert_eq!(visible_x_bounds(3, 40), [0.0, 4.0]);
-        assert_eq!(visible_x_bounds(30, 27), [5.0, 31.0]);
+    fn test_trend_style_uses_configured_colors() {
+        assert_eq!(trend_style("↑", Color::Green, Color::Red).fg, Some(Color::Green));
+        assert_eq!(trend_style("↓", Color::Green, Color::Red).fg, Some(Color::Red));
+        assert_eq!(trend_style("→", Color::Green, Color::Red).fg, Some(Color::DarkGray));
     }
 
     #[test]
-    fn test_y_axis_labels_with_count_supports_two_labels() {
-        let labels = y_axis_labels_with_count(2500.0, |value| value.to_string(), 2);
-        assert_eq!(labels.len(), 2);
-        assert_eq!(labels[0].content, "0");
-        assert_eq!(labels[1].content, "2500");
+    fn test_average_recent_nonzero_rounded_ignores_placeholders() {
+        let data = vec![(0.0, 0.0), (1.0, 10.0), (2.0, 20.0), (3.0, 30.0)];
+
+        assert_eq!(average_recent_nonzero_rounded(&data, 2), 25);
+        assert_eq!(average_recent_nonzero_rounded(&data, 10), 20);
+        assert_eq!(average_recent_nonzero_rounded(&data, 0), 0);
     }
 
     #[test]

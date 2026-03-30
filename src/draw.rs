@@ -41,6 +41,9 @@ use crate::{
     widgets::block,
 };
 
+#[cfg(target_family = "unix")]
+const SYSTEM_ROW_HEIGHT: u16 = 6;
+
 pub fn draw<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -140,13 +143,12 @@ pub fn draw_widgets(
 ) {
     #[cfg(target_family = "unix")]
     {
-        let system_height = 5;
-        let (chart_height, bottom_height) = content_row_heights(area.height, system_height);
+        let (chart_height, bottom_height) = content_row_heights(area.height, SYSTEM_ROW_HEIGHT);
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Length(system_height),
+                    Constraint::Length(SYSTEM_ROW_HEIGHT),
                     Constraint::Length(chart_height),
                     Constraint::Length(bottom_height),
                 ]
@@ -172,6 +174,13 @@ pub fn draw_widgets(
     }
 }
 
+fn split_aligned_columns(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
+        .split(area)
+}
+
 #[cfg(target_family = "unix")]
 pub fn draw_system_row_split(
     frame: &mut Frame,
@@ -179,13 +188,8 @@ pub fn draw_system_row_split(
     _data: SharedData,
     area: Rect,
 ) {
-    // 左右分屏布局：左侧70%显示系统摘要，右侧50%显示磁盘列表
-    let horizontal_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)].as_ref())
-        .split(area);
+    let horizontal_chunks = split_aligned_columns(area);
 
-    // 使用widgets中已有的实例
     frame.render_widget(&widgets.system_summary, horizontal_chunks[0]);
     frame.render_widget(&widgets.disk_list, horizontal_chunks[1]);
 }
@@ -195,10 +199,7 @@ pub fn draw_top_row(
     widgets: &mut Widgets,
     area: Rect,
 ) {
-    let horizontal_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
-        .split(area);
+    let horizontal_chunks = split_aligned_columns(area);
 
     frame.render_widget(&widgets.time, horizontal_chunks[0]);
     frame.render_widget(&widgets.txs, horizontal_chunks[1]);
@@ -209,15 +210,7 @@ pub fn draw_bottom_section(
     widgets: &mut Widgets,
     area: Rect,
 ) {
-    let detail_percentage = if area.width >= 180 { 60 } else { 58 };
-    let node_percentage = 100 - detail_percentage;
-    let horizontal_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            [Constraint::Percentage(node_percentage), Constraint::Percentage(detail_percentage)]
-                .as_ref(),
-        )
-        .split(area);
+    let horizontal_chunks = split_aligned_columns(area);
 
     frame.render_widget(&widgets.node, horizontal_chunks[0]);
     frame.render_widget(&widgets.node_details, horizontal_chunks[1]);

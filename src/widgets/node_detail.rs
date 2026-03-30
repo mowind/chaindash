@@ -98,10 +98,7 @@ impl NodeDetailWidget {
     }
 
     fn section_heading(title: &str) -> Line<'static> {
-        Line::from(vec![Span::styled(
-            title.to_string(),
-            block::header_style().add_modifier(Modifier::UNDERLINED),
-        )])
+        Line::from(vec![Span::styled(title.to_string(), block::header_style())])
     }
 
     fn detail_line(
@@ -133,6 +130,7 @@ impl NodeDetailWidget {
         let reward_style = block::content_style()
             .fg(ratatui::style::Color::LightGreen)
             .add_modifier(Modifier::BOLD);
+        let address_style = block::content_style().fg(block::PANEL_TITLE);
 
         let left = vec![
             Self::section_heading("Node"),
@@ -148,11 +146,15 @@ impl NodeDetailWidget {
                 metric_style,
             ),
             Self::detail_line_with_style("Block Rate", detail.block_rate.clone(), reward_style),
-            Self::detail_line("24H Rate", detail.daily_block_rate.clone()),
+            Self::detail_line_with_style("24H Rate", detail.daily_block_rate.clone(), metric_style),
         ];
         let right = vec![
             Self::section_heading("Rewards"),
-            Self::detail_line("Verifier Time", Self::format_number(detail.verifier_time)),
+            Self::detail_line_with_style(
+                "Verifier Time",
+                Self::format_number(detail.verifier_time),
+                metric_style,
+            ),
             Self::detail_line_with_style(
                 "Reward Ratio",
                 format!("{:.2}%", detail.reward_per),
@@ -168,7 +170,11 @@ impl NodeDetailWidget {
                 format!("{} LAT", Self::format_amount(detail.rewards())),
                 reward_style,
             ),
-            Self::detail_line("Reward Address", Self::shorten_address(&detail.reward_address)),
+            Self::detail_line_with_style(
+                "Reward Address",
+                Self::shorten_address(&detail.reward_address),
+                address_style,
+            ),
         ];
 
         (left, right)
@@ -192,6 +198,16 @@ impl NodeDetailWidget {
             return;
         }
 
+        let content = Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        if content.width == 0 || content.height == 0 {
+            return;
+        }
+
         let detail = {
             let data = self.collect_data.lock().expect("mutex poisoned - recovering");
             data.node_detail()
@@ -201,24 +217,36 @@ impl NodeDetailWidget {
             Paragraph::new(vec![Line::raw(self.empty_message())])
                 .style(block::content_style())
                 .wrap(Wrap { trim: true })
-                .render(inner, buf);
+                .render(content, buf);
             return;
         };
 
         let (left_lines, right_lines) = Self::detail_columns(&detail);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-            .split(inner);
+            .constraints([Constraint::Percentage(44), Constraint::Percentage(56)].as_ref())
+            .split(content);
+        let left_area = Rect::new(
+            columns[0].x,
+            columns[0].y,
+            columns[0].width.saturating_sub(1),
+            columns[0].height,
+        );
+        let right_area = Rect::new(
+            columns[1].x.saturating_add(1),
+            columns[1].y,
+            columns[1].width.saturating_sub(1),
+            columns[1].height,
+        );
 
         Paragraph::new(left_lines)
             .style(block::content_style())
             .wrap(Wrap { trim: true })
-            .render(columns[0], buf);
+            .render(left_area, buf);
         Paragraph::new(right_lines)
             .style(block::content_style())
             .wrap(Wrap { trim: true })
-            .render(columns[1], buf);
+            .render(right_area, buf);
     }
 
     fn compact_lines(&self) -> Vec<String> {
