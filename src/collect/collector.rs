@@ -41,10 +41,7 @@ use tokio::time::{
 
 use super::types::NodeInfo;
 use crate::{
-    collect::{
-        docker_stats::Stats,
-        types,
-    },
+    collect::types,
     error::{
         ChaindashError,
         Result,
@@ -65,18 +62,6 @@ pub struct ConsensusState {
     pub validator: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct NodeStats {
-    pub cpu_percent: f64,
-    pub mem: u64,
-    pub mem_percent: f64,
-    pub mem_limit: u64,
-    pub network_rx: u64,
-    pub network_tx: u64,
-    pub blk_read: u64,
-    pub blk_write: u64,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct NodeDetail {
     pub node_name: String,
@@ -93,21 +78,6 @@ pub struct NodeDetail {
 impl NodeDetail {
     pub fn rewards(&self) -> f64 {
         self.reward_value * (1.0 - self.reward_per / 100.0)
-    }
-}
-
-impl Default for &NodeStats {
-    fn default() -> Self {
-        &NodeStats {
-            cpu_percent: 0.0,
-            mem: 0,
-            mem_percent: 0.0,
-            mem_limit: 0,
-            network_rx: 0,
-            network_tx: 0,
-            blk_read: 0,
-            blk_write: 0,
-        }
     }
 }
 
@@ -141,7 +111,6 @@ pub struct Data {
     max_interval: u64,
 
     states: HashMap<String, ConsensusState>,
-    stats: HashMap<String, NodeStats>,
     status_message: Option<StatusMessage>,
     node_detail: Option<NodeDetail>,
     #[cfg(target_family = "unix")]
@@ -275,8 +244,6 @@ fn compute_network_rates(
 pub struct Collector {
     data: SharedData,
     urls: Vec<(String, String)>,
-    enable_docker_stats: bool,
-    docker_port: u16,
     disk_mount_points: Vec<String>,
     disk_auto_discovery: bool,
     disk_alert_threshold: f32,
@@ -308,7 +275,6 @@ impl Default for Data {
             cur_interval: 0,
             max_interval: 0,
             states: HashMap::new(),
-            stats: HashMap::new(),
             status_message: None,
             node_detail: None,
             #[cfg(target_family = "unix")]
@@ -371,10 +337,6 @@ impl Data {
                 .then_with(|| left.current_number.cmp(&right.current_number))
         });
         states
-    }
-
-    pub fn stats(&self) -> HashMap<String, NodeStats> {
-        self.stats.clone()
     }
 
     pub fn node_detail(&self) -> Option<NodeDetail> {
@@ -494,8 +456,6 @@ impl Collector {
                 Ok((name.into(), endpoint.into()))
             })
             .collect::<Result<Vec<_>>>()?;
-        let enable_docker_stats = opts.enable_docker_stats;
-        let docker_port = opts.docker_port;
         let disk_mount_points = opts.disk_mount_points.clone();
         let disk_auto_discovery = opts.disk_auto_discovery;
         let disk_alert_threshold = opts.disk_alert_threshold;
@@ -506,8 +466,6 @@ impl Collector {
         Ok(Collector {
             data,
             urls,
-            enable_docker_stats,
-            docker_port,
             disk_mount_points,
             disk_auto_discovery,
             disk_alert_threshold,
@@ -537,22 +495,6 @@ impl Collector {
                     warn!("collect_node_state failed for {}: {}", name, e);
                 }
             });
-
-            debug!("enable_docker_stats: {}", self.enable_docker_stats);
-            if self.enable_docker_stats {
-                debug!("enable_docker_stats: {}", self.enable_docker_stats);
-                let host = websocket_host(&url.1);
-                let ip_port: Vec<&str> = host.as_str().split(':').collect();
-                let host = format!("http://{}:{}", ip_port[0], self.docker_port);
-                let data = self.data.clone();
-                let name = url.0.clone();
-                let stop_flag = self.stop_flag.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = collect_node_stats(name.clone(), host, data, stop_flag).await {
-                        warn!("collect_node_stats failed for {}: {}", name, e);
-                    }
-                });
-            }
         }
 
         // 启动节点详情监控
@@ -812,188 +754,6 @@ async fn collect_node_state(
     }
 
     Ok(())
-}
-
-async fn collect_node_stats(
-    name: String,
-    host: String,
-    data: SharedData,
-    stop_flag: Arc<AtomicBool>,
-) -> Result<()> {
-    debug!("name: {}, host: {}", name, host);
-
-    let client = reqwest::Client::new();
-    let url = format!("{host}/containers/{name}/stats");
-    debug!("url: {:?}", url);
-
-    let mut backoff = Duration::from_secs(1);
-    let max_backoff = Duration::from_secs(30);
-
-    while !stop_flag.load(Ordering::Relaxed) {
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                debug!("status: {:?}", resp.status());
-                record_status_message(
-                    &data,
-                    StatusLevel::Info,
-                    format!("Docker stats stream connected for {name}"),
-                );
-                let mut buf: Vec<u8> = Vec::new();
-                let mut stream = resp.bytes_stream();
-                let mut stream_error = false;
-
-                while let Some(chunk_result) = stream.next().await {
-                    if stop_flag.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-
-                    let chunk = match chunk_result {
-                        Ok(chunk) => chunk,
-                        Err(err) => {
-                            stream_error = true;
-                            let message = format!(
-                                "Docker stats stream error for {name} at {host}: {err}. Retrying \
-                                 soon"
-                            );
-                            warn!("{message}");
-                            record_status_message(&data, StatusLevel::Warn, message);
-                            break;
-                        },
-                    };
-
-                    buf.extend_from_slice(&chunk);
-                    let stats: Stats = match serde_json::from_slice(buf.as_ref()) {
-                        Err(_) => continue,
-                        Ok(stats) => stats,
-                    };
-                    debug!("stats: {:#?}", stats);
-                    let _ = std::mem::take(&mut buf);
-
-                    update_node_stats(name.as_str(), data.clone(), &stats);
-                }
-
-                if stop_flag.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-
-                backoff = Duration::from_secs(1);
-                if stream_error {
-                    let message = format!(
-                        "Docker stats stream closed unexpectedly for {name}, reconnecting..."
-                    );
-                    warn!("{message}");
-                    record_status_message(&data, StatusLevel::Warn, message);
-                } else {
-                    debug!("Docker stats stream for {name} ended, reconnecting...");
-                }
-            },
-            Err(err) => {
-                let message = format!("Failed to fetch docker stats for {name}: {err}");
-                warn!("{message}");
-                record_status_message(&data, StatusLevel::Warn, message);
-            },
-        }
-
-        if stop_flag.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let retry_message = format!("Retrying docker stats for {name} in {:?}", backoff);
-        warn!("{retry_message}");
-        record_status_message(&data, StatusLevel::Warn, retry_message);
-        time::sleep(backoff).await;
-        backoff = (backoff * 2).min(max_backoff);
-    }
-
-    Ok(())
-}
-
-fn update_node_stats(
-    name: &str,
-    data: SharedData,
-    stats: &Stats,
-) {
-    let (mem, mem_usage) = calc_mem_usage(stats);
-
-    let (rx, tx) = get_network_rx_tx(stats);
-    let (blk_read, blk_write) = get_blk(stats);
-
-    let node_stats = NodeStats {
-        cpu_percent: calc_cpu_usage(stats),
-        mem,
-        mem_percent: mem_usage,
-        mem_limit: stats.memory_stats.limit,
-        network_rx: rx,
-        network_tx: tx,
-        blk_read,
-        blk_write,
-    };
-
-    let mut data = data.lock().expect("mutex poisoned - recovering");
-    data.stats.insert(name.to_string(), node_stats);
-}
-
-fn calc_cpu_usage(stats: &Stats) -> f64 {
-    let cpu_usage = &stats.cpu_stats.cpu_usage;
-    let precpu_usage = &stats.precpu_stats.cpu_usage;
-    let cpu_delta = cpu_usage.total_usage.saturating_sub(precpu_usage.total_usage);
-    let precpu_system_cpu_usage = stats.precpu_stats.system_cpu_usage.unwrap_or(0);
-    let system_cpu_delta =
-        stats.cpu_stats.system_cpu_usage.unwrap_or(0).saturating_sub(precpu_system_cpu_usage);
-    let num_cpus = cpu_usage.percpu_usage.as_ref().map(|v| v.len()).unwrap_or(1);
-
-    if system_cpu_delta == 0 {
-        return 0.0;
-    }
-
-    (cpu_delta as f64 / system_cpu_delta as f64) * num_cpus as f64 * 100.0
-}
-
-fn calc_mem_usage(stats: &Stats) -> (u64, f64) {
-    let memory_stat = &stats.memory_stats;
-    let cache = *memory_stat.stats.get("cache").unwrap_or(&0);
-    let used_memory = memory_stat.usage.saturating_sub(cache);
-    let available_memory = memory_stat.limit;
-    if available_memory == 0 {
-        (used_memory, 0.0)
-    } else {
-        (used_memory, (used_memory as f64 / available_memory as f64) * 100.0)
-    }
-}
-
-fn get_network_rx_tx(stats: &Stats) -> (u64, u64) {
-    match &stats.networks {
-        Some(networks) => {
-            let mut rx: u64 = 0;
-            let mut tx: u64 = 0;
-            networks.iter().for_each(|(_, net)| {
-                rx += net.rx_bytes;
-                tx += net.tx_bytes;
-            });
-
-            (rx, tx)
-        },
-        None => (0, 0),
-    }
-}
-
-fn get_blk(stats: &Stats) -> (u64, u64) {
-    match &stats.blkio_stats {
-        Some(blk) => {
-            let mut read: u64 = 0;
-            let mut write: u64 = 0;
-            blk.io_service_bytes_recursive.iter().for_each(|entry| {
-                if entry.op == "Read" {
-                    read += entry.value;
-                } else if entry.op == "Write" {
-                    write += entry.value;
-                }
-            });
-
-            (read, write)
-        },
-        None => (0, 0),
-    }
 }
 
 #[cfg(target_family = "unix")]
@@ -1615,293 +1375,7 @@ impl Data {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-    use crate::collect::docker_stats::{
-        CPUStats,
-        CPUUsage,
-        MemoryStats,
-        Stats,
-    };
-
-    #[derive(Clone, Copy)]
-    struct TestStatsConfig {
-        cpu_total: u64,
-        precpu_total: u64,
-        system_cpu: u64,
-        pre_system_cpu: u64,
-        percpu_len: usize,
-        mem_usage: u64,
-        mem_limit: u64,
-        cache: u64,
-    }
-
-    impl Default for TestStatsConfig {
-        fn default() -> Self {
-            Self {
-                cpu_total: 0,
-                precpu_total: 0,
-                system_cpu: 0,
-                pre_system_cpu: 0,
-                percpu_len: 1,
-                mem_usage: 0,
-                mem_limit: 0,
-                cache: 0,
-            }
-        }
-    }
-
-    /// Helper to create a minimal Stats struct for testing
-    fn create_test_stats(config: TestStatsConfig) -> Stats {
-        Stats {
-            name: None,
-            id: None,
-            read: String::new(),
-            preread: String::new(),
-            pids_stats: None,
-            blkio_stats: None,
-            num_procs: None,
-            storage_stats: None,
-            cpu_stats: CPUStats {
-                cpu_usage: CPUUsage {
-                    total_usage: config.cpu_total,
-                    percpu_usage: Some(vec![0; config.percpu_len]),
-                    usage_in_kernelmode: 0,
-                    usage_in_usermode: 0,
-                },
-                system_cpu_usage: Some(config.system_cpu),
-                online_cups: None,
-                throttling_data: None,
-            },
-            precpu_stats: CPUStats {
-                cpu_usage: CPUUsage {
-                    total_usage: config.precpu_total,
-                    percpu_usage: Some(vec![0; config.percpu_len]),
-                    usage_in_kernelmode: 0,
-                    usage_in_usermode: 0,
-                },
-                system_cpu_usage: Some(config.pre_system_cpu),
-                online_cups: None,
-                throttling_data: None,
-            },
-            memory_stats: MemoryStats {
-                usage: config.mem_usage,
-                max_usage: config.mem_usage,
-                stats: {
-                    let mut m = HashMap::new();
-                    m.insert("cache".to_string(), config.cache);
-                    m
-                },
-                failcnt: None,
-                limit: config.mem_limit,
-                commit: None,
-                commit_peak_bytes: None,
-                privated_working_set: None,
-            },
-            networks: None,
-        }
-    }
-
-    // ========================================
-    // calc_cpu_usage tests
-    // ========================================
-
-    #[test]
-    fn test_calc_cpu_usage_normal() {
-        // cpu_delta = 100, system_cpu_delta = 1000, num_cpus = 2
-        // expected = (100/1000) * 2 * 100.0 = 20.0
-        let stats = create_test_stats(TestStatsConfig {
-            cpu_total: 1100,
-            precpu_total: 1000,
-            system_cpu: 11000,
-            pre_system_cpu: 10000,
-            percpu_len: 2,
-            ..Default::default()
-        });
-        let result = calc_cpu_usage(&stats);
-        assert!((result - 20.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_cpu_usage_single_cpu() {
-        // cpu_delta = 500, system_cpu_delta = 5000, num_cpus = 1
-        // expected = (500/5000) * 1 * 100.0 = 10.0
-        let stats = create_test_stats(TestStatsConfig {
-            cpu_total: 1500,
-            precpu_total: 1000,
-            system_cpu: 15000,
-            pre_system_cpu: 10000,
-            percpu_len: 1,
-            ..Default::default()
-        });
-        let result = calc_cpu_usage(&stats);
-        assert!((result - 10.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_cpu_usage_zero_cpu_delta() {
-        // When cpu_delta is 0, result should be 0
-        // cpu_delta = 0, system_cpu_delta = 1000, num_cpus = 2
-        // expected = (0/1000) * 2 * 100.0 = 0.0
-        let stats = create_test_stats(TestStatsConfig {
-            cpu_total: 1000,
-            precpu_total: 1000,
-            system_cpu: 11000,
-            pre_system_cpu: 10000,
-            percpu_len: 2,
-            ..Default::default()
-        });
-        let result = calc_cpu_usage(&stats);
-        assert!((result - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_cpu_usage_four_cpus() {
-        // cpu_delta = 1000, system_cpu_delta = 2000, num_cpus = 4
-        // expected = (1000/2000) * 4 * 100.0 = 200.0
-        let stats = create_test_stats(TestStatsConfig {
-            cpu_total: 2000,
-            precpu_total: 1000,
-            system_cpu: 12000,
-            pre_system_cpu: 10000,
-            percpu_len: 4,
-            ..Default::default()
-        });
-        let result = calc_cpu_usage(&stats);
-        assert!((result - 200.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_cpu_usage_precpu_system_none() {
-        // When precpu_stats.system_cpu_usage is None, it defaults to 0
-        // This tests the .unwrap_or(0) behavior
-        let mut stats = create_test_stats(TestStatsConfig {
-            cpu_total: 1100,
-            precpu_total: 1000,
-            system_cpu: 11000,
-            pre_system_cpu: 10000,
-            percpu_len: 2,
-            ..Default::default()
-        });
-        stats.precpu_stats.system_cpu_usage = None;
-        // pre_system_cpu = 0, system_cpu_delta = 11000 - 0 = 11000
-        // cpu_delta = 100
-        // expected = (100/11000) * 2 * 100.0 ≈ 1.818
-        let result = calc_cpu_usage(&stats);
-        assert!((result - 1.8181818).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_cpu_usage_zero_system_delta() {
-        // When system_cpu_delta is 0, return 0.0 to avoid division by zero
-        // cpu_delta = 100, system_cpu_delta = 0, num_cpus = 2
-        // expected = 0.0 (division avoided)
-        let stats = create_test_stats(TestStatsConfig {
-            cpu_total: 1100,
-            precpu_total: 1000,
-            system_cpu: 10000,
-            pre_system_cpu: 10000,
-            percpu_len: 2,
-            ..Default::default()
-        });
-        let result = calc_cpu_usage(&stats);
-        assert!((result - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_cpu_usage_counter_reset_returns_zero() {
-        let stats = create_test_stats(TestStatsConfig {
-            cpu_total: 1000,
-            precpu_total: 2000,
-            system_cpu: 10000,
-            pre_system_cpu: 12000,
-            percpu_len: 2,
-            ..Default::default()
-        });
-
-        assert_eq!(calc_cpu_usage(&stats), 0.0);
-    }
-
-    // ========================================
-    // calc_mem_usage tests
-    // ========================================
-
-    #[test]
-    fn test_calc_mem_usage_normal() {
-        // usage = 1024, cache = 256, limit = 4096
-        // used_memory = 1024 - 256 = 768
-        // mem_percent = (768 / 4096) * 100.0 = 18.75
-        let stats = create_test_stats(TestStatsConfig {
-            mem_usage: 1024,
-            mem_limit: 4096,
-            cache: 256,
-            ..Default::default()
-        });
-        let (used, percent) = calc_mem_usage(&stats);
-        assert_eq!(used, 768);
-        assert!((percent - 18.75).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_mem_usage_zero_cache() {
-        // usage = 1024, cache = 0, limit = 4096
-        // used_memory = 1024 - 0 = 1024
-        // mem_percent = (1024 / 4096) * 100.0 = 25.0
-        let stats = create_test_stats(TestStatsConfig {
-            mem_usage: 1024,
-            mem_limit: 4096,
-            ..Default::default()
-        });
-        let (used, percent) = calc_mem_usage(&stats);
-        assert_eq!(used, 1024);
-        assert!((percent - 25.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_mem_usage_full_usage() {
-        // usage = 4096, cache = 0, limit = 4096
-        // used_memory = 4096 - 0 = 4096
-        // mem_percent = (4096 / 4096) * 100.0 = 100.0
-        let stats = create_test_stats(TestStatsConfig {
-            mem_usage: 4096,
-            mem_limit: 4096,
-            ..Default::default()
-        });
-        let (used, percent) = calc_mem_usage(&stats);
-        assert_eq!(used, 4096);
-        assert!((percent - 100.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_mem_usage_cache_exceeds_usage_returns_zero() {
-        // usage = 256, cache = 512, limit = 4096
-        // After fix: saturating_sub returns 0 (no panic)
-        // used_memory = 256.saturating_sub(512) = 0
-        let stats = create_test_stats(TestStatsConfig {
-            mem_usage: 256,
-            mem_limit: 4096,
-            cache: 512,
-            ..Default::default()
-        });
-        let (used, percent) = calc_mem_usage(&stats);
-        assert_eq!(used, 0);
-        assert!((percent - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_calc_mem_usage_zero_usage() {
-        // usage = 0, cache = 0, limit = 4096
-        // used_memory = 0
-        // mem_percent = 0.0
-        let stats = create_test_stats(TestStatsConfig {
-            mem_limit: 4096,
-            ..Default::default()
-        });
-        let (used, percent) = calc_mem_usage(&stats);
-        assert_eq!(used, 0);
-        assert!((percent - 0.0).abs() < 0.001);
-    }
 
     #[test]
     fn test_collector_new_invalid_url_no_at_sign() {

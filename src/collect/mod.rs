@@ -1,5 +1,4 @@
 mod collector;
-mod docker_stats;
 mod types;
 
 // Exported for tests (Unix only)
@@ -13,7 +12,6 @@ pub use self::collector::{
     ConsensusState,
     Data,
     NodeDetail,
-    NodeStats,
     SharedData,
     StatusLevel,
     StatusMessage,

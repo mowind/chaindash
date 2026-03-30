@@ -20,14 +20,6 @@ pub struct Opts {
     #[arg(long, default_value = "1", value_parser = parse_positive_interval)]
     pub interval: Ratio<u64>,
 
-    /// Enable docker stats
-    #[arg(long)]
-    pub enable_docker_stats: bool,
-
-    /// Docker service port
-    #[arg(long, default_value = "2375")]
-    pub docker_port: u16,
-
     /// Enable debug log
     #[arg(long)]
     pub debug: bool,
