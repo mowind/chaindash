@@ -159,6 +159,10 @@ impl NodeWidget {
         Line::from(vec![Span::styled(title.to_string(), block::header_style())])
     }
 
+    fn spacer_line() -> Line<'static> {
+        Line::from("")
+    }
+
     fn info_line_with_style(
         label: &str,
         value: impl Into<String>,
@@ -188,23 +192,6 @@ impl NodeWidget {
 
     fn role_value_style(color: Color) -> Style {
         block::content_style().fg(color).add_modifier(Modifier::BOLD)
-    }
-
-    fn paired_info_line(
-        first_label: &str,
-        first_value: impl Into<String>,
-        first_value_style: Style,
-        second_label: &str,
-        second_value: impl Into<String>,
-        second_value_style: Style,
-    ) -> Line<'static> {
-        Line::from(vec![
-            Span::styled(format!("{first_label}: "), block::muted_style()),
-            Span::styled(first_value.into(), first_value_style),
-            Span::styled("    ", block::content_style()),
-            Span::styled(format!("{second_label}: "), block::muted_style()),
-            Span::styled(second_value.into(), second_value_style),
-        ])
     }
 
     fn single_node_column_specs(
@@ -380,11 +367,11 @@ impl NodeWidget {
         let mut lines = Vec::new();
 
         if show_section_headings {
-            lines.push((9, Self::section_heading("Node")));
+            lines.push((20, Self::section_heading("Node")));
         }
         lines.push((1, Self::info_line_with_style("Name", node.name.clone(), node_value_style)));
         lines.push((
-            6,
+            8,
             Self::info_line_with_style(
                 "Host",
                 Self::shorten_host_for_width(&node.host, host_max_len),
@@ -393,47 +380,52 @@ impl NodeWidget {
         ));
         lines.push((
             2,
-            Self::paired_info_line(
-                "Role",
-                role_text,
-                Self::role_value_style(role_color),
+            Self::info_line_with_style("Role", role_text, Self::role_value_style(role_color)),
+        ));
+
+        if show_section_headings {
+            lines.push((30, Self::spacer_line()));
+            lines.push((20, Self::section_heading("Chain")));
+        }
+        lines.push((
+            3,
+            Self::info_line_with_style(
                 "Block",
                 Self::format_number(node.current_number),
                 metric_value_style,
             ),
         ));
-
-        if show_section_headings {
-            lines.push((9, Self::section_heading("Chain")));
-        }
         lines.push((
-            3,
-            Self::paired_info_line(
+            4,
+            Self::info_line_with_style(
                 "Epoch",
                 Self::format_number(node.epoch),
                 metric_value_style,
-                "View",
-                Self::format_number(node.view),
-                metric_value_style,
             ),
+        ));
+        lines.push((
+            7,
+            Self::info_line_with_style("View", Self::format_number(node.view), metric_value_style),
         ));
 
         if show_section_headings {
-            lines.push((9, Self::section_heading("Consensus")));
+            lines.push((30, Self::spacer_line()));
+            lines.push((20, Self::section_heading("Consensus")));
         }
         lines.push((
-            5,
-            Self::paired_info_line(
-                "QC",
-                Self::format_number(node.qc),
-                metric_value_style,
+            6,
+            Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style),
+        ));
+        lines.push((
+            9,
+            Self::info_line_with_style(
                 "Locked",
                 Self::format_number(node.locked),
                 metric_value_style,
             ),
         ));
         lines.push((
-            4,
+            5,
             Self::info_line_with_style(
                 "Committed",
                 Self::format_number(node.committed),
@@ -476,48 +468,49 @@ impl NodeWidget {
         vec![
             (1, Self::info_line_with_style("Name", node.name.clone(), node_value_style)),
             (
-                6,
+                8,
                 Self::info_line_with_style(
                     "Host",
                     Self::shorten_host_for_width(&node.host, host_max_len),
                     block::content_style(),
                 ),
             ),
+            (2, Self::info_line_with_style("Role", role_text, Self::role_value_style(role_color))),
             (
-                2,
-                Self::paired_info_line(
-                    "Role",
-                    role_text,
-                    Self::role_value_style(role_color),
+                3,
+                Self::info_line_with_style(
                     "Block",
                     Self::format_number(node.current_number),
                     metric_value_style,
                 ),
             ),
             (
-                3,
-                Self::paired_info_line(
+                4,
+                Self::info_line_with_style(
                     "Epoch",
                     Self::format_number(node.epoch),
                     metric_value_style,
+                ),
+            ),
+            (
+                7,
+                Self::info_line_with_style(
                     "View",
                     Self::format_number(node.view),
                     metric_value_style,
                 ),
             ),
+            (6, Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style)),
             (
-                5,
-                Self::paired_info_line(
-                    "QC",
-                    Self::format_number(node.qc),
-                    metric_value_style,
+                9,
+                Self::info_line_with_style(
                     "Locked",
                     Self::format_number(node.locked),
                     metric_value_style,
                 ),
             ),
             (
-                4,
+                5,
                 Self::info_line_with_style(
                     "Committed",
                     Self::format_number(node.committed),
@@ -549,7 +542,6 @@ impl NodeWidget {
     fn compact_summary_column_specs(
         node: &ConsensusState,
         host_max_len: usize,
-        split_consensus_lines: bool,
     ) -> DoublePriorityLines {
         let (role_text, role_color) = Self::role_badge(node);
         let node_value_style = Self::node_value_style();
@@ -567,7 +559,7 @@ impl NodeWidget {
             ),
             (2, Self::info_line_with_style("Role", role_text, Self::role_value_style(role_color))),
         ];
-        let mut right = vec![
+        let right = vec![
             (
                 1,
                 Self::info_line_with_style(
@@ -578,50 +570,38 @@ impl NodeWidget {
             ),
             (
                 2,
-                Self::paired_info_line(
+                Self::info_line_with_style(
                     "Epoch",
                     Self::format_number(node.epoch),
                     metric_value_style,
+                ),
+            ),
+            (
+                3,
+                Self::info_line_with_style(
                     "View",
                     Self::format_number(node.view),
                     metric_value_style,
                 ),
             ),
-        ];
-        if split_consensus_lines {
-            right.push((
-                4,
-                Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style),
-            ));
-            right.push((
+            (4, Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style)),
+            (
                 5,
                 Self::info_line_with_style(
                     "Locked",
                     Self::format_number(node.locked),
                     metric_value_style,
                 ),
-            ));
-        } else {
-            right.push((
-                4,
-                Self::paired_info_line(
-                    "QC",
-                    Self::format_number(node.qc),
-                    metric_value_style,
-                    "Locked",
-                    Self::format_number(node.locked),
+            ),
+            (
+                6,
+                Self::info_line_with_style(
+                    "Committed",
+                    Self::format_number(node.committed),
                     metric_value_style,
                 ),
-            ));
-        }
-        right.push((
-            3,
-            Self::info_line_with_style(
-                "Committed",
-                Self::format_number(node.committed),
-                metric_value_style,
             ),
-        ));
+        ];
 
         (left, right)
     }
@@ -629,12 +609,10 @@ impl NodeWidget {
     fn compact_summary_columns(
         node: &ConsensusState,
         host_max_len: usize,
-        split_consensus_lines: bool,
         max_left_rows: u16,
         max_right_rows: u16,
     ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-        let (left_specs, right_specs) =
-            Self::compact_summary_column_specs(node, host_max_len, split_consensus_lines);
+        let (left_specs, right_specs) = Self::compact_summary_column_specs(node, host_max_len);
 
         (
             Self::select_prioritized_lines(left_specs, max_left_rows),
@@ -674,11 +652,9 @@ impl NodeWidget {
                 columns[1].height,
             );
             let host_max_len = Self::inline_value_max_len(left_area.width, "Host: ");
-            let split_consensus_lines = right_area.height >= 5;
             let (left_lines, right_lines) = Self::compact_summary_columns(
                 node,
                 host_max_len,
-                split_consensus_lines,
                 left_area.height,
                 right_area.height,
             );
@@ -868,31 +844,26 @@ mod tests {
 
         assert_eq!(line_text(&lines[0]), "Node");
         assert_eq!(line_text(&lines[1]), "Name: Satyrs");
-        assert_eq!(line_text(&lines[4]), "Chain");
-        assert_eq!(line_text(&lines[5]), "Epoch: 337,985    View: 2");
-        assert_eq!(line_text(&lines[6]), "Consensus");
-        assert_eq!(line_text(&lines[7]), "QC: 145,333,143    Locked: 145,333,142");
-        assert_eq!(line_text(&lines[8]), "Committed: 145,333,141");
+        assert_eq!(line_text(&lines[4]), "");
+        assert_eq!(line_text(&lines[5]), "Chain");
+        assert_eq!(line_text(&lines[6]), "Block: 145,333,141");
+        assert_eq!(line_text(&lines[7]), "Epoch: 337,985");
+        assert_eq!(line_text(&lines[9]), "");
+        assert_eq!(line_text(&lines[10]), "Consensus");
+        assert_eq!(line_text(&lines[11]), "QC: 145,333,143");
+        assert_eq!(line_text(&lines[13]), "Committed: 145,333,141");
     }
 
     #[test]
     fn test_compact_summary_columns_include_key_fields() {
-        let (left, right) = NodeWidget::compact_summary_columns(&sample_node(), 20, false, 10, 10);
+        let (left, right) = NodeWidget::compact_summary_columns(&sample_node(), 20, 10, 10);
 
         assert_eq!(line_text(&left[0]), "Name: Satyrs");
         assert_eq!(line_text(&left[2]), "Role: OBSERVER");
         assert_eq!(line_text(&right[0]), "Block: 145,333,141");
-        assert_eq!(line_text(&right[2]), "QC: 145,333,143    Locked: 145,333,142");
-        assert_eq!(line_text(&right[3]), "Committed: 145,333,141");
-    }
-
-    #[test]
-    fn test_compact_summary_columns_can_split_consensus_lines() {
-        let (_, right) = NodeWidget::compact_summary_columns(&sample_node(), 20, true, 10, 10);
-
-        assert_eq!(line_text(&right[2]), "QC: 145,333,143");
-        assert_eq!(line_text(&right[3]), "Locked: 145,333,142");
-        assert_eq!(line_text(&right[4]), "Committed: 145,333,141");
+        assert_eq!(line_text(&right[2]), "View: 2");
+        assert_eq!(line_text(&right[3]), "QC: 145,333,143");
+        assert_eq!(line_text(&right[5]), "Committed: 145,333,141");
     }
 
     #[test]
@@ -909,8 +880,8 @@ mod tests {
 
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "Name: Satyrs");
-        assert_eq!(line_text(&lines[1]), "Role: OBSERVER    Block: 145,333,141");
-        assert_eq!(line_text(&lines[2]), "Epoch: 337,985    View: 2");
+        assert_eq!(line_text(&lines[1]), "Role: OBSERVER");
+        assert_eq!(line_text(&lines[2]), "Block: 145,333,141");
     }
 
     #[test]
@@ -919,9 +890,12 @@ mod tests {
 
         assert_eq!(lines[0], "Name: Satyrs");
         assert_eq!(lines[1], "Host: 127.0.0.1:6790");
-        assert_eq!(lines[2], "Role: OBSERVER    Block: 145,333,141");
-        assert_eq!(lines[3], "Epoch: 337,985    View: 2");
-        assert_eq!(lines[4], "QC: 145,333,143    Locked: 145,333,142");
-        assert_eq!(lines[5], "Committed: 145,333,141");
+        assert_eq!(lines[2], "Role: OBSERVER");
+        assert_eq!(lines[3], "Block: 145,333,141");
+        assert_eq!(lines[4], "Epoch: 337,985");
+        assert_eq!(lines[5], "View: 2");
+        assert_eq!(lines[6], "QC: 145,333,143");
+        assert_eq!(lines[7], "Locked: 145,333,142");
+        assert_eq!(lines[8], "Committed: 145,333,141");
     }
 }

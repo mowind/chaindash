@@ -172,6 +172,10 @@ impl NodeDetailWidget {
         Line::from(vec![Span::styled(title.to_string(), block::header_style())])
     }
 
+    fn spacer_line() -> Line<'static> {
+        Line::from("")
+    }
+
     fn detail_line(
         label: &str,
         value: impl Into<String>,
@@ -204,23 +208,6 @@ impl NodeDetailWidget {
 
     fn address_value_style() -> ratatui::style::Style {
         block::content_style().fg(block::PANEL_TITLE)
-    }
-
-    fn paired_detail_line(
-        first_label: &str,
-        first_value: impl Into<String>,
-        first_value_style: ratatui::style::Style,
-        second_label: &str,
-        second_value: impl Into<String>,
-        second_value_style: ratatui::style::Style,
-    ) -> Line<'static> {
-        Line::from(vec![
-            Span::styled(format!("{first_label}: "), block::muted_style()),
-            Span::styled(first_value.into(), first_value_style),
-            Span::styled("    ", block::content_style()),
-            Span::styled(format!("{second_label}: "), block::muted_style()),
-            Span::styled(second_value.into(), second_value_style),
-        ])
     }
 
     fn detail_column_specs(
@@ -333,48 +320,56 @@ impl NodeDetailWidget {
         let mut lines = Vec::new();
 
         if show_section_headings {
-            lines.push((9, Self::section_heading("Node")));
+            lines.push((20, Self::section_heading("Node")));
         }
         lines.push((1, Self::detail_line("Name", detail.node_name.clone())));
         lines.push((
             2,
-            Self::paired_detail_line(
+            Self::detail_line_with_style(
                 "Ranking",
                 Self::format_number(detail.ranking.max(0) as u64),
                 metric_style,
+            ),
+        ));
+        lines.push((
+            3,
+            Self::detail_line_with_style(
                 "Blocks",
                 Self::format_number(detail.block_qty),
                 metric_style,
             ),
         ));
         lines.push((
-            3,
-            Self::paired_detail_line(
-                "Block Rate",
-                detail.block_rate.clone(),
-                reward_style,
-                "24H",
-                detail.daily_block_rate.clone(),
-                metric_style,
-            ),
+            4,
+            Self::detail_line_with_style("Block Rate", detail.block_rate.clone(), reward_style),
+        ));
+        lines.push((
+            5,
+            Self::detail_line_with_style("24H", detail.daily_block_rate.clone(), metric_style),
         ));
 
         if show_section_headings {
-            lines.push((9, Self::section_heading("Rewards")));
+            lines.push((30, Self::spacer_line()));
+            lines.push((20, Self::section_heading("Rewards")));
         }
         lines.push((
-            4,
-            Self::paired_detail_line(
+            6,
+            Self::detail_line_with_style(
                 "Verifier",
                 Self::format_number(detail.verifier_time),
                 metric_style,
+            ),
+        ));
+        lines.push((
+            7,
+            Self::detail_line_with_style(
                 "Ratio",
                 format!("{:.2}%", detail.reward_per),
                 reward_style,
             ),
         ));
         lines.push((
-            5,
+            8,
             Self::detail_line_with_style(
                 "System",
                 format!("{} LAT", Self::format_amount(detail.reward_value)),
@@ -382,7 +377,7 @@ impl NodeDetailWidget {
             ),
         ));
         lines.push((
-            6,
+            9,
             Self::detail_line_with_style(
                 "Rewards",
                 format!("{} LAT", Self::format_amount(detail.rewards())),
@@ -390,7 +385,7 @@ impl NodeDetailWidget {
             ),
         ));
         lines.push((
-            7,
+            10,
             Self::detail_line_with_style(
                 "Address",
                 Self::shorten_address_for_width(&detail.reward_address, address_max_len),
@@ -510,41 +505,35 @@ impl NodeDetailWidget {
 
         vec![
             (1, Self::detail_line("Name", detail.node_name.clone())),
+            (2, Self::detail_line_with_style("Rank", detail.ranking.to_string(), metric_style)),
             (
-                2,
-                Self::paired_detail_line(
-                    "Rank",
-                    detail.ranking.to_string(),
-                    metric_style,
+                3,
+                Self::detail_line_with_style(
                     "Blocks",
                     Self::format_number(detail.block_qty),
                     metric_style,
                 ),
             ),
+            (4, Self::detail_line_with_style("Rate", detail.block_rate.clone(), reward_style)),
+            (5, Self::detail_line_with_style("24H", detail.daily_block_rate.clone(), metric_style)),
             (
-                3,
-                Self::paired_detail_line(
-                    "Rate",
-                    detail.block_rate.clone(),
-                    reward_style,
-                    "24H",
-                    detail.daily_block_rate.clone(),
+                6,
+                Self::detail_line_with_style(
+                    "Verifier",
+                    Self::format_number(detail.verifier_time),
                     metric_style,
                 ),
             ),
             (
-                4,
-                Self::paired_detail_line(
-                    "Verifier",
-                    Self::format_number(detail.verifier_time),
-                    metric_style,
+                7,
+                Self::detail_line_with_style(
                     "Ratio",
                     format!("{:.2}%", detail.reward_per),
                     reward_style,
                 ),
             ),
             (
-                5,
+                8,
                 Self::detail_line_with_style(
                     "System",
                     format!("{} LAT", Self::format_amount(detail.reward_value)),
@@ -552,7 +541,7 @@ impl NodeDetailWidget {
                 ),
             ),
             (
-                6,
+                9,
                 Self::detail_line_with_style(
                     "Rewards",
                     format!("{} LAT", Self::format_amount(detail.rewards())),
@@ -560,7 +549,7 @@ impl NodeDetailWidget {
                 ),
             ),
             (
-                7,
+                10,
                 Self::detail_line_with_style(
                     "Address",
                     Self::shorten_address_for_width(&detail.reward_address, address_max_len),
@@ -593,85 +582,66 @@ impl NodeDetailWidget {
     fn compact_summary_column_specs(
         detail: &NodeDetail,
         address_max_len: usize,
-        split_reward_lines: bool,
     ) -> DoublePriorityLines {
         let metric_style = Self::metric_value_style();
         let reward_style = Self::reward_value_style();
         let address_style = Self::address_value_style();
         let left = vec![
             (1, Self::detail_line("Name", detail.node_name.clone())),
+            (2, Self::detail_line_with_style("Rank", detail.ranking.to_string(), metric_style)),
             (
-                2,
-                Self::paired_detail_line(
-                    "Rank",
-                    detail.ranking.to_string(),
-                    metric_style,
+                3,
+                Self::detail_line_with_style(
                     "Blocks",
                     Self::format_number(detail.block_qty),
                     metric_style,
                 ),
             ),
+            (4, Self::detail_line_with_style("Rate", detail.block_rate.clone(), reward_style)),
+            (5, Self::detail_line_with_style("24H", detail.daily_block_rate.clone(), metric_style)),
+        ];
+        let right = vec![
+            (
+                1,
+                Self::detail_line_with_style(
+                    "Verifier",
+                    Self::format_number(detail.verifier_time),
+                    metric_style,
+                ),
+            ),
+            (
+                2,
+                Self::detail_line_with_style(
+                    "Ratio",
+                    format!("{:.2}%", detail.reward_per),
+                    reward_style,
+                ),
+            ),
             (
                 3,
-                Self::paired_detail_line(
-                    "Rate",
-                    detail.block_rate.clone(),
-                    reward_style,
-                    "24H",
-                    detail.daily_block_rate.clone(),
+                Self::detail_line_with_style(
+                    "System",
+                    format!("{} LAT", Self::format_amount(detail.reward_value)),
                     metric_style,
+                ),
+            ),
+            (
+                4,
+                Self::detail_line_with_style(
+                    "Rewards",
+                    format!("{} LAT", Self::format_amount(detail.rewards())),
+                    reward_style,
+                ),
+            ),
+            (
+                5,
+                Self::detail_line_with_style(
+                    "Address",
+                    Self::shorten_address_for_width(&detail.reward_address, address_max_len),
+                    address_style,
                 ),
             ),
         ];
-        let mut right = vec![(
-            1,
-            Self::paired_detail_line(
-                "Verifier",
-                Self::format_number(detail.verifier_time),
-                metric_style,
-                "Ratio",
-                format!("{:.2}%", detail.reward_per),
-                reward_style,
-            ),
-        )];
-        if split_reward_lines {
-            right.push((
-                2,
-                Self::detail_line_with_style(
-                    "System",
-                    format!("{} LAT", Self::format_amount(detail.reward_value)),
-                    metric_style,
-                ),
-            ));
-            right.push((
-                3,
-                Self::detail_line_with_style(
-                    "Rewards",
-                    format!("{} LAT", Self::format_amount(detail.rewards())),
-                    reward_style,
-                ),
-            ));
-        } else {
-            right.push((
-                2,
-                Self::paired_detail_line(
-                    "System",
-                    format!("{} LAT", Self::format_amount(detail.reward_value)),
-                    metric_style,
-                    "Rewards",
-                    format!("{} LAT", Self::format_amount(detail.rewards())),
-                    reward_style,
-                ),
-            ));
-        }
-        right.push((
-            4,
-            Self::detail_line_with_style(
-                "Address",
-                Self::shorten_address_for_width(&detail.reward_address, address_max_len),
-                address_style,
-            ),
-        ));
 
         (left, right)
     }
@@ -679,12 +649,10 @@ impl NodeDetailWidget {
     fn compact_summary_columns(
         detail: &NodeDetail,
         address_max_len: usize,
-        split_reward_lines: bool,
         max_left_rows: u16,
         max_right_rows: u16,
     ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-        let (left_specs, right_specs) =
-            Self::compact_summary_column_specs(detail, address_max_len, split_reward_lines);
+        let (left_specs, right_specs) = Self::compact_summary_column_specs(detail, address_max_len);
 
         (
             Self::select_prioritized_lines(left_specs, max_left_rows),
@@ -735,11 +703,9 @@ impl NodeDetailWidget {
                 columns[1].height,
             );
             let address_max_len = Self::inline_value_max_len(right_area.width, "Address: ");
-            let split_reward_lines = right_area.height >= 4;
             let (left_lines, right_lines) = Self::compact_summary_columns(
                 &detail,
                 address_max_len,
-                split_reward_lines,
                 left_area.height,
                 right_area.height,
             );
@@ -867,14 +833,14 @@ mod tests {
 
     #[test]
     fn test_detail_columns_show_formatted_values() {
-        let (left, right) =
-            NodeDetailWidget::compact_summary_columns(&sample_detail(), 30, false, 10, 10);
+        let (left, right) = NodeDetailWidget::compact_summary_columns(&sample_detail(), 30, 10, 10);
 
         assert_eq!(line_text(&left[0]), "Name: node-a");
-        assert_eq!(line_text(&left[1]), "Rank: 7    Blocks: 123,456");
-        assert_eq!(line_text(&right[0]), "Verifier: 9    Ratio: 5.00%");
-        assert_eq!(line_text(&right[1]), "System: 12,345.67 LAT    Rewards: 11,728.39 LAT");
-        assert_eq!(line_text(&right[2]), "Address: lat1zytcgvw35sagn722c…dp8gqj5h");
+        assert_eq!(line_text(&left[1]), "Rank: 7");
+        assert_eq!(line_text(&left[2]), "Blocks: 123,456");
+        assert_eq!(line_text(&right[0]), "Verifier: 9");
+        assert_eq!(line_text(&right[1]), "Ratio: 5.00%");
+        assert_eq!(line_text(&right[4]), "Address: lat1zytcgvw35sagn722c…dp8gqj5h");
     }
 
     #[test]
@@ -904,32 +870,24 @@ mod tests {
 
         assert_eq!(line_text(&lines[0]), "Node");
         assert_eq!(line_text(&lines[1]), "Name: node-a");
-        assert_eq!(line_text(&lines[2]), "Ranking: 7    Blocks: 123,456");
-        assert_eq!(line_text(&lines[4]), "Rewards");
-        assert_eq!(line_text(&lines[5]), "Verifier: 9    Ratio: 5.00%");
-        assert_eq!(line_text(&lines[8]), "Address: lat1zytcgvw3…8gqj5h");
+        assert_eq!(line_text(&lines[2]), "Ranking: 7");
+        assert_eq!(line_text(&lines[3]), "Blocks: 123,456");
+        assert_eq!(line_text(&lines[6]), "");
+        assert_eq!(line_text(&lines[7]), "Rewards");
+        assert_eq!(line_text(&lines[8]), "Verifier: 9");
+        assert_eq!(line_text(&lines[12]), "Address: lat1zytcgvw3…8gqj5h");
     }
 
     #[test]
     fn test_compact_summary_columns_include_key_fields() {
-        let (left, right) =
-            NodeDetailWidget::compact_summary_columns(&sample_detail(), 30, false, 10, 10);
+        let (left, right) = NodeDetailWidget::compact_summary_columns(&sample_detail(), 30, 10, 10);
 
         assert_eq!(line_text(&left[0]), "Name: node-a");
-        assert_eq!(line_text(&left[1]), "Rank: 7    Blocks: 123,456");
-        assert_eq!(line_text(&right[0]), "Verifier: 9    Ratio: 5.00%");
-        assert_eq!(line_text(&right[1]), "System: 12,345.67 LAT    Rewards: 11,728.39 LAT");
-        assert_eq!(line_text(&right[2]), "Address: lat1zytcgvw35sagn722c…dp8gqj5h");
-    }
-
-    #[test]
-    fn test_compact_summary_columns_can_split_reward_lines() {
-        let (_, right) =
-            NodeDetailWidget::compact_summary_columns(&sample_detail(), 30, true, 10, 10);
-
-        assert_eq!(line_text(&right[1]), "System: 12,345.67 LAT");
-        assert_eq!(line_text(&right[2]), "Rewards: 11,728.39 LAT");
-        assert_eq!(line_text(&right[3]), "Address: lat1zytcgvw35sagn722c…dp8gqj5h");
+        assert_eq!(line_text(&left[1]), "Rank: 7");
+        assert_eq!(line_text(&left[2]), "Blocks: 123,456");
+        assert_eq!(line_text(&right[0]), "Verifier: 9");
+        assert_eq!(line_text(&right[1]), "Ratio: 5.00%");
+        assert_eq!(line_text(&right[4]), "Address: lat1zytcgvw35sagn722c…dp8gqj5h");
     }
 
     #[test]
@@ -946,9 +904,9 @@ mod tests {
 
         assert_eq!(lines.len(), 4);
         assert_eq!(line_text(&lines[0]), "Name: node-a");
-        assert_eq!(line_text(&lines[1]), "Rank: 7    Blocks: 123,456");
-        assert_eq!(line_text(&lines[2]), "Rate: 12.34%    24H: 3/day");
-        assert_eq!(line_text(&lines[3]), "Verifier: 9    Ratio: 5.00%");
+        assert_eq!(line_text(&lines[1]), "Rank: 7");
+        assert_eq!(line_text(&lines[2]), "Blocks: 123,456");
+        assert_eq!(line_text(&lines[3]), "Rate: 12.34%");
     }
 
     #[test]
@@ -963,9 +921,11 @@ mod tests {
         let lines = widget.compact_lines();
 
         assert_eq!(lines[0], "Name: node-a");
-        assert_eq!(lines[1], "Rank: 7    Blocks: 123,456");
-        assert_eq!(lines[2], "Rate: 12.34%    24H: 3/day");
-        assert_eq!(lines[5], "Rewards: 11,728.39 LAT");
-        assert_eq!(lines[6], "Address: lat1zytcgvw35sag…p8gqj5h");
+        assert_eq!(lines[1], "Rank: 7");
+        assert_eq!(lines[2], "Blocks: 123,456");
+        assert_eq!(lines[3], "Rate: 12.34%");
+        assert_eq!(lines[4], "24H: 3/day");
+        assert_eq!(lines[8], "Rewards: 11,728.39 LAT");
+        assert_eq!(lines[9], "Address: lat1zytcgvw35sag…p8gqj5h");
     }
 }
