@@ -140,6 +140,9 @@ impl Widget for &TimeWidget {
         let top_label = format_block_time(y_max.round() as u64);
 
         let (section_rows, info_rows) = self.metric_rows(labels, trend, avg_trend, avg_time);
+        let max_metrics = area.height.saturating_sub(6).clamp(1, 4) as usize;
+        let (section_rows, info_rows) =
+            chart::limit_standard_metric_rows(&section_rows, &info_rows, max_metrics);
         let mut panel = chart::default_metric_panel(
             OUTER_TITLE,
             BOX_TITLE,
@@ -148,6 +151,7 @@ impl Widget for &TimeWidget {
             &section_rows,
             &info_rows,
         );
+        panel.box_options.start_y_offset = 1;
         panel.band_rows = Some(chart::lighter_band_rows(area.height.saturating_sub(2)));
         panel.plot_fill_style = Style::default().fg(TIME_PLOT_FILL_COLOR).bg(block::PANEL_BG);
         panel.plot_crest_style = Style::default().fg(TIME_PLOT_CREST_COLOR).bg(block::PANEL_BG);

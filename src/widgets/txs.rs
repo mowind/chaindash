@@ -168,7 +168,10 @@ impl Widget for &TxsWidget {
 
         let (section_rows, info_rows) =
             self.metric_rows(labels, trend, avg_trend, avg_txs, area.width);
-        let panel = chart::default_metric_panel(
+        let max_metrics = area.height.saturating_sub(6).clamp(1, 4) as usize;
+        let (section_rows, info_rows) =
+            chart::limit_standard_metric_rows(&section_rows, &info_rows, max_metrics);
+        let mut panel = chart::default_metric_panel(
             OUTER_TITLE,
             BOX_TITLE,
             y_max,
@@ -176,6 +179,7 @@ impl Widget for &TxsWidget {
             &section_rows,
             &info_rows,
         );
+        panel.box_options.start_y_offset = 1;
 
         chart::render_metric_panel(buf, area, &self.data, &panel);
     }

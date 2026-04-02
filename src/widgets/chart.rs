@@ -169,6 +169,33 @@ pub fn standard_metric_rows(
     (box_rows, fallback_rows)
 }
 
+pub fn limit_standard_metric_rows(
+    box_rows: &[LabeledBoxRow],
+    fallback_rows: &[SegmentGridRow],
+    max_metrics: usize,
+) -> (Vec<LabeledBoxRow>, Vec<SegmentGridRow>) {
+    let max_metrics = max_metrics.clamp(1, 4);
+
+    let limited_box_rows = match max_metrics {
+        1 => vec![box_rows[0].clone()],
+        2 => vec![box_rows[0].clone(), box_rows[1].clone()],
+        3 => vec![box_rows[0].clone(), box_rows[1].clone(), box_rows[2].clone()],
+        _ => box_rows.to_vec(),
+    };
+
+    let limited_fallback_rows = match max_metrics {
+        1 => vec![vec![fallback_rows[0][0].clone()]],
+        2 => vec![vec![fallback_rows[0][0].clone(), fallback_rows[0][1].clone()]],
+        3 => vec![
+            vec![fallback_rows[0][0].clone(), fallback_rows[0][1].clone()],
+            vec![fallback_rows[1][0].clone()],
+        ],
+        _ => fallback_rows.to_vec(),
+    };
+
+    (limited_box_rows, limited_fallback_rows)
+}
+
 pub struct MetricPanel<'a> {
     pub outer_title: &'a str,
     pub y_max: f64,
@@ -952,6 +979,43 @@ mod tests {
         assert_eq!(fallback_rows[0][1][0].0, "MAX    8.1s");
         assert_eq!(fallback_rows[1][0][0].0, "AVG ");
         assert_eq!(fallback_rows[1][1][0].0, "BLK  144,706,819");
+    }
+
+    #[test]
+    fn test_limit_standard_metric_rows_reduces_metrics_by_priority() {
+        let values = StandardMetricValues {
+            trend: "↑",
+            current_box_value: " 5.2s".to_string(),
+            current_fallback_value: "   5.2s".to_string(),
+            top_box_value: "8.1s".to_string(),
+            top_fallback: "MAX    8.1s".to_string(),
+            avg_trend: "→",
+            avg_box_value: " 6.0s".to_string(),
+            avg_fallback_value: "   6.0s".to_string(),
+            block_box_value: "144,706,819".to_string(),
+            block_fallback: "BLK  144,706,819".to_string(),
+        };
+        let palette = StandardMetricPalette {
+            trend_up: Color::Green,
+            trend_down: Color::Red,
+            current_fallback: Color::Cyan,
+            top_fallback: Color::Gray,
+            avg: Color::Blue,
+            block: Color::DarkGray,
+        };
+
+        let (box_rows, fallback_rows) =
+            standard_metric_rows(("CUR", "MAX", "AVG", "BLK"), &values, palette);
+        let (limited_box, limited_fallback) =
+            limit_standard_metric_rows(&box_rows, &fallback_rows, 3);
+
+        assert_eq!(limited_box.len(), 3);
+        assert_eq!(limited_box[0].0, "now:");
+        assert_eq!(limited_box[1].0, "top:");
+        assert_eq!(limited_box[2].0, "avg:");
+        assert_eq!(limited_fallback.len(), 2);
+        assert_eq!(limited_fallback[0].len(), 2);
+        assert_eq!(limited_fallback[1].len(), 1);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use num_rational::Ratio;
 use ratatui::{
     buffer::Buffer,
@@ -21,7 +23,6 @@ use ratatui::{
         Row,
         Table,
         Widget,
-        Wrap,
     },
 };
 
@@ -35,6 +36,10 @@ use crate::{
 };
 
 const NODE_VALUE_COLOR: Color = Color::Indexed(153);
+type PriorityLine = (u8, Line<'static>);
+type PriorityLines = Vec<PriorityLine>;
+type DoublePriorityLines = (PriorityLines, PriorityLines);
+type TriplePriorityLines = (PriorityLines, PriorityLines, PriorityLines);
 
 pub struct NodeWidget {
     title: String,
@@ -44,6 +49,13 @@ pub struct NodeWidget {
 }
 
 impl NodeWidget {
+    const COMPACT_LAYOUT_WIDTH: u16 = 110;
+    const COMPACT_TWO_COLUMN_WIDTH: u16 = 72;
+    const STACKED_LAYOUT_WIDTH: u16 = 150;
+    const STACKED_LAYOUT_HEIGHT: u16 = 9;
+    const HEADING_LAYOUT_HEIGHT: u16 = 6;
+    const INLINE_RIGHT_PADDING: u16 = 3;
+
     pub fn new(collect_data: SharedData) -> NodeWidget {
         NodeWidget {
             title: " Nodes ".to_string(),
@@ -73,6 +85,76 @@ impl NodeWidget {
         formatted.chars().rev().collect()
     }
 
+    fn shorten_host_for_width(
+        host: &str,
+        max_len: usize,
+    ) -> String {
+        const MIN_SUFFIX_LEN: usize = 4;
+        const MAX_SUFFIX_LEN: usize = 8;
+
+        if max_len == 0 {
+            return String::new();
+        }
+
+        if host.len() <= max_len {
+            return host.to_string();
+        }
+
+        if let Some((base, port)) = host.rsplit_once(':') {
+            if !base.is_empty() && !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+                let suffix = format!(":{port}");
+                if max_len > suffix.len() + 1 {
+                    let prefix_len = max_len.saturating_sub(suffix.len() + 1);
+                    return format!("{}…{}", &base[..prefix_len.min(base.len())], suffix);
+                }
+            }
+        }
+
+        let suffix_len = ((max_len - 1) / 3).clamp(MIN_SUFFIX_LEN, MAX_SUFFIX_LEN);
+        let prefix_len = max_len.saturating_sub(suffix_len + 1);
+
+        format!(
+            "{}…{}",
+            &host[..prefix_len.min(host.len())],
+            &host[host.len().saturating_sub(suffix_len)..]
+        )
+    }
+
+    fn select_prioritized_lines(
+        specs: PriorityLines,
+        max_rows: u16,
+    ) -> Vec<Line<'static>> {
+        let max_rows = max_rows as usize;
+        if max_rows == 0 {
+            return Vec::new();
+        }
+
+        if specs.len() <= max_rows {
+            return specs.into_iter().map(|(_, line)| line).collect();
+        }
+
+        let mut ranked: Vec<(usize, u8)> =
+            specs.iter().enumerate().map(|(index, (priority, _))| (index, *priority)).collect();
+        ranked.sort_by_key(|(index, priority)| (*priority, *index));
+
+        let keep: BTreeSet<usize> =
+            ranked.into_iter().take(max_rows).map(|(index, _)| index).collect();
+
+        specs
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, (_, line))| keep.contains(&index).then_some(line))
+            .collect()
+    }
+
+    fn inline_value_max_len(
+        area_width: u16,
+        label: &str,
+    ) -> usize {
+        area_width.saturating_sub(label.len() as u16).saturating_sub(Self::INLINE_RIGHT_PADDING)
+            as usize
+    }
+
     fn section_heading(title: &str) -> Line<'static> {
         Line::from(vec![Span::styled(title.to_string(), block::header_style())])
     }
@@ -96,12 +178,110 @@ impl NodeWidget {
         }
     }
 
+    fn single_node_column_specs(
+        node: &ConsensusState,
+        show_section_headings: bool,
+        host_max_len: usize,
+    ) -> TriplePriorityLines {
+        let node_value_style = block::content_style().add_modifier(Modifier::BOLD);
+        let metric_value_style =
+            block::content_style().fg(NODE_VALUE_COLOR).add_modifier(Modifier::BOLD);
+        let (role_text, role_color) = Self::role_badge(node);
+
+        let mut left_lines = Vec::new();
+        if show_section_headings {
+            left_lines.push((9, Self::section_heading("Node")));
+        }
+        left_lines
+            .push((1, Self::info_line_with_style("Name", node.name.clone(), node_value_style)));
+        left_lines.push((
+            3,
+            Self::info_line_with_style(
+                "Host",
+                Self::shorten_host_for_width(&node.host, host_max_len),
+                block::content_style(),
+            ),
+        ));
+        left_lines.push((
+            2,
+            Line::from(vec![
+                Span::styled("Role: ", block::muted_style()),
+                Span::styled(
+                    role_text.to_string(),
+                    block::content_style().fg(role_color).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ));
+
+        let mut middle_lines = Vec::new();
+        if show_section_headings {
+            middle_lines.push((9, Self::section_heading("Chain")));
+        }
+        middle_lines.extend([
+            (
+                1,
+                Self::info_line_with_style(
+                    "Block",
+                    Self::format_number(node.current_number),
+                    metric_value_style,
+                ),
+            ),
+            (
+                2,
+                Self::info_line_with_style(
+                    "Epoch",
+                    Self::format_number(node.epoch),
+                    metric_value_style,
+                ),
+            ),
+            (
+                3,
+                Self::info_line_with_style(
+                    "View",
+                    Self::format_number(node.view),
+                    metric_value_style,
+                ),
+            ),
+        ]);
+
+        let mut right_lines = Vec::new();
+        if show_section_headings {
+            right_lines.push((9, Self::section_heading("Consensus")));
+        }
+        right_lines.extend([
+            (2, Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style)),
+            (
+                3,
+                Self::info_line_with_style(
+                    "Locked",
+                    Self::format_number(node.locked),
+                    metric_value_style,
+                ),
+            ),
+            (
+                1,
+                Self::info_line_with_style(
+                    "Committed",
+                    Self::format_number(node.committed),
+                    metric_value_style,
+                ),
+            ),
+        ]);
+
+        (left_lines, middle_lines, right_lines)
+    }
+
     fn render_single_node(
         &self,
         area: Rect,
         buf: &mut Buffer,
         node: &ConsensusState,
     ) {
+        if area.width < Self::COMPACT_LAYOUT_WIDTH {
+            self.render_compact_single_node(area, buf, node);
+            return;
+        }
+
         let outer_block = block::new(&self.title);
         let inner = outer_block.inner(area);
         outer_block.render(area, buf);
@@ -110,13 +290,25 @@ impl NodeWidget {
             return;
         }
 
-        let content = Rect::new(
-            inner.x,
-            inner.y.saturating_add(1),
-            inner.width,
-            inner.height.saturating_sub(1),
-        );
+        let content = inner;
         if content.width == 0 || content.height == 0 {
+            return;
+        }
+
+        let show_section_headings = content.height >= Self::HEADING_LAYOUT_HEIGHT;
+        if content.width < Self::STACKED_LAYOUT_WIDTH {
+            if content.height >= Self::STACKED_LAYOUT_HEIGHT {
+                let host_max_len = Self::inline_value_max_len(content.width, "Host: ");
+                let lines = Self::visible_stacked_lines(
+                    node,
+                    show_section_headings,
+                    host_max_len,
+                    content.height,
+                );
+                Paragraph::new(lines).style(block::content_style()).render(content, buf);
+            } else {
+                self.render_compact_single_node(area, buf, node);
+            }
             return;
         }
 
@@ -132,78 +324,274 @@ impl NodeWidget {
             )
             .split(content);
 
-        let show_section_headings = content.height >= 7;
-        let node_value_style = block::content_style().add_modifier(Modifier::BOLD);
-        let metric_value_style =
-            block::content_style().fg(NODE_VALUE_COLOR).add_modifier(Modifier::BOLD);
-        let (role_text, role_color) = Self::role_badge(node);
+        let left_area = Rect::new(
+            columns[0].x,
+            columns[0].y,
+            columns[0].width.saturating_sub(1),
+            columns[0].height,
+        );
+        let host_max_len = Self::inline_value_max_len(left_area.width, "Host: ");
+        let middle_area = columns[1];
+        let right_area = columns[2];
+        let (left_specs, middle_specs, right_specs) =
+            Self::single_node_column_specs(node, show_section_headings, host_max_len);
+        let left_lines = Self::select_prioritized_lines(left_specs, left_area.height);
+        let middle_lines = Self::select_prioritized_lines(middle_specs, middle_area.height);
+        let right_lines = Self::select_prioritized_lines(right_specs, right_area.height);
 
-        let mut left_lines = Vec::new();
+        Paragraph::new(left_lines).style(block::content_style()).render(left_area, buf);
+        Paragraph::new(middle_lines).style(block::content_style()).render(middle_area, buf);
+        Paragraph::new(right_lines).style(block::content_style()).render(right_area, buf);
+    }
+
+    fn stacked_line_specs(
+        node: &ConsensusState,
+        show_section_headings: bool,
+        host_max_len: usize,
+    ) -> PriorityLines {
+        let (role_text, _) = Self::role_badge(node);
+        let mut lines = Vec::new();
+
         if show_section_headings {
-            left_lines.push(Self::section_heading("Node"));
+            lines.push((9, Self::section_heading("Node")));
         }
-        left_lines.push(Self::info_line_with_style("Name", node.name.clone(), node_value_style));
-        left_lines.push(Self::info_line_with_style(
-            "Host",
-            node.host.clone(),
-            block::content_style(),
+        lines.push((1, Line::raw(format!("Name: {}", node.name))));
+        lines.push((
+            6,
+            Line::raw(format!("Host: {}", Self::shorten_host_for_width(&node.host, host_max_len))),
         ));
-        left_lines.push(Line::from(vec![
-            Span::styled("Role: ", block::muted_style()),
-            Span::styled(
-                role_text.to_string(),
-                block::content_style().fg(role_color).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        lines.push((
+            2,
+            Line::raw(format!(
+                "Role: {}    Block: {}",
+                role_text,
+                Self::format_number(node.current_number)
+            )),
+        ));
 
-        let mut middle_lines = Vec::new();
         if show_section_headings {
-            middle_lines.push(Self::section_heading("Chain"));
+            lines.push((9, Self::section_heading("Chain")));
         }
-        middle_lines.extend([
-            Self::info_line_with_style(
-                "Block",
-                Self::format_number(node.current_number),
-                metric_value_style,
-            ),
-            Self::info_line_with_style(
-                "Epoch",
+        lines.push((
+            3,
+            Line::raw(format!(
+                "Epoch: {}    View: {}",
                 Self::format_number(node.epoch),
-                metric_value_style,
-            ),
-            Self::info_line_with_style("View", Self::format_number(node.view), metric_value_style),
-        ]);
+                Self::format_number(node.view)
+            )),
+        ));
 
-        let mut right_lines = Vec::new();
         if show_section_headings {
-            right_lines.push(Self::section_heading("Consensus"));
+            lines.push((9, Self::section_heading("Consensus")));
         }
-        right_lines.extend([
-            Self::info_line_with_style("QC", Self::format_number(node.qc), metric_value_style),
-            Self::info_line_with_style(
-                "Locked",
-                Self::format_number(node.locked),
-                metric_value_style,
-            ),
-            Self::info_line_with_style(
-                "Committed",
-                Self::format_number(node.committed),
-                metric_value_style,
-            ),
-        ]);
+        lines.push((
+            5,
+            Line::raw(format!(
+                "QC: {}    Locked: {}",
+                Self::format_number(node.qc),
+                Self::format_number(node.locked)
+            )),
+        ));
+        lines.push((4, Line::raw(format!("Committed: {}", Self::format_number(node.committed)))));
 
-        Paragraph::new(left_lines)
-            .style(block::content_style())
-            .wrap(Wrap { trim: true })
-            .render(columns[0], buf);
-        Paragraph::new(middle_lines)
-            .style(block::content_style())
-            .wrap(Wrap { trim: true })
-            .render(columns[1], buf);
-        Paragraph::new(right_lines)
-            .style(block::content_style())
-            .wrap(Wrap { trim: true })
-            .render(columns[2], buf);
+        lines
+    }
+
+    fn visible_stacked_lines(
+        node: &ConsensusState,
+        show_section_headings: bool,
+        host_max_len: usize,
+        max_rows: u16,
+    ) -> Vec<Line<'static>> {
+        Self::select_prioritized_lines(
+            Self::stacked_line_specs(node, show_section_headings, host_max_len),
+            max_rows,
+        )
+    }
+
+    #[cfg(test)]
+    fn stacked_lines(
+        node: &ConsensusState,
+        show_section_headings: bool,
+        host_max_len: usize,
+    ) -> Vec<Line<'static>> {
+        Self::visible_stacked_lines(node, show_section_headings, host_max_len, u16::MAX)
+    }
+
+    fn compact_line_specs(
+        node: &ConsensusState,
+        host_max_len: usize,
+    ) -> PriorityLines {
+        let (role_text, _) = Self::role_badge(node);
+
+        vec![
+            (1, Line::raw(format!("Name: {}", node.name))),
+            (
+                6,
+                Line::raw(format!(
+                    "Host: {}",
+                    Self::shorten_host_for_width(&node.host, host_max_len)
+                )),
+            ),
+            (
+                2,
+                Line::raw(format!(
+                    "Role: {}    Block: {}",
+                    role_text,
+                    Self::format_number(node.current_number)
+                )),
+            ),
+            (
+                3,
+                Line::raw(format!(
+                    "Epoch: {}    View: {}",
+                    Self::format_number(node.epoch),
+                    Self::format_number(node.view)
+                )),
+            ),
+            (
+                5,
+                Line::raw(format!(
+                    "QC: {}    Locked: {}",
+                    Self::format_number(node.qc),
+                    Self::format_number(node.locked)
+                )),
+            ),
+            (4, Line::raw(format!("Committed: {}", Self::format_number(node.committed)))),
+        ]
+    }
+
+    fn visible_compact_lines(
+        node: &ConsensusState,
+        host_max_len: usize,
+        max_rows: u16,
+    ) -> Vec<Line<'static>> {
+        Self::select_prioritized_lines(Self::compact_line_specs(node, host_max_len), max_rows)
+    }
+
+    #[cfg(test)]
+    fn compact_lines(
+        node: &ConsensusState,
+        host_max_len: usize,
+    ) -> Vec<String> {
+        Self::visible_compact_lines(node, host_max_len, u16::MAX)
+            .into_iter()
+            .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
+            .collect()
+    }
+
+    fn compact_summary_column_specs(
+        node: &ConsensusState,
+        host_max_len: usize,
+        split_consensus_lines: bool,
+    ) -> DoublePriorityLines {
+        let (role_text, _) = Self::role_badge(node);
+
+        let left = vec![
+            (1, Line::raw(format!("Name: {}", node.name))),
+            (
+                3,
+                Line::raw(format!(
+                    "Host: {}",
+                    Self::shorten_host_for_width(&node.host, host_max_len)
+                )),
+            ),
+            (2, Line::raw(format!("Role: {}", role_text))),
+        ];
+        let mut right = vec![
+            (1, Line::raw(format!("Block: {}", Self::format_number(node.current_number)))),
+            (
+                2,
+                Line::raw(format!(
+                    "Epoch: {}    View: {}",
+                    Self::format_number(node.epoch),
+                    Self::format_number(node.view)
+                )),
+            ),
+        ];
+        if split_consensus_lines {
+            right.push((4, Line::raw(format!("QC: {}", Self::format_number(node.qc)))));
+            right.push((5, Line::raw(format!("Locked: {}", Self::format_number(node.locked)))));
+        } else {
+            right.push((
+                4,
+                Line::raw(format!(
+                    "QC: {}    Locked: {}",
+                    Self::format_number(node.qc),
+                    Self::format_number(node.locked)
+                )),
+            ));
+        }
+        right.push((3, Line::raw(format!("Committed: {}", Self::format_number(node.committed)))));
+
+        (left, right)
+    }
+
+    fn compact_summary_columns(
+        node: &ConsensusState,
+        host_max_len: usize,
+        split_consensus_lines: bool,
+        max_left_rows: u16,
+        max_right_rows: u16,
+    ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+        let (left_specs, right_specs) =
+            Self::compact_summary_column_specs(node, host_max_len, split_consensus_lines);
+
+        (
+            Self::select_prioritized_lines(left_specs, max_left_rows),
+            Self::select_prioritized_lines(right_specs, max_right_rows),
+        )
+    }
+
+    fn render_compact_single_node(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        node: &ConsensusState,
+    ) {
+        let outer_block = block::new(&self.title);
+        let inner = outer_block.inner(area);
+        outer_block.render(area, buf);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        if inner.width >= Self::COMPACT_TWO_COLUMN_WIDTH && inner.height >= 4 {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)].as_ref())
+                .split(inner);
+            let left_area = Rect::new(
+                columns[0].x,
+                columns[0].y,
+                columns[0].width.saturating_sub(1),
+                columns[0].height,
+            );
+            let right_area = Rect::new(
+                columns[1].x.saturating_add(1),
+                columns[1].y,
+                columns[1].width.saturating_sub(1),
+                columns[1].height,
+            );
+            let host_max_len = Self::inline_value_max_len(left_area.width, "Host: ");
+            let split_consensus_lines = right_area.height >= 5;
+            let (left_lines, right_lines) = Self::compact_summary_columns(
+                node,
+                host_max_len,
+                split_consensus_lines,
+                left_area.height,
+                right_area.height,
+            );
+
+            Paragraph::new(left_lines).style(block::content_style()).render(left_area, buf);
+            Paragraph::new(right_lines).style(block::content_style()).render(right_area, buf);
+            return;
+        }
+
+        let host_max_len = Self::inline_value_max_len(inner.width, "Host: ");
+        let lines = Self::visible_compact_lines(node, host_max_len, inner.height);
+        Paragraph::new(lines).style(block::content_style()).render(inner, buf);
     }
 
     fn render_table(
@@ -292,6 +680,27 @@ mod tests {
         Data::new()
     }
 
+    fn sample_node() -> ConsensusState {
+        ConsensusState {
+            name: "Satyrs".to_string(),
+            host: "127.0.0.1:6790".to_string(),
+            current_number: 145_333_141,
+            epoch: 337_985,
+            view: 2,
+            committed: 145_333_141,
+            locked: 145_333_142,
+            qc: 145_333_143,
+            validator: false,
+        }
+    }
+
+    fn sample_long_host_node() -> ConsensusState {
+        ConsensusState {
+            host: "validator-long-domain.example.internal:6790".to_string(),
+            ..sample_node()
+        }
+    }
+
     #[test]
     fn test_node_widget_new() {
         let shared_data = create_shared_data();
@@ -348,5 +757,68 @@ mod tests {
 
         assert_eq!(NodeWidget::role_badge(&validator).0, "VALIDATOR");
         assert_eq!(NodeWidget::role_badge(&observer).0, "OBSERVER");
+    }
+
+    #[test]
+    fn test_stacked_lines_include_key_fields() {
+        let lines = NodeWidget::stacked_lines(&sample_node(), true, 20);
+
+        assert_eq!(lines[0].spans[0].content, "Node");
+        assert_eq!(lines[1].spans[0].content, "Name: Satyrs");
+        assert_eq!(lines[4].spans[0].content, "Chain");
+        assert_eq!(lines[5].spans[0].content, "Epoch: 337,985    View: 2");
+        assert_eq!(lines[6].spans[0].content, "Consensus");
+        assert_eq!(lines[7].spans[0].content, "QC: 145,333,143    Locked: 145,333,142");
+        assert_eq!(lines[8].spans[0].content, "Committed: 145,333,141");
+    }
+
+    #[test]
+    fn test_compact_summary_columns_include_key_fields() {
+        let (left, right) = NodeWidget::compact_summary_columns(&sample_node(), 20, false, 10, 10);
+
+        assert_eq!(left[0].spans[0].content, "Name: Satyrs");
+        assert_eq!(left[2].spans[0].content, "Role: OBSERVER");
+        assert_eq!(right[0].spans[0].content, "Block: 145,333,141");
+        assert_eq!(right[2].spans[0].content, "QC: 145,333,143    Locked: 145,333,142");
+        assert_eq!(right[3].spans[0].content, "Committed: 145,333,141");
+    }
+
+    #[test]
+    fn test_compact_summary_columns_can_split_consensus_lines() {
+        let (_, right) = NodeWidget::compact_summary_columns(&sample_node(), 20, true, 10, 10);
+
+        assert_eq!(right[2].spans[0].content, "QC: 145,333,143");
+        assert_eq!(right[3].spans[0].content, "Locked: 145,333,142");
+        assert_eq!(right[4].spans[0].content, "Committed: 145,333,141");
+    }
+
+    #[test]
+    fn test_shorten_host_for_width_preserves_port_suffix() {
+        assert_eq!(
+            NodeWidget::shorten_host_for_width(&sample_long_host_node().host, 20),
+            "validator-long…:6790"
+        );
+    }
+
+    #[test]
+    fn test_visible_compact_lines_prioritize_core_fields() {
+        let lines = NodeWidget::visible_compact_lines(&sample_node(), 20, 3);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].spans[0].content, "Name: Satyrs");
+        assert_eq!(lines[1].spans[0].content, "Role: OBSERVER    Block: 145,333,141");
+        assert_eq!(lines[2].spans[0].content, "Epoch: 337,985    View: 2");
+    }
+
+    #[test]
+    fn test_compact_lines_include_key_fields() {
+        let lines = NodeWidget::compact_lines(&sample_node(), 20);
+
+        assert_eq!(lines[0], "Name: Satyrs");
+        assert_eq!(lines[1], "Host: 127.0.0.1:6790");
+        assert_eq!(lines[2], "Role: OBSERVER    Block: 145,333,141");
+        assert_eq!(lines[3], "Epoch: 337,985    View: 2");
+        assert_eq!(lines[4], "QC: 145,333,143    Locked: 145,333,142");
+        assert_eq!(lines[5], "Committed: 145,333,141");
     }
 }
