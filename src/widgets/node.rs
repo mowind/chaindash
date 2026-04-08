@@ -19,6 +19,7 @@ use ratatui::{
         Span,
     },
     widgets::{
+        Cell,
         Paragraph,
         Row,
         Table,
@@ -35,7 +36,6 @@ use crate::{
     widgets::block,
 };
 
-const NODE_VALUE_COLOR: Color = Color::Indexed(153);
 type PriorityLine = (u8, Line<'static>);
 type PriorityLines = Vec<PriorityLine>;
 type DoublePriorityLines = (PriorityLines, PriorityLines);
@@ -174,11 +174,15 @@ impl NodeWidget {
         ])
     }
 
+    fn empty_message() -> &'static str {
+        "No nodes found"
+    }
+
     fn role_badge(node: &ConsensusState) -> (&'static str, Color) {
         if node.validator {
-            ("VALIDATOR", Color::LightGreen)
+            ("VALIDATOR", block::METRIC_POSITIVE)
         } else {
-            ("OBSERVER", Color::Yellow)
+            ("OBSERVER", block::ACCENT_WARN)
         }
     }
 
@@ -187,11 +191,11 @@ impl NodeWidget {
     }
 
     fn metric_value_style() -> Style {
-        block::content_style().fg(NODE_VALUE_COLOR).add_modifier(Modifier::BOLD)
+        block::accent_style(block::METRIC_TERTIARY)
     }
 
     fn role_value_style(color: Color) -> Style {
-        block::content_style().fg(color).add_modifier(Modifier::BOLD)
+        block::accent_style(color)
     }
 
     fn single_node_column_specs(
@@ -317,7 +321,7 @@ impl NodeWidget {
                     host_max_len,
                     content.height,
                 );
-                Paragraph::new(lines).style(block::content_style()).render(content, buf);
+                Paragraph::new(lines).render(content, buf);
             } else {
                 self.render_compact_single_node(area, buf, node);
             }
@@ -351,9 +355,9 @@ impl NodeWidget {
         let middle_lines = Self::select_prioritized_lines(middle_specs, middle_area.height);
         let right_lines = Self::select_prioritized_lines(right_specs, right_area.height);
 
-        Paragraph::new(left_lines).style(block::content_style()).render(left_area, buf);
-        Paragraph::new(middle_lines).style(block::content_style()).render(middle_area, buf);
-        Paragraph::new(right_lines).style(block::content_style()).render(right_area, buf);
+        Paragraph::new(left_lines).render(left_area, buf);
+        Paragraph::new(middle_lines).render(middle_area, buf);
+        Paragraph::new(right_lines).render(right_area, buf);
     }
 
     fn stacked_line_specs(
@@ -659,14 +663,53 @@ impl NodeWidget {
                 right_area.height,
             );
 
-            Paragraph::new(left_lines).style(block::content_style()).render(left_area, buf);
-            Paragraph::new(right_lines).style(block::content_style()).render(right_area, buf);
+            Paragraph::new(left_lines).render(left_area, buf);
+            Paragraph::new(right_lines).render(right_area, buf);
             return;
         }
 
         let host_max_len = Self::inline_value_max_len(inner.width, "Host: ");
         let lines = Self::visible_compact_lines(node, host_max_len, inner.height);
-        Paragraph::new(lines).style(block::content_style()).render(inner, buf);
+        Paragraph::new(lines).render(inner, buf);
+    }
+
+    fn table_row_values(
+        node: &ConsensusState,
+        host_max_len: usize,
+    ) -> Vec<String> {
+        let (role_text, _) = Self::role_badge(node);
+
+        vec![
+            format!(" {}", node.name),
+            Self::shorten_host_for_width(&node.host, host_max_len),
+            Self::format_number(node.current_number),
+            Self::format_number(node.epoch),
+            Self::format_number(node.view),
+            Self::format_number(node.qc),
+            Self::format_number(node.locked),
+            Self::format_number(node.committed),
+            role_text.to_string(),
+        ]
+    }
+
+    fn table_row_cells(
+        node: &ConsensusState,
+        host_max_len: usize,
+    ) -> Vec<Cell<'static>> {
+        let (_, role_color) = Self::role_badge(node);
+        let values = Self::table_row_values(node, host_max_len);
+
+        vec![
+            Cell::from(values[0].clone()).style(Self::node_value_style()),
+            Cell::from(values[1].clone()).style(block::content_style()),
+            Cell::from(values[2].clone()).style(Self::metric_value_style()),
+            Cell::from(values[3].clone()).style(Self::metric_value_style()),
+            Cell::from(values[4].clone()).style(Self::metric_value_style()),
+            Cell::from(values[5].clone()).style(Self::metric_value_style()),
+            Cell::from(values[6].clone()).style(Self::metric_value_style()),
+            Cell::from(values[7].clone()).style(Self::metric_value_style()),
+            Cell::from(values[8].clone()).style(Self::role_value_style(role_color)),
+        ]
     }
 
     fn render_table(
@@ -676,22 +719,11 @@ impl NodeWidget {
     ) {
         let header =
             [" Name", "Host", "Block", "Epoch", "View", "QC", "Locked", "Committed", "Role"];
+        let host_width = Self::flexible_width(area.width, 88, 18);
+        let host_max_len = host_width.saturating_sub(1) as usize;
 
-        let rows = self.nodes.iter().map(|node| {
-            let (role_text, _) = Self::role_badge(node);
-            Row::new(vec![
-                format!(" {}", &node.name),
-                node.host.clone(),
-                Self::format_number(node.current_number),
-                Self::format_number(node.epoch),
-                Self::format_number(node.view),
-                Self::format_number(node.qc),
-                Self::format_number(node.locked),
-                Self::format_number(node.committed),
-                role_text.to_string(),
-            ])
-            .style(block::content_style())
-        });
+        let rows =
+            self.nodes.iter().map(|node| Row::new(Self::table_row_cells(node, host_max_len)));
 
         let header_row = Row::new(header.iter().copied()).style(block::header_style());
 
@@ -699,7 +731,7 @@ impl NodeWidget {
             rows,
             &[
                 Constraint::Length(16),
-                Constraint::Length(Self::flexible_width(area.width, 88, 18)),
+                Constraint::Length(host_width),
                 Constraint::Length(14),
                 Constraint::Length(10),
                 Constraint::Length(8),
@@ -713,6 +745,24 @@ impl NodeWidget {
         .header(header_row)
         .column_spacing(1)
         .render(area, buf);
+    }
+
+    fn render_empty_state(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let outer_block = block::new(&self.title);
+        let inner = outer_block.inner(area);
+        outer_block.render(area, buf);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        Paragraph::new(vec![Line::raw(Self::empty_message())])
+            .style(block::empty_state_style())
+            .render(inner, buf);
     }
 }
 
@@ -737,6 +787,11 @@ impl Widget for &NodeWidget {
             return;
         }
 
+        if self.nodes.is_empty() {
+            self.render_empty_state(area, buf);
+            return;
+        }
+
         if self.nodes.len() == 1 {
             self.render_single_node(area, buf, &self.nodes[0]);
             return;
@@ -748,6 +803,12 @@ impl Widget for &NodeWidget {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        widgets::Widget,
+    };
+
     use super::*;
     use crate::collect::Data;
 
@@ -808,6 +869,11 @@ mod tests {
         let shared_data = create_shared_data();
         let widget = NodeWidget::new(shared_data);
         assert!(widget.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_empty_message_matches_nodes_empty_state() {
+        assert_eq!(NodeWidget::empty_message(), "No nodes found");
     }
 
     #[test]
@@ -872,6 +938,37 @@ mod tests {
             NodeWidget::shorten_host_for_width(&sample_long_host_node().host, 20),
             "validator-long…:6790"
         );
+    }
+
+    #[test]
+    fn test_table_row_values_include_expected_columns() {
+        let values = NodeWidget::table_row_values(&sample_node(), 20);
+
+        assert_eq!(values[0], " Satyrs");
+        assert_eq!(values[1], "127.0.0.1:6790");
+        assert_eq!(values[2], "145,333,141");
+        assert_eq!(values[8], "OBSERVER");
+    }
+
+    #[test]
+    fn test_node_table_highlight_style_helpers_match_expected_colors() {
+        let (_, observer_color) = NodeWidget::role_badge(&sample_node());
+
+        assert_eq!(NodeWidget::metric_value_style().fg, Some(block::METRIC_TERTIARY));
+        assert_eq!(NodeWidget::role_value_style(observer_color).fg, Some(block::ACCENT_WARN));
+    }
+
+    #[test]
+    fn test_render_empty_state_uses_muted_style() {
+        let widget = NodeWidget::new(create_shared_data());
+        let area = Rect::new(0, 0, 24, 5);
+        let mut buf = Buffer::empty(area);
+
+        (&widget).render(area, &mut buf);
+
+        assert_eq!(buf.get(1, 1).symbol(), "N");
+        assert_eq!(buf.get(1, 1).fg, block::PANEL_MUTED);
+        assert_eq!(buf.get(1, 1).bg, block::PANEL_BG);
     }
 
     #[test]

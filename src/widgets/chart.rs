@@ -17,9 +17,9 @@ pub const NARROW_CHART_WIDTH: u16 = 40;
 pub const ULTRA_NARROW_CHART_WIDTH: u16 = 32;
 pub const PLOT_FILL_COLOR: Color = Color::Rgb(214, 106, 206);
 pub const PLOT_CREST_COLOR: Color = Color::Rgb(232, 224, 255);
-pub const AXIS_LABEL_COLOR: Color = Color::Indexed(245);
-pub const INFO_FRAME_COLOR: Color = Color::Indexed(241);
-pub const INFO_LABEL_COLOR: Color = Color::Indexed(247);
+pub const AXIS_LABEL_COLOR: Color = block::PANEL_MUTED;
+pub const INFO_FRAME_COLOR: Color = block::PANEL_BORDER;
+pub const INFO_LABEL_COLOR: Color = block::PANEL_MUTED;
 const INLINE_FRAME_WIDTH: u16 = 2;
 
 pub type StyledSegment = (String, Style);
@@ -46,27 +46,27 @@ impl StandardMetricPalette {
     }
 
     pub fn current_box_style(self) -> Style {
-        Style::default().fg(PLOT_FILL_COLOR).add_modifier(Modifier::BOLD)
+        block::content_style().fg(PLOT_FILL_COLOR).add_modifier(Modifier::BOLD)
     }
 
     pub fn current_fallback_style(self) -> Style {
-        Style::default().fg(self.current_fallback).add_modifier(Modifier::BOLD)
+        block::content_style().fg(self.current_fallback).add_modifier(Modifier::BOLD)
     }
 
     pub fn top_box_style(self) -> Style {
-        Style::default().fg(PLOT_CREST_COLOR)
+        block::content_style().fg(PLOT_CREST_COLOR).add_modifier(Modifier::BOLD)
     }
 
     pub fn top_fallback_style(self) -> Style {
-        Style::default().fg(self.top_fallback)
+        block::content_style().fg(self.top_fallback).add_modifier(Modifier::BOLD)
     }
 
     pub fn avg_style(self) -> Style {
-        Style::default().fg(self.avg)
+        block::content_style().fg(self.avg).add_modifier(Modifier::BOLD)
     }
 
     pub fn block_style(self) -> Style {
-        Style::default().fg(self.block)
+        block::content_style().fg(self.block).add_modifier(Modifier::BOLD)
     }
 }
 
@@ -107,7 +107,7 @@ pub fn labeled_info_row(
     label: &str,
     value_segments: StyledSegments,
 ) -> LabeledBoxRow {
-    (label.to_string(), Style::default().fg(INFO_LABEL_COLOR), value_segments)
+    (label.to_string(), Style::default().fg(INFO_LABEL_COLOR).bg(block::PANEL_BG), value_segments)
 }
 
 pub fn two_column_segment_grid(
@@ -222,10 +222,7 @@ pub fn default_labeled_box_options<'a>(title: &'a str) -> LabeledBoxOptions<'a> 
     LabeledBoxOptions {
         start_y_offset: 2,
         title,
-        title_style: Style::default()
-            .fg(block::PANEL_TITLE)
-            .bg(block::PANEL_BG)
-            .add_modifier(Modifier::BOLD),
+        title_style: block::header_style(),
         frame_style: Style::default().fg(INFO_FRAME_COLOR).bg(block::PANEL_BG),
         background_style: block::content_style(),
         column_gap: 2,
@@ -771,12 +768,12 @@ pub fn render_right_aligned_segment_grid(
 
         let y = area.y + y_offset;
         for x in box_x..box_x + total_width {
-            buf.get_mut(x, y).set_symbol(" ").set_style(Style::default());
+            buf.get_mut(x, y).set_symbol(" ").set_style(block::content_style());
         }
 
         if has_frame {
             let (left, right) = inline_frame_symbols(row_index, rows.len());
-            let frame_style = Style::default().fg(Color::DarkGray);
+            let frame_style = Style::default().fg(INFO_FRAME_COLOR).bg(block::PANEL_BG);
             buf.get_mut(box_x, y).set_symbol(left).set_style(frame_style);
             buf.get_mut(box_x + total_width - 1, y).set_symbol(right).set_style(frame_style);
         }
@@ -927,9 +924,35 @@ mod tests {
         assert_eq!(format_grouped_number(144_706_819), "144,706,819");
     }
 
+    fn sample_standard_metric_values<'a>() -> StandardMetricValues<'a> {
+        StandardMetricValues {
+            trend: "↑",
+            current_box_value: " 5.2s".to_string(),
+            current_fallback_value: "   5.2s".to_string(),
+            top_box_value: "8.1s".to_string(),
+            top_fallback: "MAX    8.1s".to_string(),
+            avg_trend: "→",
+            avg_box_value: " 6.0s".to_string(),
+            avg_fallback_value: "   6.0s".to_string(),
+            block_box_value: "144,706,819".to_string(),
+            block_fallback: "BLK  144,706,819".to_string(),
+        }
+    }
+
+    fn sample_standard_metric_palette() -> StandardMetricPalette {
+        StandardMetricPalette {
+            trend_up: block::METRIC_POSITIVE,
+            trend_down: block::ACCENT_ERROR,
+            current_fallback: block::METRIC_PRIMARY,
+            top_fallback: block::METRIC_PEAK,
+            avg: block::METRIC_SECONDARY,
+            block: block::CONTENT_HIGHLIGHT,
+        }
+    }
+
     #[test]
     fn test_segment_helpers_build_expected_shapes() {
-        let value = single_segment("123", Style::default().fg(Color::Yellow));
+        let value = single_segment("123", block::accent_style(block::ACCENT_WARN));
         let row = labeled_info_row("now:", value.clone());
         let grid = two_column_segment_grid(value.clone(), value.clone(), value.clone(), value);
 
@@ -944,26 +967,8 @@ mod tests {
 
     #[test]
     fn test_standard_metric_rows_builds_box_and_fallback_layouts() {
-        let values = StandardMetricValues {
-            trend: "↑",
-            current_box_value: " 5.2s".to_string(),
-            current_fallback_value: "   5.2s".to_string(),
-            top_box_value: "8.1s".to_string(),
-            top_fallback: "MAX    8.1s".to_string(),
-            avg_trend: "→",
-            avg_box_value: " 6.0s".to_string(),
-            avg_fallback_value: "   6.0s".to_string(),
-            block_box_value: "144,706,819".to_string(),
-            block_fallback: "BLK  144,706,819".to_string(),
-        };
-        let palette = StandardMetricPalette {
-            trend_up: Color::Green,
-            trend_down: Color::Red,
-            current_fallback: Color::Cyan,
-            top_fallback: Color::Gray,
-            avg: Color::Blue,
-            block: Color::DarkGray,
-        };
+        let values = sample_standard_metric_values();
+        let palette = sample_standard_metric_palette();
 
         let (box_rows, fallback_rows) =
             standard_metric_rows(("CUR", "MAX", "AVG", "BLK"), &values, palette);
@@ -972,7 +977,7 @@ mod tests {
         assert_eq!(box_rows[0].0, "now:");
         assert_eq!(box_rows[0].2[0].0, "↑");
         assert_eq!(box_rows[0].2[1].0, " 5.2s");
-        assert_eq!(box_rows[0].2[0].1.fg, Some(Color::Green));
+        assert_eq!(box_rows[0].2[0].1.fg, Some(block::METRIC_POSITIVE));
         assert_eq!(box_rows[3].2[0].0, "144,706,819");
         assert_eq!(fallback_rows.len(), 2);
         assert_eq!(fallback_rows[0][0][0].0, "CUR ");
@@ -983,26 +988,8 @@ mod tests {
 
     #[test]
     fn test_limit_standard_metric_rows_reduces_metrics_by_priority() {
-        let values = StandardMetricValues {
-            trend: "↑",
-            current_box_value: " 5.2s".to_string(),
-            current_fallback_value: "   5.2s".to_string(),
-            top_box_value: "8.1s".to_string(),
-            top_fallback: "MAX    8.1s".to_string(),
-            avg_trend: "→",
-            avg_box_value: " 6.0s".to_string(),
-            avg_fallback_value: "   6.0s".to_string(),
-            block_box_value: "144,706,819".to_string(),
-            block_fallback: "BLK  144,706,819".to_string(),
-        };
-        let palette = StandardMetricPalette {
-            trend_up: Color::Green,
-            trend_down: Color::Red,
-            current_fallback: Color::Cyan,
-            top_fallback: Color::Gray,
-            avg: Color::Blue,
-            block: Color::DarkGray,
-        };
+        let values = sample_standard_metric_values();
+        let palette = sample_standard_metric_palette();
 
         let (box_rows, fallback_rows) =
             standard_metric_rows(("CUR", "MAX", "AVG", "BLK"), &values, palette);
@@ -1022,11 +1009,17 @@ mod tests {
     fn test_render_left_axis_labels_reserves_gutter() {
         let area = Rect::new(0, 0, 12, 4);
         let mut buf = Buffer::empty(area);
-        let plot_area =
-            render_left_axis_labels(&mut buf, area, "2.5s", "0", Style::default().fg(Color::Cyan));
+        let plot_area = render_left_axis_labels(
+            &mut buf,
+            area,
+            "2.5s",
+            "0",
+            Style::default().fg(AXIS_LABEL_COLOR).bg(block::PANEL_BG),
+        );
 
         assert_eq!(plot_area, Rect::new(5, 0, 7, 4));
         assert_eq!(buf.get(0, 0).symbol(), "2");
+        assert_eq!(buf.get(0, 0).fg, AXIS_LABEL_COLOR);
         assert_eq!(buf.get(3, 0).symbol(), "s");
         assert_eq!(buf.get(3, 3).symbol(), "0");
     }
@@ -1070,22 +1063,22 @@ mod tests {
         let rows = vec![
             (
                 "now:".to_string(),
-                Style::default().fg(Color::Gray),
-                vec![("5.2s".to_string(), Style::default().fg(Color::Green))],
+                block::muted_style(),
+                vec![("5.2s".to_string(), block::accent_style(block::METRIC_POSITIVE))],
             ),
             (
                 "blk:".to_string(),
-                Style::default().fg(Color::Gray),
-                vec![("123,456".to_string(), Style::default().fg(Color::Yellow))],
+                block::muted_style(),
+                vec![("123,456".to_string(), block::highlight_style())],
             ),
         ];
 
         let options = LabeledBoxOptions {
             start_y_offset: 1,
             title: "block time",
-            title_style: Style::default().fg(Color::White),
-            frame_style: Style::default().fg(Color::DarkGray),
-            background_style: Style::default().bg(Color::Black),
+            title_style: block::header_style(),
+            frame_style: Style::default().fg(INFO_FRAME_COLOR).bg(block::PANEL_BG),
+            background_style: block::content_style(),
             column_gap: 2,
             right_inset: 1,
         };
@@ -1094,10 +1087,13 @@ mod tests {
 
         assert!(rendered);
         assert_eq!(buf.get(10, 1).symbol(), "╭");
+        assert_eq!(buf.get(10, 1).fg, INFO_FRAME_COLOR);
         assert_eq!(buf.get(15, 1).symbol(), "o");
+        assert_eq!(buf.get(15, 1).fg, block::PANEL_TITLE);
         assert_eq!(buf.get(11, 2).symbol(), "n");
         assert_eq!(buf.get(20, 2).symbol(), "5");
         assert_eq!(buf.get(17, 3).symbol(), "1");
+        assert_eq!(buf.get(17, 3).fg, block::CONTENT_HIGHLIGHT);
         assert_eq!(buf.get(24, 4).symbol(), "╯");
     }
 

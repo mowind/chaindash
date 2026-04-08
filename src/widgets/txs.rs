@@ -2,14 +2,16 @@ use num_rational::Ratio;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Color,
     widgets::Widget,
 };
 
 use crate::{
     collect::SharedData,
     update::UpdatableWidget,
-    widgets::chart,
+    widgets::{
+        block,
+        chart,
+    },
 };
 
 const OUTER_TITLE: &str = " Block Transactions ";
@@ -17,12 +19,12 @@ const BOX_TITLE: &str = "txs";
 const MIN_Y_AXIS_MAX_TXS: f64 = 10.0;
 const AVERAGE_WINDOW_DATA_POINTS: usize = 10;
 const METRIC_PALETTE: chart::StandardMetricPalette = chart::StandardMetricPalette {
-    trend_up: Color::LightGreen,
-    trend_down: Color::LightRed,
-    current_fallback: Color::Indexed(81_u8),
-    top_fallback: Color::Indexed(145_u8),
-    avg: Color::Indexed(109_u8),
-    block: Color::DarkGray,
+    trend_up: block::METRIC_POSITIVE,
+    trend_down: block::ACCENT_ERROR,
+    current_fallback: block::METRIC_TERTIARY,
+    top_fallback: block::METRIC_PEAK,
+    avg: block::METRIC_POSITIVE,
+    block: block::CONTENT_HIGHLIGHT,
 };
 const Y_AXIS_STEPS_TXS: [(f64, f64); 6] = [
     (100.0, 10.0),
@@ -269,9 +271,13 @@ mod tests {
 
     #[test]
     fn test_trend_style_maps_symbols() {
-        assert_eq!(METRIC_PALETTE.trend_style("↑").fg, Some(Color::LightGreen));
-        assert_eq!(METRIC_PALETTE.trend_style("↓").fg, Some(Color::LightRed));
-        assert_eq!(METRIC_PALETTE.trend_style("→").fg, Some(Color::DarkGray));
+        assert_eq!(METRIC_PALETTE.trend_style("↑").fg, Some(block::METRIC_POSITIVE));
+        assert_eq!(METRIC_PALETTE.trend_style("↓").fg, Some(block::ACCENT_ERROR));
+        assert_eq!(METRIC_PALETTE.trend_style("→").fg, Some(ratatui::style::Color::DarkGray));
+        assert_eq!(METRIC_PALETTE.current_fallback, block::METRIC_TERTIARY);
+        assert_eq!(METRIC_PALETTE.top_fallback, block::METRIC_PEAK);
+        assert_eq!(METRIC_PALETTE.avg, block::METRIC_POSITIVE);
+        assert_eq!(METRIC_PALETTE.block, block::CONTENT_HIGHLIGHT);
     }
 
     #[test]

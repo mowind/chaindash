@@ -40,9 +40,9 @@ pub struct Opts {
     #[arg(long, default_value = "2")]
     pub disk_refresh_interval: u64,
 
-    /// Node ID to show details for
-    #[arg(long)]
-    pub node_id: Option<String>,
+    /// Node IDs to show details for (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    pub node_id: Vec<String>,
 
     /// PlatON Explorer API base URL
     #[arg(long, default_value = "https://scan.platon.network/browser-server")]
@@ -75,5 +75,12 @@ mod tests {
         let opts = Opts::parse_from(["test", "--interval", "5"]);
 
         assert_eq!(opts.interval, Ratio::from_integer(5));
+    }
+
+    #[test]
+    fn test_multiple_node_ids_are_accepted() {
+        let opts = Opts::parse_from(["test", "--node-id", "node-a,node-b"]);
+
+        assert_eq!(opts.node_id, vec!["node-a".to_string(), "node-b".to_string()]);
     }
 }

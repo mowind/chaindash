@@ -64,6 +64,7 @@ pub struct ConsensusState {
 
 #[derive(Debug, Clone, Default)]
 pub struct NodeDetail {
+    pub node_id: String,
     pub node_name: String,
     pub ranking: i32,
     pub block_qty: u64,
@@ -73,6 +74,7 @@ pub struct NodeDetail {
     pub reward_value: f64,
     pub reward_address: String,
     pub verifier_time: u64,
+    pub last_updated_at: Option<Instant>,
 }
 
 impl NodeDetail {
@@ -112,7 +114,8 @@ pub struct Data {
 
     states: HashMap<String, ConsensusState>,
     status_message: Option<StatusMessage>,
-    node_detail: Option<NodeDetail>,
+    node_details: HashMap<String, NodeDetail>,
+    node_details_loaded: bool,
     #[cfg(target_family = "unix")]
     system_stats: SystemStats,
 }
@@ -193,9 +196,38 @@ fn warn_with_status(
     record_status_message(data, StatusLevel::Warn, message);
 }
 
+fn summarize_node_detail_failures(node_ids: &[String]) -> String {
+    if node_ids.is_empty() {
+        return "Node details unavailable".to_string();
+    }
+
+    if node_ids.len() == 1 {
+        return format!("Node detail unavailable for {}", node_ids[0]);
+    }
+
+    let preview: Vec<&str> =
+        node_ids.iter().take(NODE_DETAIL_STATUS_PREVIEW_COUNT).map(String::as_str).collect();
+    let preview = preview.join(", ");
+    let remaining = node_ids.len().saturating_sub(NODE_DETAIL_STATUS_PREVIEW_COUNT);
+
+    if remaining == 0 {
+        format!("Node details unavailable for {} node(s): {}", node_ids.len(), preview)
+    } else {
+        format!(
+            "Node details unavailable for {} node(s): {}, +{} more",
+            node_ids.len(),
+            preview,
+            remaining
+        )
+    }
+}
+
 const COLLECTOR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const INFO_STATUS_TTL: StdDuration = StdDuration::from_secs(5);
 const WARN_STATUS_TTL: StdDuration = StdDuration::from_secs(15);
+const NODE_DETAIL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_DETAIL_STATUS_PREVIEW_COUNT: usize = 3;
+const DEFAULT_NODE_DETAIL_KEY: &str = "__default__";
 
 fn is_websocket_endpoint(url: &str) -> bool {
     url.starts_with("ws://") || url.starts_with("wss://")
@@ -248,7 +280,7 @@ pub struct Collector {
     disk_auto_discovery: bool,
     disk_alert_threshold: f32,
     disk_refresh_interval: u64,
-    node_id: Option<String>,
+    node_ids: Vec<String>,
     explorer_api_url: String,
     stop_flag: Arc<AtomicBool>,
 }
@@ -276,7 +308,8 @@ impl Default for Data {
             max_interval: 0,
             states: HashMap::new(),
             status_message: None,
-            node_detail: None,
+            node_details: HashMap::new(),
+            node_details_loaded: false,
             #[cfg(target_family = "unix")]
             system_stats: SystemStats::default(),
         }
@@ -340,14 +373,54 @@ impl Data {
     }
 
     pub fn node_detail(&self) -> Option<NodeDetail> {
-        self.node_detail.clone()
+        self.node_details().into_iter().next()
+    }
+
+    pub fn node_details_loaded(&self) -> bool {
+        self.node_details_loaded
+    }
+
+    pub fn node_details(&self) -> Vec<NodeDetail> {
+        let mut node_details: Vec<_> = self.node_details.values().cloned().collect();
+        node_details.sort_by(|left, right| {
+            let left_unranked = left.ranking <= 0;
+            let right_unranked = right.ranking <= 0;
+            let left_ranking = if left_unranked {
+                i32::MAX
+            } else {
+                left.ranking
+            };
+            let right_ranking = if right_unranked {
+                i32::MAX
+            } else {
+                right.ranking
+            };
+
+            left_unranked
+                .cmp(&right_unranked)
+                .then_with(|| left_ranking.cmp(&right_ranking))
+                .then_with(|| left.node_name.cmp(&right.node_name))
+                .then_with(|| left.node_id.cmp(&right.node_id))
+        });
+        node_details
     }
 
     pub fn update_node_detail(
         &mut self,
         detail: Option<NodeDetail>,
     ) {
-        self.node_detail = detail;
+        self.node_details.clear();
+
+        let Some(mut detail) = detail else {
+            return;
+        };
+
+        if detail.node_name.is_empty() && !detail.node_id.is_empty() {
+            detail.node_name = detail.node_id.clone();
+        }
+
+        self.node_details.insert(Self::node_detail_key(&detail.node_id), detail);
+        self.node_details_loaded = true;
     }
 
     pub fn merge_node_ranking(
@@ -358,13 +431,34 @@ impl Data {
             return;
         };
 
-        if let Some(detail) = self.node_detail.as_mut() {
+        if self.node_details.len() == 1 {
+            if let Some(detail) = self.node_details.values_mut().next() {
+                detail.ranking = ranking;
+                return;
+            }
+        }
+
+        self.merge_node_ranking_for("", Some(ranking));
+    }
+
+    pub fn merge_node_ranking_for(
+        &mut self,
+        node_id: &str,
+        ranking: Option<i32>,
+    ) {
+        let Some(ranking) = ranking else {
+            return;
+        };
+
+        let key = Self::node_detail_key(node_id);
+        if let Some(detail) = self.node_details.get_mut(&key) {
             detail.ranking = ranking;
-        } else {
-            self.node_detail = Some(NodeDetail {
-                ranking,
-                ..Default::default()
-            });
+            if detail.node_id.is_empty() && !node_id.is_empty() {
+                detail.node_id = node_id.to_string();
+            }
+            if detail.node_name.is_empty() && !node_id.is_empty() {
+                detail.node_name = node_id.to_string();
+            }
         }
     }
 
@@ -376,11 +470,41 @@ impl Data {
             return;
         };
 
-        if let Some(existing) = self.node_detail.as_ref() {
-            detail.ranking = existing.ranking;
+        let node_id = if detail.node_id.is_empty() && self.node_details.len() == 1 {
+            self.node_details.keys().next().cloned().unwrap_or_default()
+        } else {
+            detail.node_id.clone()
+        };
+
+        if detail.node_id.is_empty() && node_id != DEFAULT_NODE_DETAIL_KEY {
+            detail.node_id = node_id.clone();
         }
 
-        self.node_detail = Some(detail);
+        self.merge_node_detail_for(&node_id, Some(detail));
+    }
+
+    pub fn merge_node_detail_for(
+        &mut self,
+        node_id: &str,
+        detail: Option<NodeDetail>,
+    ) {
+        let Some(mut detail) = detail else {
+            return;
+        };
+
+        let key = Self::node_detail_key(node_id);
+        if detail.node_id.is_empty() {
+            detail.node_id = node_id.to_string();
+        }
+        if let Some(existing) = self.node_details.get(&key) {
+            detail.ranking = existing.ranking;
+        }
+        if detail.node_name.is_empty() && !detail.node_id.is_empty() {
+            detail.node_name = detail.node_id.clone();
+        }
+
+        self.node_details.insert(key, detail);
+        self.node_details_loaded = true;
     }
 
     #[cfg(target_family = "unix")]
@@ -418,21 +542,57 @@ impl Data {
         level: StatusLevel,
         text: impl Into<String>,
     ) {
+        let text = text.into();
+        let now = Instant::now();
+
+        if self
+            .status_message
+            .as_ref()
+            .filter(|message| {
+                message.level == level
+                    && message.text == text
+                    && message.expires_at.is_none_or(|expires_at| now < expires_at)
+            })
+            .is_some()
+        {
+            return;
+        }
+
         let expires_at = match level {
-            StatusLevel::Info => Some(Instant::now() + INFO_STATUS_TTL),
-            StatusLevel::Warn => Some(Instant::now() + WARN_STATUS_TTL),
+            StatusLevel::Info => Some(now + INFO_STATUS_TTL),
+            StatusLevel::Warn => Some(now + WARN_STATUS_TTL),
             StatusLevel::Error => None,
         };
 
         self.status_message = Some(StatusMessage {
             level,
-            text: text.into(),
+            text,
             expires_at,
         });
     }
 
     pub fn clear_status_message(&mut self) {
         self.status_message = None;
+    }
+
+    pub fn remove_node_detail(
+        &mut self,
+        node_id: &str,
+    ) {
+        self.node_details.remove(&Self::node_detail_key(node_id));
+        self.node_details_loaded = true;
+    }
+
+    pub fn mark_node_details_loaded(&mut self) {
+        self.node_details_loaded = true;
+    }
+
+    fn node_detail_key(node_id: &str) -> String {
+        if node_id.is_empty() {
+            DEFAULT_NODE_DETAIL_KEY.to_string()
+        } else {
+            node_id.to_string()
+        }
     }
 }
 
@@ -460,7 +620,13 @@ impl Collector {
         let disk_auto_discovery = opts.disk_auto_discovery;
         let disk_alert_threshold = opts.disk_alert_threshold;
         let disk_refresh_interval = opts.disk_refresh_interval;
-        let node_id = opts.node_id.clone();
+        let mut node_ids = Vec::new();
+        for node_id in &opts.node_id {
+            let node_id = node_id.trim();
+            if !node_id.is_empty() && !node_ids.iter().any(|existing| existing == node_id) {
+                node_ids.push(node_id.to_string());
+            }
+        }
         let explorer_api_url = opts.explorer_api_url.clone();
 
         Ok(Collector {
@@ -470,7 +636,7 @@ impl Collector {
             disk_auto_discovery,
             disk_alert_threshold,
             disk_refresh_interval,
-            node_id,
+            node_ids,
             explorer_api_url,
             stop_flag: Arc::new(AtomicBool::new(false)),
         })
@@ -498,17 +664,17 @@ impl Collector {
         }
 
         // 启动节点详情监控
-        if let Some(node_id) = &self.node_id {
-            debug!("start collect node detail: {}", node_id);
-            let node_id = node_id.clone();
+        if !self.node_ids.is_empty() {
+            debug!("start collect node detail: {:?}", self.node_ids);
+            let node_ids = self.node_ids.clone();
             let explorer_api_url = self.explorer_api_url.clone();
             let data = self.data.clone();
             let stop_flag = self.stop_flag.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    collect_node_detail(node_id, data, explorer_api_url, stop_flag).await
+                    collect_node_details(node_ids, data, explorer_api_url, stop_flag).await
                 {
-                    warn!("collect_node_detail failed: {}", e);
+                    warn!("collect_node_details failed: {}", e);
                 }
             });
         }
@@ -1121,76 +1287,90 @@ fn discover_mount_points_fallback() -> Vec<MountPointInfo> {
     mount_points
 }
 
-async fn collect_node_detail(
-    node_id: String,
+async fn collect_node_details(
+    node_ids: Vec<String>,
     data: SharedData,
     explorer_api_url: String,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     use tokio::time::{
         self,
-        timeout,
         Duration,
     };
 
-    const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
     let client = reqwest::Client::new();
-    let url = format!("{explorer_api_url}/staking/stakingDetails");
-    let mut interval = time::interval(Duration::from_secs(10)); // 每10秒更新一次
+    let detail_url = format!("{explorer_api_url}/staking/stakingDetails");
     let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
+    let mut interval = time::interval(Duration::from_secs(10));
 
-    // 立即获取一次，不等待第一次tick
-    if let Err(err) =
-        timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await
-    {
-        warn_with_status(
-            &data,
-            format!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
-        );
-    }
-    if let Err(err) =
-        timeout(REQUEST_TIMEOUT, fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()))
-            .await
-    {
-        warn_with_status(
-            &data,
-            format!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
-        );
-    }
+    fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
+    fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone()).await;
 
     loop {
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
+
         interval.tick().await;
-        if let Err(err) =
-            timeout(REQUEST_TIMEOUT, fetch_node_detail(&client, &url, &node_id, data.clone())).await
-        {
-            warn_with_status(
-                &data,
-                format!("Node detail request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
-            );
-        }
-        if let Err(err) = timeout(
-            REQUEST_TIMEOUT,
-            fetch_node_ranking(&client, &ranking_url, &node_id, data.clone()),
-        )
-        .await
-        {
-            warn_with_status(
-                &data,
-                format!("Node ranking request timed out after {:?}: {}", REQUEST_TIMEOUT, err),
-            );
-        }
+        fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
+        fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone()).await;
     }
+
     Ok(())
 }
 
-async fn fetch_node_ranking(
+async fn fetch_all_node_details(
     client: &reqwest::Client,
     url: &str,
-    node_id: &str,
+    node_ids: &[String],
+    data: SharedData,
+) {
+    let requests = node_ids.iter().map(|node_id| {
+        let data = data.clone();
+        async move {
+            match tokio::time::timeout(
+                NODE_DETAIL_REQUEST_TIMEOUT,
+                fetch_node_detail(client, url, node_id, data.clone()),
+            )
+            .await
+            {
+                Ok(Ok(())) => None,
+                Ok(Err(message)) => {
+                    warn!("{message}");
+                    let mut data = data.lock().expect("mutex poisoned - recovering");
+                    data.remove_node_detail(node_id);
+                    Some(node_id.clone())
+                },
+                Err(err) => {
+                    warn!(
+                        "Node detail request timed out after {:?} for {}: {}",
+                        NODE_DETAIL_REQUEST_TIMEOUT, node_id, err
+                    );
+                    let mut data = data.lock().expect("mutex poisoned - recovering");
+                    data.remove_node_detail(node_id);
+                    Some(node_id.clone())
+                },
+            }
+        }
+    });
+
+    let failures: Vec<String> =
+        futures::future::join_all(requests).await.into_iter().flatten().collect();
+
+    {
+        let mut data = data.lock().expect("mutex poisoned - recovering");
+        data.mark_node_details_loaded();
+    }
+
+    if !failures.is_empty() {
+        record_status_message(&data, StatusLevel::Warn, summarize_node_detail_failures(&failures));
+    }
+}
+
+async fn fetch_node_rankings(
+    client: &reqwest::Client,
+    url: &str,
+    node_ids: &[String],
     data: SharedData,
 ) {
     let body = serde_json::json!({
@@ -1229,12 +1409,13 @@ async fn fetch_node_ranking(
             };
             debug!("Node list response: {:?}", node_list_resp);
 
-            // 解析响应
             if node_list_resp.code == 0 {
                 if let Some(data_obj) = node_list_resp.data {
-                    let ranking = parse_node_ranking(&data_obj, node_id);
                     let mut data = data.lock().expect("mutex poisoned - recovering");
-                    data.merge_node_ranking(ranking);
+                    for node_id in node_ids {
+                        let ranking = parse_node_ranking(&data_obj, node_id);
+                        data.merge_node_ranking_for(node_id, ranking);
+                    }
                 } else {
                     warn_with_status(&data, "Node ranking response missing data field");
                 }
@@ -1259,7 +1440,7 @@ async fn fetch_node_detail(
     url: &str,
     node_id: &str,
     data: SharedData,
-) {
+) -> std::result::Result<(), String> {
     let body = serde_json::json!({
         "nodeId": node_id
     });
@@ -1270,54 +1451,60 @@ async fn fetch_node_detail(
         Ok(resp) => {
             debug!("Reponse: {}", resp.status());
             if !resp.status().is_success() {
-                warn_with_status(
-                    &data,
-                    format!("Node detail API returned error status: {}", resp.status()),
-                );
-                return;
+                return Err(format!(
+                    "Node detail API returned error status for {}: {}",
+                    node_id,
+                    resp.status()
+                ));
             }
             let body_bytes = match resp.bytes().await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    warn_with_status(&data, format!("Failed to read response body: {}", e));
-                    return;
+                    return Err(format!(
+                        "Failed to read node detail response body for {}: {}",
+                        node_id, e
+                    ));
                 },
             };
             let node_detail_resp: types::NodeDetailResponse =
                 match serde_json::from_slice(&body_bytes) {
                     Ok(node_detail_resp) => node_detail_resp,
                     Err(e) => {
-                        warn_with_status(&data, format!("Failed to parse response JSON: {}", e));
-                        return;
+                        return Err(format!(
+                            "Failed to parse node detail JSON for {}: {}",
+                            node_id, e
+                        ));
                     },
                 };
             debug!("Node detail response: {:?}", node_detail_resp);
 
             if node_detail_resp.code == 0 {
                 if let Some(detail) = node_detail_resp.data {
-                    let node_detail = parse_node_detail(&detail);
+                    let node_detail = parse_node_detail(node_id, &detail);
                     let mut data = data.lock().expect("mutex poisoned - recovering");
-                    data.merge_node_detail(Some(node_detail));
+                    data.merge_node_detail_for(node_id, Some(node_detail));
                 } else {
-                    warn_with_status(&data, "Node detail response missing data field");
+                    return Err(format!("Node detail response missing data field for {}", node_id));
                 }
             } else {
-                warn_with_status(
-                    &data,
-                    format!(
-                        "Node detail API returned error code: {}, err_msg: {}",
-                        node_detail_resp.code, node_detail_resp.err_msg
-                    ),
-                );
+                return Err(format!(
+                    "Node detail API returned error code for {}: {}, err_msg: {}",
+                    node_id, node_detail_resp.code, node_detail_resp.err_msg
+                ));
             }
         },
         Err(e) => {
-            warn_with_status(&data, format!("Failed to fetch node detail: {}", e));
+            return Err(format!("Failed to fetch node detail for {}: {}", node_id, e));
         },
     }
+
+    Ok(())
 }
 
-fn parse_node_detail(node_detail: &types::NodeDetail) -> NodeDetail {
+fn parse_node_detail(
+    node_id: &str,
+    node_detail: &types::NodeDetail,
+) -> NodeDetail {
     let node_name = node_detail.node_name.clone();
     let block_qty = u64::try_from(node_detail.block_qty).unwrap_or(0);
     let expect_block_qty = u64::try_from(node_detail.expect_block_qty).unwrap_or(0);
@@ -1334,6 +1521,7 @@ fn parse_node_detail(node_detail: &types::NodeDetail) -> NodeDetail {
     let verifier_time = u64::try_from(node_detail.verifier_time).unwrap_or(0);
 
     NodeDetail {
+        node_id: node_id.to_string(),
         node_name,
         ranking: 0,
         block_qty,
@@ -1343,6 +1531,7 @@ fn parse_node_detail(node_detail: &types::NodeDetail) -> NodeDetail {
         reward_value,
         reward_address,
         verifier_time,
+        last_updated_at: Some(Instant::now()),
     }
 }
 
@@ -1443,6 +1632,7 @@ mod tests {
     fn test_merge_node_ranking_preserves_existing_detail_fields() {
         let mut data = Data::default();
         data.update_node_detail(Some(NodeDetail {
+            node_id: "node-a-id".to_string(),
             node_name: "node-a".to_string(),
             ranking: 1,
             block_qty: 12,
@@ -1452,6 +1642,7 @@ mod tests {
             reward_value: 20.0,
             reward_address: "addr".to_string(),
             verifier_time: 30,
+            last_updated_at: None,
         }));
 
         data.merge_node_ranking(Some(9));
@@ -1463,9 +1654,20 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_node_ranking_for_missing_detail_does_not_create_placeholder() {
+        let mut data = Data::default();
+
+        data.merge_node_ranking_for("missing-node-id", Some(9));
+
+        assert!(data.node_detail().is_none());
+        assert!(data.node_details().is_empty());
+    }
+
+    #[test]
     fn test_merge_node_detail_preserves_existing_ranking() {
         let mut data = Data::default();
         data.update_node_detail(Some(NodeDetail {
+            node_id: "node-a-id".to_string(),
             node_name: "old-node".to_string(),
             ranking: 7,
             block_qty: 12,
@@ -1475,9 +1677,11 @@ mod tests {
             reward_value: 20.0,
             reward_address: "old-addr".to_string(),
             verifier_time: 30,
+            last_updated_at: None,
         }));
 
         data.merge_node_detail(Some(NodeDetail {
+            node_id: "node-a-id".to_string(),
             node_name: "new-node".to_string(),
             ranking: 0,
             block_qty: 24,
@@ -1487,6 +1691,7 @@ mod tests {
             reward_value: 40.0,
             reward_address: "new-addr".to_string(),
             verifier_time: 60,
+            last_updated_at: None,
         }));
 
         let detail = data.node_detail().expect("node detail should exist");
@@ -1499,6 +1704,7 @@ mod tests {
     fn test_merge_node_ranking_none_preserves_existing_detail() {
         let mut data = Data::default();
         let existing = NodeDetail {
+            node_id: "node-a-id".to_string(),
             node_name: "node-a".to_string(),
             ranking: 3,
             block_qty: 12,
@@ -1508,6 +1714,7 @@ mod tests {
             reward_value: 20.0,
             reward_address: "addr".to_string(),
             verifier_time: 30,
+            last_updated_at: None,
         };
         data.update_node_detail(Some(existing.clone()));
 
@@ -1524,6 +1731,7 @@ mod tests {
     fn test_merge_node_detail_none_preserves_existing_ranking() {
         let mut data = Data::default();
         let existing = NodeDetail {
+            node_id: "node-a-id".to_string(),
             node_name: "node-a".to_string(),
             ranking: 3,
             block_qty: 12,
@@ -1533,6 +1741,7 @@ mod tests {
             reward_value: 20.0,
             reward_address: "addr".to_string(),
             verifier_time: 30,
+            last_updated_at: None,
         };
         data.update_node_detail(Some(existing.clone()));
 
@@ -1543,6 +1752,49 @@ mod tests {
             data.node_detail().expect("node detail should exist").node_name,
             existing.node_name
         );
+    }
+
+    #[test]
+    fn test_remove_node_detail_removes_only_target() {
+        let mut data = Data::default();
+        data.merge_node_detail_for(
+            "node-a-id",
+            Some(NodeDetail {
+                node_id: "node-a-id".to_string(),
+                node_name: "node-a".to_string(),
+                ranking: 1,
+                block_qty: 12,
+                block_rate: "75.00%".to_string(),
+                daily_block_rate: "1/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 20.0,
+                reward_address: "addr-a".to_string(),
+                verifier_time: 30,
+                last_updated_at: None,
+            }),
+        );
+        data.merge_node_detail_for(
+            "node-b-id",
+            Some(NodeDetail {
+                node_id: "node-b-id".to_string(),
+                node_name: "node-b".to_string(),
+                ranking: 2,
+                block_qty: 24,
+                block_rate: "80.00%".to_string(),
+                daily_block_rate: "2/day".to_string(),
+                reward_per: 5.0,
+                reward_value: 40.0,
+                reward_address: "addr-b".to_string(),
+                verifier_time: 60,
+                last_updated_at: None,
+            }),
+        );
+
+        data.remove_node_detail("node-a-id");
+
+        let details = data.node_details();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].node_id, "node-b-id");
     }
 
     #[test]
@@ -1602,6 +1854,41 @@ mod tests {
     }
 
     #[test]
+    fn test_set_status_message_deduplicates_same_active_message() {
+        let mut data = Data::default();
+
+        data.set_status_message(StatusLevel::Warn, "warn");
+        let first = data.status_message.clone().expect("status should exist");
+
+        data.set_status_message(StatusLevel::Warn, "warn");
+        let second = data.status_message.clone().expect("status should exist");
+
+        assert_eq!(first.level, second.level);
+        assert_eq!(first.text, second.text);
+        assert_eq!(first.expires_at, second.expires_at);
+    }
+
+    #[test]
+    fn test_set_status_message_recreates_same_message_after_expiry() {
+        let mut data = Data {
+            status_message: Some(StatusMessage {
+                level: StatusLevel::Warn,
+                text: "warn".to_string(),
+                expires_at: Some(Instant::now() - StdDuration::from_secs(1)),
+            }),
+            ..Default::default()
+        };
+
+        data.set_status_message(StatusLevel::Warn, "warn");
+
+        assert!(data.status_message.as_ref().is_some_and(|message| {
+            message.text == "warn"
+                && message.level == StatusLevel::Warn
+                && message.expires_at.is_some_and(|expires_at| expires_at > Instant::now())
+        }));
+    }
+
+    #[test]
     fn test_parse_node_ranking_missing_returns_none() {
         let ranking = parse_node_ranking(&[], "missing-node");
 
@@ -1609,20 +1896,45 @@ mod tests {
     }
 
     #[test]
+    fn test_summarize_node_detail_failures_for_single_node() {
+        let summary = summarize_node_detail_failures(&["node-a".to_string()]);
+
+        assert_eq!(summary, "Node detail unavailable for node-a");
+    }
+
+    #[test]
+    fn test_summarize_node_detail_failures_truncates_long_lists() {
+        let summary = summarize_node_detail_failures(&[
+            "node-a".to_string(),
+            "node-b".to_string(),
+            "node-c".to_string(),
+            "node-d".to_string(),
+        ]);
+
+        assert_eq!(
+            summary,
+            "Node details unavailable for 4 node(s): node-a, node-b, node-c, +1 more"
+        );
+    }
+
+    #[test]
     fn test_parse_node_detail_clamps_negative_values() {
-        let parsed = parse_node_detail(&types::NodeDetail {
-            node_name: "node-a".to_string(),
-            total_value: "0".to_string(),
-            delegate_value: "0".to_string(),
-            delegate_qty: 0,
-            block_qty: -1,
-            expect_block_qty: -10,
-            gen_blocks_rate: "1/day".to_string(),
-            reward_per: "10".to_string(),
-            reward_value: "20".to_string(),
-            benefit_addr: "addr".to_string(),
-            verifier_time: -5,
-        });
+        let parsed = parse_node_detail(
+            "node-a-id",
+            &types::NodeDetail {
+                node_name: "node-a".to_string(),
+                total_value: "0".to_string(),
+                delegate_value: "0".to_string(),
+                delegate_qty: 0,
+                block_qty: -1,
+                expect_block_qty: -10,
+                gen_blocks_rate: "1/day".to_string(),
+                reward_per: "10".to_string(),
+                reward_value: "20".to_string(),
+                benefit_addr: "addr".to_string(),
+                verifier_time: -5,
+            },
+        );
 
         assert_eq!(parsed.block_qty, 0);
         assert_eq!(parsed.block_rate, "0.00%");

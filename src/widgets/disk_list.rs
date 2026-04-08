@@ -5,8 +5,16 @@ use ratatui::{
         Constraint,
         Rect,
     },
-    text::Line,
+    style::{
+        Modifier,
+        Style,
+    },
+    text::{
+        Line,
+        Span,
+    },
     widgets::{
+        Cell,
         Paragraph,
         Row,
         Table,
@@ -69,6 +77,49 @@ impl Widget for &DiskListWidget {
 }
 
 impl DiskListWidget {
+    fn mount_value_style(is_selected: bool) -> Style {
+        if is_selected {
+            block::highlight_style().add_modifier(Modifier::BOLD)
+        } else {
+            block::content_style().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    fn size_value_style() -> Style {
+        block::accent_style(block::METRIC_PRIMARY)
+    }
+
+    fn available_value_style() -> Style {
+        block::accent_style(block::METRIC_POSITIVE)
+    }
+
+    fn percent_value_style(is_alert: bool) -> Style {
+        let color = if is_alert {
+            block::ACCENT_WARN
+        } else {
+            block::METRIC_POSITIVE
+        };
+        block::accent_style(color)
+    }
+
+    fn filesystem_value_style() -> Style {
+        block::highlight_style()
+    }
+
+    fn network_tag_style() -> Style {
+        block::accent_style(block::ACCENT_WARN)
+    }
+
+    fn table_row_values(
+        mount: String,
+        total: String,
+        used: String,
+        available: String,
+        usage: String,
+    ) -> Vec<String> {
+        vec![mount, total, used, available, usage]
+    }
+
     fn render_disk_list(
         &self,
         area: Rect,
@@ -94,7 +145,7 @@ impl DiskListWidget {
                 inner.height.saturating_sub(1),
             );
             Paragraph::new(vec![Line::raw("No disk mount points found")])
-                .style(block::content_style())
+                .style(block::empty_state_style())
                 .wrap(Wrap { trim: true })
                 .render(content, buf);
             return;
@@ -113,19 +164,27 @@ impl DiskListWidget {
 
         let header = ["Mounted on", "Size", "Used", "Avail", "Use%"];
         let rows = disk_details.iter().enumerate().map(|(index, disk)| {
-            let mount = if index == current_index {
+            let is_selected = index == current_index;
+            let mount = if is_selected {
                 format!("> {}", disk.mount_point)
             } else {
                 format!("  {}", disk.mount_point)
             };
-            Row::new(vec![
+            let values = Self::table_row_values(
                 mount,
                 Self::format_size(disk.total),
                 Self::format_size(disk.used),
                 Self::format_size(disk.available),
                 format!("{:.1}%", disk.usage_percent),
+            );
+
+            Row::new(vec![
+                Cell::from(values[0].clone()).style(Self::mount_value_style(is_selected)),
+                Cell::from(values[1].clone()).style(Self::size_value_style()),
+                Cell::from(values[2].clone()).style(Self::size_value_style()),
+                Cell::from(values[3].clone()).style(Self::available_value_style()),
+                Cell::from(values[4].clone()).style(Self::percent_value_style(disk.is_alert)),
             ])
-            .style(block::content_style())
         });
 
         Table::new(
@@ -148,6 +207,7 @@ impl DiskListWidget {
         area_width.saturating_sub(2).saturating_sub(41).max(14)
     }
 
+    #[cfg(test)]
     fn summary_lines(
         &self,
         current_index: usize,
@@ -183,8 +243,52 @@ impl DiskListWidget {
         title: &str,
         current_index: usize,
     ) {
-        let lines: Vec<Line> =
-            self.summary_lines(current_index).into_iter().map(Line::raw).collect();
+        let disk = &self.system_stats.disk_details[current_index];
+        let mount_line = if disk.is_network {
+            Line::from(vec![
+                Span::styled("Mount: ", block::muted_style()),
+                Span::styled(disk.mount_point.clone(), Self::mount_value_style(true)),
+                Span::styled(" [net]", Self::network_tag_style()),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("Mount: ", block::muted_style()),
+                Span::styled(disk.mount_point.clone(), Self::mount_value_style(true)),
+            ])
+        };
+        let used_line = if disk.is_alert {
+            Line::from(vec![
+                Span::styled("Used: ", block::muted_style()),
+                Span::styled(Self::format_size(disk.used), Self::size_value_style()),
+                Span::styled(" / ", block::muted_style()),
+                Span::styled(Self::format_size(disk.total), Self::size_value_style()),
+                Span::styled(" · ", block::muted_style()),
+                Span::styled(
+                    format!("{:.1}%", disk.usage_percent),
+                    Self::percent_value_style(true),
+                ),
+                Span::styled(" [alert]", Self::percent_value_style(true)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("Used: ", block::muted_style()),
+                Span::styled(Self::format_size(disk.used), Self::size_value_style()),
+                Span::styled(" / ", block::muted_style()),
+                Span::styled(Self::format_size(disk.total), Self::size_value_style()),
+                Span::styled(" · ", block::muted_style()),
+                Span::styled(
+                    format!("{:.1}%", disk.usage_percent),
+                    Self::percent_value_style(false),
+                ),
+            ])
+        };
+        let free_line = Line::from(vec![
+            Span::styled("Free: ", block::muted_style()),
+            Span::styled(Self::format_size(disk.available), Self::available_value_style()),
+            Span::styled(" · FS ", block::muted_style()),
+            Span::styled(disk.filesystem.clone(), Self::filesystem_value_style()),
+        ]);
+        let lines = vec![mount_line, used_line, free_line];
 
         let outer_block = block::new(title);
         let inner = outer_block.inner(area);
@@ -201,10 +305,7 @@ impl DiskListWidget {
             inner.height.saturating_sub(1),
         );
 
-        Paragraph::new(lines)
-            .style(block::content_style())
-            .wrap(Wrap { trim: true })
-            .render(content, buf);
+        Paragraph::new(lines).wrap(Wrap { trim: true }).render(content, buf);
     }
 
     fn format_size(bytes: u64) -> String {
@@ -316,6 +417,29 @@ mod tests {
     fn test_mount_column_width_saturates_for_narrow_area() {
         assert_eq!(DiskListWidget::mount_column_width(40), 14);
         assert_eq!(DiskListWidget::mount_column_width(80), 37);
+    }
+
+    #[test]
+    fn test_table_row_values_include_expected_columns() {
+        let values = DiskListWidget::table_row_values(
+            "> /data".to_string(),
+            "100.0G".to_string(),
+            "40.0G".to_string(),
+            "60.0G".to_string(),
+            "40.0%".to_string(),
+        );
+
+        assert_eq!(values, vec!["> /data", "100.0G", "40.0G", "60.0G", "40.0%"]);
+    }
+
+    #[test]
+    fn test_disk_highlight_style_helpers_match_expected_colors() {
+        assert_eq!(DiskListWidget::mount_value_style(true).fg, Some(block::CONTENT_HIGHLIGHT));
+        assert_eq!(DiskListWidget::size_value_style().fg, Some(block::METRIC_PRIMARY));
+        assert_eq!(DiskListWidget::available_value_style().fg, Some(block::METRIC_POSITIVE));
+        assert_eq!(DiskListWidget::percent_value_style(false).fg, Some(block::METRIC_POSITIVE));
+        assert_eq!(DiskListWidget::percent_value_style(true).fg, Some(block::ACCENT_WARN));
+        assert_eq!(DiskListWidget::filesystem_value_style().fg, Some(block::CONTENT_HIGHLIGHT));
     }
 
     #[test]

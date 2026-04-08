@@ -6,7 +6,7 @@ PlatON 节点终端仪表盘，使用 Rust + Ratatui + Crossterm 构建。
 
 - 实时订阅最新区块，展示区块高度、区块时间与交易数变化
 - 展示多个节点的共识状态：`Block / Epoch / View / QC / Locked / Committed / Role`
-- 可选拉取指定节点的 PlatON Explorer 详情：排名、产块、奖励比例、收益地址等
+- 可选拉取一个或多个节点的 PlatON Explorer 详情：排名、产块、奖励比例、收益地址等
 - Unix 平台下展示本机 CPU / 内存 / 磁盘 / 网络摘要
 - Unix 平台下支持磁盘挂载点自动发现、手动指定挂载点与使用率告警
 - 顶部状态栏展示连接成功、重试、接口异常、磁盘告警等运行状态
@@ -61,6 +61,14 @@ cargo run -- \
   --node-id <NODE_ID>
 ```
 
+### 查看多个节点详情
+
+```bash
+cargo run -- \
+  --url main@wss://openapi2.platon.network/rpc \
+  --node-id <NODE_ID_A>,<NODE_ID_B>
+```
+
 ### 自定义刷新间隔
 
 ```bash
@@ -86,7 +94,7 @@ cargo run -- --url main@wss://openapi2.platon.network/rpc --interval 2/3
 | `--disk-auto-discovery` | `false` | Unix 下自动发现挂载点，并与手动指定列表合并。 |
 | `--disk-alert-threshold <PERCENT>` | `90.0` | Unix 下磁盘告警阈值，达到或超过该值会高亮并在状态栏提示。 |
 | `--disk-refresh-interval <SECONDS>` | `2` | Unix 下系统与磁盘采集间隔。 |
-| `--node-id <NODE_ID>` | - | 拉取节点详情时使用的节点 ID。 |
+| `--node-id <NODE_ID[,NODE_ID...]>` | - | 拉取节点详情时使用的节点 ID 列表，支持逗号分隔多个节点。 |
 | `--explorer-api-url <URL>` | `https://scan.platon.network/browser-server` | PlatON Explorer API 基础地址。 |
 
 ## 界面布局
@@ -131,7 +139,7 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 
 ### 2. 节点详情采集
 
-启用 `--node-id` 后，程序会定期从 Explorer API 拉取：
+启用 `--node-id` 后，程序会定期从 Explorer API 拉取一个或多个节点的：
 
 - 节点名称
 - 排名
@@ -140,7 +148,7 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - 奖励比例与系统奖励
 - 收益地址与预计收益
 
-如果未传入 `--node-id`，程序不会启动节点详情采集，右下角详情面板会保持 `Loading...`。
+如果未传入 `--node-id`，程序不会启动节点详情采集，右下角详情面板会保持 `Loading...`。当只配置一个节点时，面板会展示详细卡片；配置多个节点时，会切换为汇总表格。
 
 ### 3. Unix 磁盘监控
 

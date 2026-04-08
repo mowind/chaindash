@@ -169,6 +169,7 @@ mod tests {
         {
             let mut data = data_clone.lock().expect("mutex poisoned");
             data.update_node_detail(Some(crate::collect::NodeDetail {
+                node_id: "test-node-id".to_string(),
                 node_name: "test-node".to_string(),
                 ranking: 1,
                 block_qty: 100,
@@ -178,6 +179,7 @@ mod tests {
                 reward_value: 1000.0,
                 reward_address: "0x123".to_string(),
                 verifier_time: 3600,
+                last_updated_at: None,
             }));
         }
 

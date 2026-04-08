@@ -6,20 +6,12 @@ use ratatui::{
         Layout,
         Rect,
     },
-    style::{
-        Color,
-        Modifier,
-        Style,
-    },
+    style::Color,
     text::{
         Line,
         Span,
     },
-    widgets::{
-        Block,
-        Borders,
-        Paragraph,
-    },
+    widgets::Paragraph,
     Frame,
     Terminal,
 };
@@ -79,34 +71,34 @@ pub fn draw<B: Backend>(
     Ok(())
 }
 
+const STATUS_TITLE: &str = " Status ";
+
+fn status_level_label(level: StatusLevel) -> (&'static str, Color) {
+    match level {
+        StatusLevel::Info => ("INFO", block::ACCENT_INFO),
+        StatusLevel::Warn => ("WARN", block::ACCENT_WARN),
+        StatusLevel::Error => ("ERROR", block::ACCENT_ERROR),
+    }
+}
+
+fn status_paragraph<'a>(message: &'a StatusMessage) -> Paragraph<'a> {
+    let (label, color) = status_level_label(message.level);
+    let content = Line::from(vec![
+        Span::styled(format!(" {label} "), block::badge_style(color)),
+        Span::styled(" ", block::content_style()),
+        Span::styled("• ", block::accent_style(color)),
+        Span::styled(message.text.as_str(), block::content_style()),
+    ]);
+
+    Paragraph::new(content).style(block::content_style()).block(block::new(STATUS_TITLE))
+}
+
 fn draw_status_bar(
     frame: &mut Frame,
     area: Rect,
     message: &StatusMessage,
 ) {
-    let (label, color) = match message.level {
-        StatusLevel::Info => ("INFO", Color::Cyan),
-        StatusLevel::Warn => ("WARN", Color::Yellow),
-        StatusLevel::Error => ("ERROR", Color::Red),
-    };
-
-    let content = Line::from(vec![
-        Span::styled(
-            format!("[{label}] "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(message.text.as_str(), Style::default().fg(color)),
-    ]);
-
-    let paragraph = Paragraph::new(content).style(Style::default().bg(block::PANEL_BG)).block(
-        Block::default()
-            .title("Status")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(block::PANEL_BG))
-            .border_style(Style::default().fg(color).bg(block::PANEL_BG)),
-    );
-
-    frame.render_widget(paragraph, area);
+    frame.render_widget(status_paragraph(message), area);
 }
 
 fn content_row_heights(
@@ -218,7 +210,27 @@ pub fn draw_bottom_section(
 
 #[cfg(test)]
 mod tests {
+    use ratatui::{
+        buffer::Buffer,
+        widgets::Widget,
+    };
+
     use super::*;
+    use crate::collect::Data;
+
+    fn render_status_bar_buffer(
+        level: StatusLevel,
+        text: &str,
+    ) -> Buffer {
+        let area = Rect::new(0, 0, 48, 3);
+        let mut buf = Buffer::empty(area);
+        let mut data = Data::default();
+        data.set_status_message(level, text);
+        let message = data.status_message().expect("status message should exist");
+
+        status_paragraph(&message).render(area, &mut buf);
+        buf
+    }
 
     #[test]
     fn test_content_row_heights_balances_tall_layouts() {
@@ -230,5 +242,30 @@ mod tests {
     fn test_content_row_heights_handles_small_layouts() {
         assert_eq!(content_row_heights(16, 0), (8, 8));
         assert_eq!(content_row_heights(15, 5), (5, 5));
+    }
+
+    #[test]
+    fn test_status_bar_uses_standard_panel_border_and_title() {
+        let buf = render_status_bar_buffer(StatusLevel::Info, "synced");
+
+        assert_eq!(buf.get(0, 0).symbol(), "┌");
+        assert_eq!(buf.get(47, 2).symbol(), "┘");
+        assert_eq!(buf.get(0, 0).fg, block::PANEL_BORDER);
+        assert_eq!(buf.get(2, 0).symbol(), "S");
+        assert_eq!(buf.get(2, 0).fg, block::PANEL_TITLE);
+    }
+
+    #[test]
+    fn test_status_bar_highlights_badge_without_tinting_message_body() {
+        let buf = render_status_bar_buffer(StatusLevel::Warn, "disk alert");
+
+        assert_eq!(buf.get(2, 1).symbol(), "W");
+        assert_eq!(buf.get(2, 1).fg, block::PANEL_BG);
+        assert_eq!(buf.get(2, 1).bg, block::ACCENT_WARN);
+        assert_eq!(buf.get(8, 1).symbol(), "•");
+        assert_eq!(buf.get(8, 1).fg, block::ACCENT_WARN);
+        assert_eq!(buf.get(10, 1).symbol(), "d");
+        assert_eq!(buf.get(10, 1).fg, block::PANEL_TEXT);
+        assert_eq!(buf.get(10, 1).bg, block::PANEL_BG);
     }
 }

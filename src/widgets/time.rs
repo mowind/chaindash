@@ -25,12 +25,12 @@ const AVERAGE_WINDOW_DATA_POINTS: usize = 10;
 const TIME_PLOT_FILL_COLOR: Color = Color::Rgb(194, 88, 188);
 const TIME_PLOT_CREST_COLOR: Color = Color::Rgb(224, 210, 248);
 const METRIC_PALETTE: chart::StandardMetricPalette = chart::StandardMetricPalette {
-    trend_up: Color::LightRed,
-    trend_down: Color::LightGreen,
-    current_fallback: Color::Indexed(70),
-    top_fallback: Color::Indexed(145),
-    avg: Color::Indexed(109),
-    block: Color::DarkGray,
+    trend_up: block::ACCENT_ERROR,
+    trend_down: block::METRIC_POSITIVE,
+    current_fallback: TIME_PLOT_FILL_COLOR,
+    top_fallback: block::METRIC_PEAK,
+    avg: block::METRIC_SECONDARY,
+    block: block::CONTENT_HIGHLIGHT,
 };
 const Y_AXIS_STEPS_MS: [(f64, f64); 4] =
     [(5000.0, 500.0), (20000.0, 1000.0), (50000.0, 5000.0), (f64::MAX, 10000.0)];
@@ -208,9 +208,13 @@ mod tests {
 
     #[test]
     fn test_trend_style_maps_symbols() {
-        assert_eq!(METRIC_PALETTE.trend_style("↑").fg, Some(Color::LightRed));
-        assert_eq!(METRIC_PALETTE.trend_style("↓").fg, Some(Color::LightGreen));
+        assert_eq!(METRIC_PALETTE.trend_style("↑").fg, Some(block::ACCENT_ERROR));
+        assert_eq!(METRIC_PALETTE.trend_style("↓").fg, Some(block::METRIC_POSITIVE));
         assert_eq!(METRIC_PALETTE.trend_style("→").fg, Some(Color::DarkGray));
+        assert_eq!(METRIC_PALETTE.current_fallback, TIME_PLOT_FILL_COLOR);
+        assert_eq!(METRIC_PALETTE.top_fallback, block::METRIC_PEAK);
+        assert_eq!(METRIC_PALETTE.avg, block::METRIC_SECONDARY);
+        assert_eq!(METRIC_PALETTE.block, block::CONTENT_HIGHLIGHT);
     }
 
     #[test]

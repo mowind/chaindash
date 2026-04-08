@@ -1,4 +1,10 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    time::{
+        Duration as StdDuration,
+        Instant,
+    },
+};
 
 use num_rational::Ratio;
 use ratatui::{
@@ -9,13 +15,19 @@ use ratatui::{
         Layout,
         Rect,
     },
-    style::Modifier,
+    style::{
+        Modifier,
+        Style,
+    },
     text::{
         Line,
         Span,
     },
     widgets::{
+        Cell,
         Paragraph,
+        Row,
+        Table,
         Widget,
     },
 };
@@ -37,6 +49,7 @@ pub struct NodeDetailWidget {
     title: String,
     update_interval: Ratio<u64>,
     loading: bool,
+    node_details: Vec<NodeDetail>,
 
     collect_data: SharedData,
 }
@@ -54,7 +67,28 @@ impl NodeDetailWidget {
             title: " Node Details ".to_string(),
             update_interval: Ratio::from_integer(1),
             loading: true,
+            node_details: Vec::new(),
             collect_data,
+        }
+    }
+
+    fn flexible_width(
+        area_width: u16,
+        reserved_width: u16,
+        min_width: u16,
+    ) -> u16 {
+        area_width.saturating_sub(2).saturating_sub(reserved_width).max(min_width)
+    }
+
+    fn display_name(detail: &NodeDetail) -> String {
+        if detail.node_name.is_empty() {
+            if detail.node_id.is_empty() {
+                "-".to_string()
+            } else {
+                detail.node_id.clone()
+            }
+        } else {
+            detail.node_name.clone()
         }
     }
 
@@ -89,6 +123,62 @@ impl NodeDetailWidget {
             .map(Self::format_number)
             .unwrap_or_else(|| integer.to_string());
         format!("{integer}.{fraction}")
+    }
+
+    fn format_ranking(ranking: i32) -> String {
+        if ranking <= 0 {
+            "-".to_string()
+        } else {
+            Self::format_number(ranking as u64)
+        }
+    }
+
+    fn format_elapsed(elapsed: StdDuration) -> String {
+        let seconds = elapsed.as_secs();
+        if seconds < 60 {
+            format!("{seconds}s")
+        } else if seconds < 60 * 60 {
+            format!("{}m", seconds / 60)
+        } else if seconds < 60 * 60 * 24 {
+            format!("{}h", seconds / (60 * 60))
+        } else {
+            format!("{}d", seconds / (60 * 60 * 24))
+        }
+    }
+
+    fn format_updated_at(updated_at: Option<Instant>) -> String {
+        let Some(updated_at) = updated_at else {
+            return "-".to_string();
+        };
+
+        Self::format_elapsed(Instant::now().saturating_duration_since(updated_at))
+    }
+
+    fn detail_status(_detail: &NodeDetail) -> &'static str {
+        "OK"
+    }
+
+    fn name_value_style() -> Style {
+        block::content_style().add_modifier(Modifier::BOLD)
+    }
+
+    fn status_value_style(_detail: &NodeDetail) -> Style {
+        block::accent_style(block::METRIC_POSITIVE)
+    }
+
+    fn updated_value_style(updated_at: Option<Instant>) -> Style {
+        let Some(updated_at) = updated_at else {
+            return block::muted_style();
+        };
+
+        let elapsed = Instant::now().saturating_duration_since(updated_at).as_secs();
+        if elapsed <= 30 {
+            Self::metric_value_style()
+        } else if elapsed <= 5 * 60 {
+            block::accent_style(block::ACCENT_WARN)
+        } else {
+            block::accent_style(block::ACCENT_ERROR)
+        }
     }
 
     fn shorten_address(address: &str) -> String {
@@ -199,15 +289,15 @@ impl NodeDetailWidget {
     }
 
     fn metric_value_style() -> ratatui::style::Style {
-        block::content_style().fg(ratatui::style::Color::LightCyan).add_modifier(Modifier::BOLD)
+        block::accent_style(block::METRIC_PRIMARY)
     }
 
     fn reward_value_style() -> ratatui::style::Style {
-        block::content_style().fg(ratatui::style::Color::LightGreen).add_modifier(Modifier::BOLD)
+        block::accent_style(block::METRIC_POSITIVE)
     }
 
     fn address_value_style() -> ratatui::style::Style {
-        block::content_style().fg(block::PANEL_TITLE)
+        block::highlight_style()
     }
 
     fn detail_column_specs(
@@ -215,25 +305,21 @@ impl NodeDetailWidget {
         show_section_headings: bool,
         address_max_len: usize,
     ) -> DoublePriorityLines {
-        let metric_style = block::content_style()
-            .fg(ratatui::style::Color::LightCyan)
-            .add_modifier(Modifier::BOLD);
-        let reward_style = block::content_style()
-            .fg(ratatui::style::Color::LightGreen)
-            .add_modifier(Modifier::BOLD);
-        let address_style = block::content_style().fg(block::PANEL_TITLE);
+        let metric_style = Self::metric_value_style();
+        let reward_style = Self::reward_value_style();
+        let address_style = Self::address_value_style();
 
         let mut left = Vec::new();
         if show_section_headings {
             left.push((9, Self::section_heading("Node")));
         }
         left.extend([
-            (1, Self::detail_line("Name", detail.node_name.clone())),
+            (1, Self::detail_line("Name", Self::display_name(detail))),
             (
                 2,
                 Self::detail_line_with_style(
                     "Ranking",
-                    Self::format_number(detail.ranking.max(0) as u64),
+                    Self::format_ranking(detail.ranking),
                     metric_style,
                 ),
             ),
@@ -259,6 +345,7 @@ impl NodeDetailWidget {
             ),
         ]);
 
+        let updated_style = Self::updated_value_style(detail.last_updated_at);
         let mut right = Vec::new();
         if show_section_headings {
             right.push((9, Self::section_heading("Rewards")));
@@ -304,6 +391,14 @@ impl NodeDetailWidget {
                     address_style,
                 ),
             ),
+            (
+                6,
+                Self::detail_line_with_style(
+                    "Updated",
+                    Self::format_updated_at(detail.last_updated_at),
+                    updated_style,
+                ),
+            ),
         ]);
 
         (left, right)
@@ -317,17 +412,18 @@ impl NodeDetailWidget {
         let metric_style = Self::metric_value_style();
         let reward_style = Self::reward_value_style();
         let address_style = Self::address_value_style();
+        let updated_style = Self::updated_value_style(detail.last_updated_at);
         let mut lines = Vec::new();
 
         if show_section_headings {
             lines.push((20, Self::section_heading("Node")));
         }
-        lines.push((1, Self::detail_line("Name", detail.node_name.clone())));
+        lines.push((1, Self::detail_line("Name", Self::display_name(detail))));
         lines.push((
             2,
             Self::detail_line_with_style(
                 "Ranking",
-                Self::format_number(detail.ranking.max(0) as u64),
+                Self::format_ranking(detail.ranking),
                 metric_style,
             ),
         ));
@@ -392,6 +488,14 @@ impl NodeDetailWidget {
                 address_style,
             ),
         ));
+        lines.push((
+            11,
+            Self::detail_line_with_style(
+                "Updated",
+                Self::format_updated_at(detail.last_updated_at),
+                updated_style,
+            ),
+        ));
 
         lines
     }
@@ -440,14 +544,9 @@ impl NodeDetailWidget {
             return;
         }
 
-        let detail = {
-            let data = self.collect_data.lock().expect("mutex poisoned - recovering");
-            data.node_detail()
-        };
-
-        let Some(detail) = detail else {
+        let Some(detail) = self.node_details.first() else {
             Paragraph::new(vec![Line::raw(self.empty_message())])
-                .style(block::content_style())
+                .style(block::empty_state_style())
                 .render(content, buf);
             return;
         };
@@ -457,12 +556,12 @@ impl NodeDetailWidget {
             if content.height >= Self::STACKED_LAYOUT_HEIGHT {
                 let address_max_len = Self::inline_value_max_len(content.width, "Address: ");
                 let lines = Self::visible_stacked_lines(
-                    &detail,
+                    detail,
                     show_section_headings,
                     address_max_len,
                     content.height,
                 );
-                Paragraph::new(lines).style(block::content_style()).render(content, buf);
+                Paragraph::new(lines).render(content, buf);
             } else {
                 self.render_compact_node_details(area, buf);
             }
@@ -487,12 +586,12 @@ impl NodeDetailWidget {
         );
         let address_max_len = Self::inline_value_max_len(right_area.width, "Reward Address: ");
         let (left_specs, right_specs) =
-            Self::detail_column_specs(&detail, show_section_headings, address_max_len);
+            Self::detail_column_specs(detail, show_section_headings, address_max_len);
         let left_lines = Self::select_prioritized_lines(left_specs, left_area.height);
         let right_lines = Self::select_prioritized_lines(right_specs, right_area.height);
 
-        Paragraph::new(left_lines).style(block::content_style()).render(left_area, buf);
-        Paragraph::new(right_lines).style(block::content_style()).render(right_area, buf);
+        Paragraph::new(left_lines).render(left_area, buf);
+        Paragraph::new(right_lines).render(right_area, buf);
     }
 
     fn compact_line_specs(
@@ -502,10 +601,18 @@ impl NodeDetailWidget {
         let metric_style = Self::metric_value_style();
         let reward_style = Self::reward_value_style();
         let address_style = Self::address_value_style();
+        let updated_style = Self::updated_value_style(detail.last_updated_at);
 
         vec![
-            (1, Self::detail_line("Name", detail.node_name.clone())),
-            (2, Self::detail_line_with_style("Rank", detail.ranking.to_string(), metric_style)),
+            (1, Self::detail_line("Name", Self::display_name(detail))),
+            (
+                2,
+                Self::detail_line_with_style(
+                    "Rank",
+                    Self::format_ranking(detail.ranking),
+                    metric_style,
+                ),
+            ),
             (
                 3,
                 Self::detail_line_with_style(
@@ -556,6 +663,14 @@ impl NodeDetailWidget {
                     address_style,
                 ),
             ),
+            (
+                11,
+                Self::detail_line_with_style(
+                    "Updated",
+                    Self::format_updated_at(detail.last_updated_at),
+                    updated_style,
+                ),
+            ),
         ]
     }
 
@@ -569,9 +684,8 @@ impl NodeDetailWidget {
 
     #[cfg(test)]
     fn compact_lines(&self) -> Vec<String> {
-        let data = self.collect_data.lock().expect("mutex poisoned - recovering");
-        match data.node_detail() {
-            Some(detail) => Self::visible_compact_lines(&detail, 24, u16::MAX)
+        match self.node_details.first() {
+            Some(detail) => Self::visible_compact_lines(detail, 24, u16::MAX)
                 .into_iter()
                 .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
                 .collect(),
@@ -586,9 +700,17 @@ impl NodeDetailWidget {
         let metric_style = Self::metric_value_style();
         let reward_style = Self::reward_value_style();
         let address_style = Self::address_value_style();
+        let updated_style = Self::updated_value_style(detail.last_updated_at);
         let left = vec![
-            (1, Self::detail_line("Name", detail.node_name.clone())),
-            (2, Self::detail_line_with_style("Rank", detail.ranking.to_string(), metric_style)),
+            (1, Self::detail_line("Name", Self::display_name(detail))),
+            (
+                2,
+                Self::detail_line_with_style(
+                    "Rank",
+                    Self::format_ranking(detail.ranking),
+                    metric_style,
+                ),
+            ),
             (
                 3,
                 Self::detail_line_with_style(
@@ -641,6 +763,14 @@ impl NodeDetailWidget {
                     address_style,
                 ),
             ),
+            (
+                6,
+                Self::detail_line_with_style(
+                    "Updated",
+                    Self::format_updated_at(detail.last_updated_at),
+                    updated_style,
+                ),
+            ),
         ];
 
         (left, right)
@@ -673,14 +803,9 @@ impl NodeDetailWidget {
             return;
         }
 
-        let detail = {
-            let data = self.collect_data.lock().expect("mutex poisoned - recovering");
-            data.node_detail()
-        };
-
-        let Some(detail) = detail else {
+        let Some(detail) = self.node_details.first() else {
             Paragraph::new(vec![Line::raw(self.empty_message())])
-                .style(block::content_style())
+                .style(block::empty_state_style())
                 .render(inner, buf);
             return;
         };
@@ -704,27 +829,99 @@ impl NodeDetailWidget {
             );
             let address_max_len = Self::inline_value_max_len(right_area.width, "Address: ");
             let (left_lines, right_lines) = Self::compact_summary_columns(
-                &detail,
+                detail,
                 address_max_len,
                 left_area.height,
                 right_area.height,
             );
 
-            Paragraph::new(left_lines).style(block::content_style()).render(left_area, buf);
-            Paragraph::new(right_lines).style(block::content_style()).render(right_area, buf);
+            Paragraph::new(left_lines).render(left_area, buf);
+            Paragraph::new(right_lines).render(right_area, buf);
             return;
         }
 
         let address_max_len = Self::inline_value_max_len(inner.width, "Address: ");
-        let lines = Self::visible_compact_lines(&detail, address_max_len, inner.height);
-        Paragraph::new(lines).style(block::content_style()).render(inner, buf);
+        let lines = Self::visible_compact_lines(detail, address_max_len, inner.height);
+        Paragraph::new(lines).render(inner, buf);
+    }
+
+    fn table_row_values(
+        detail: &NodeDetail,
+        address_max_len: usize,
+    ) -> Vec<String> {
+        vec![
+            format!(" {}", Self::display_name(detail)),
+            Self::format_ranking(detail.ranking),
+            Self::format_number(detail.block_qty),
+            detail.block_rate.clone(),
+            detail.daily_block_rate.clone(),
+            format!("{:.2}%", detail.reward_per),
+            Self::detail_status(detail).to_string(),
+            Self::format_updated_at(detail.last_updated_at),
+            Self::shorten_address_for_width(&detail.reward_address, address_max_len),
+        ]
+    }
+
+    fn table_row_cells(
+        detail: &NodeDetail,
+        address_max_len: usize,
+    ) -> Vec<Cell<'static>> {
+        let values = Self::table_row_values(detail, address_max_len);
+
+        vec![
+            Cell::from(values[0].clone()).style(Self::name_value_style()),
+            Cell::from(values[1].clone()).style(Self::metric_value_style()),
+            Cell::from(values[2].clone()).style(Self::metric_value_style()),
+            Cell::from(values[3].clone()).style(Self::reward_value_style()),
+            Cell::from(values[4].clone()).style(Self::metric_value_style()),
+            Cell::from(values[5].clone()).style(Self::reward_value_style()),
+            Cell::from(values[6].clone()).style(Self::status_value_style(detail)),
+            Cell::from(values[7].clone()).style(Self::updated_value_style(detail.last_updated_at)),
+            Cell::from(values[8].clone()).style(Self::address_value_style()),
+        ]
+    }
+
+    fn render_table(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let address_width = Self::flexible_width(area.width, 87, 14);
+        let address_max_len = address_width.saturating_sub(1) as usize;
+        let header =
+            [" Name", "Rank", "Blocks", "Rate", "24H", "Ratio", "Status", "Updated", "Address"];
+        let rows = self
+            .node_details
+            .iter()
+            .map(|detail| Row::new(Self::table_row_cells(detail, address_max_len)));
+        let header_row = Row::new(header.iter().copied()).style(block::header_style());
+
+        Table::new(
+            rows,
+            &[
+                Constraint::Length(16),
+                Constraint::Length(8),
+                Constraint::Length(10),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(address_width),
+            ],
+        )
+        .block(block::new(&self.title))
+        .header(header_row)
+        .column_spacing(1)
+        .render(area, buf);
     }
 }
 
 impl UpdatableWidget for NodeDetailWidget {
     fn update(&mut self) {
         let data = self.collect_data.lock().expect("mutex poisoned - recovering");
-        self.loading = data.node_detail().is_none();
+        self.node_details = data.node_details();
+        self.loading = self.node_details.is_empty() && !data.node_details_loaded();
     }
 
     fn get_update_interval(&self) -> Ratio<u64> {
@@ -739,6 +936,11 @@ impl Widget for &NodeDetailWidget {
         buf: &mut Buffer,
     ) {
         if area.height < 3 {
+            return;
+        }
+
+        if self.node_details.len() > 1 {
+            self.render_table(area, buf);
             return;
         }
 
@@ -761,6 +963,7 @@ mod tests {
 
     fn sample_detail() -> NodeDetail {
         NodeDetail {
+            node_id: "node-a-id".to_string(),
             node_name: "node-a".to_string(),
             ranking: 7,
             block_qty: 123_456,
@@ -770,6 +973,7 @@ mod tests {
             reward_value: 12_345.67,
             reward_address: "lat1zytcgvw35sagn722cneh6sz92y8j3dp8gqj5h".to_string(),
             verifier_time: 9,
+            last_updated_at: Some(Instant::now()),
         }
     }
 
@@ -804,6 +1008,21 @@ mod tests {
     }
 
     #[test]
+    fn test_node_detail_widget_shows_empty_state_after_initial_fetch() {
+        let shared_data = create_shared_data();
+        {
+            let mut data = shared_data.lock().expect("mutex poisoned");
+            data.mark_node_details_loaded();
+        }
+
+        let mut widget = NodeDetailWidget::new(shared_data);
+        widget.update();
+
+        assert!(!widget.loading);
+        assert_eq!(widget.empty_message(), "No node details found");
+    }
+
+    #[test]
     fn test_empty_message_reflects_loading_state() {
         let shared_data = create_shared_data();
         let mut widget = NodeDetailWidget::new(shared_data);
@@ -821,6 +1040,66 @@ mod tests {
     #[test]
     fn test_format_amount_adds_grouping_separators() {
         assert_eq!(NodeDetailWidget::format_amount(12_345.67), "12,345.67");
+    }
+
+    #[test]
+    fn test_format_ranking_uses_dash_for_unknown_rank() {
+        assert_eq!(NodeDetailWidget::format_ranking(0), "-");
+        assert_eq!(NodeDetailWidget::format_ranking(-1), "-");
+        assert_eq!(NodeDetailWidget::format_ranking(7), "7");
+    }
+
+    #[test]
+    fn test_format_elapsed_uses_human_readable_units() {
+        assert_eq!(NodeDetailWidget::format_elapsed(StdDuration::from_secs(5)), "5s");
+        assert_eq!(NodeDetailWidget::format_elapsed(StdDuration::from_secs(65)), "1m");
+        assert_eq!(NodeDetailWidget::format_elapsed(StdDuration::from_secs(7_200)), "2h");
+        assert_eq!(NodeDetailWidget::format_elapsed(StdDuration::from_secs(172_800)), "2d");
+    }
+
+    #[test]
+    fn test_table_row_values_include_status_and_updated_columns() {
+        let mut detail = sample_detail();
+        detail.last_updated_at = None;
+
+        let row = NodeDetailWidget::table_row_values(&detail, 18);
+
+        assert_eq!(row[0], " node-a");
+        assert_eq!(row[6], "OK");
+        assert_eq!(row[7], "-");
+    }
+
+    #[test]
+    fn test_updated_value_style_reflects_staleness() {
+        assert_eq!(NodeDetailWidget::updated_value_style(None).fg, block::muted_style().fg,);
+        assert_eq!(
+            NodeDetailWidget::updated_value_style(Some(Instant::now())).fg,
+            NodeDetailWidget::metric_value_style().fg,
+        );
+        assert_eq!(
+            NodeDetailWidget::updated_value_style(Some(
+                Instant::now() - StdDuration::from_secs(90)
+            ))
+            .fg,
+            Some(block::ACCENT_WARN),
+        );
+        assert_eq!(
+            NodeDetailWidget::updated_value_style(Some(
+                Instant::now() - StdDuration::from_secs(600)
+            ))
+            .fg,
+            Some(block::ACCENT_ERROR),
+        );
+    }
+
+    #[test]
+    fn test_table_highlight_style_helpers_match_expected_colors() {
+        let detail = sample_detail();
+
+        assert_eq!(NodeDetailWidget::metric_value_style().fg, Some(block::METRIC_PRIMARY));
+        assert_eq!(NodeDetailWidget::reward_value_style().fg, Some(block::METRIC_POSITIVE));
+        assert_eq!(NodeDetailWidget::status_value_style(&detail).fg, Some(block::METRIC_POSITIVE));
+        assert_eq!(NodeDetailWidget::address_value_style().fg, Some(block::CONTENT_HIGHLIGHT),);
     }
 
     #[test]
@@ -845,13 +1124,15 @@ mod tests {
 
     #[test]
     fn test_detail_column_specs_show_formatted_values() {
-        let (left, right) = NodeDetailWidget::detail_column_specs(&sample_detail(), true, 19);
+        let detail = sample_detail();
+        let (left, right) = NodeDetailWidget::detail_column_specs(&detail, true, 19);
 
         assert_eq!(line_text(&left[0].1), "Node");
         assert_eq!(left[3].1.spans[1].content, "123,456");
         assert_eq!(line_text(&right[0].1), "Rewards");
         assert_eq!(right[3].1.spans[1].content, "12,345.67 LAT");
         assert_eq!(right[5].1.spans[1].content, "lat1zytcgvw3…8gqj5h");
+        assert!(line_text(&right[6].1).starts_with("Updated: "));
     }
 
     #[test]
@@ -861,7 +1142,7 @@ mod tests {
         assert_eq!(left[0].1.spans[0].content, "Name: ");
         assert_eq!(left.len(), 5);
         assert_eq!(right[0].1.spans[0].content, "Verifier Time: ");
-        assert_eq!(right.len(), 5);
+        assert_eq!(right.len(), 6);
     }
 
     #[test]
@@ -876,6 +1157,7 @@ mod tests {
         assert_eq!(line_text(&lines[7]), "Rewards");
         assert_eq!(line_text(&lines[8]), "Verifier: 9");
         assert_eq!(line_text(&lines[12]), "Address: lat1zytcgvw3…8gqj5h");
+        assert!(line_text(&lines[13]).starts_with("Updated: "));
     }
 
     #[test]
@@ -888,6 +1170,7 @@ mod tests {
         assert_eq!(line_text(&right[0]), "Verifier: 9");
         assert_eq!(line_text(&right[1]), "Ratio: 5.00%");
         assert_eq!(line_text(&right[4]), "Address: lat1zytcgvw35sagn722c…dp8gqj5h");
+        assert!(line_text(&right[5]).starts_with("Updated: "));
     }
 
     #[test]
@@ -917,7 +1200,8 @@ mod tests {
             data.update_node_detail(Some(sample_detail()));
         }
 
-        let widget = NodeDetailWidget::new(shared_data);
+        let mut widget = NodeDetailWidget::new(shared_data);
+        widget.update();
         let lines = widget.compact_lines();
 
         assert_eq!(lines[0], "Name: node-a");
@@ -927,5 +1211,53 @@ mod tests {
         assert_eq!(lines[4], "24H: 3/day");
         assert_eq!(lines[8], "Rewards: 11,728.39 LAT");
         assert_eq!(lines[9], "Address: lat1zytcgvw35sag…p8gqj5h");
+        assert!(lines[10].starts_with("Updated: "));
+    }
+
+    #[test]
+    fn test_compact_lines_show_dash_for_unknown_rank() {
+        let shared_data = create_shared_data();
+        {
+            let mut data = shared_data.lock().expect("mutex poisoned");
+            let mut detail = sample_detail();
+            detail.ranking = 0;
+            data.update_node_detail(Some(detail));
+        }
+
+        let mut widget = NodeDetailWidget::new(shared_data);
+        widget.update();
+        let lines = widget.compact_lines();
+
+        assert_eq!(lines[1], "Rank: -");
+    }
+
+    #[test]
+    fn test_update_collects_multiple_node_details() {
+        let shared_data = create_shared_data();
+        {
+            let mut data = shared_data.lock().expect("mutex poisoned");
+            let mut detail_a = sample_detail();
+            detail_a.ranking = 7;
+            let mut detail_b = sample_detail();
+            detail_b.node_id = "node-b-id".to_string();
+            detail_b.node_name = "node-b".to_string();
+            detail_b.ranking = 2;
+            let mut detail_c = sample_detail();
+            detail_c.node_id = "node-c-id".to_string();
+            detail_c.node_name = "node-c".to_string();
+            detail_c.ranking = 0;
+
+            data.merge_node_detail_for(&detail_a.node_id.clone(), Some(detail_a));
+            data.merge_node_detail_for(&detail_b.node_id.clone(), Some(detail_b));
+            data.merge_node_detail_for(&detail_c.node_id.clone(), Some(detail_c));
+        }
+
+        let mut widget = NodeDetailWidget::new(shared_data);
+        widget.update();
+
+        assert_eq!(widget.node_details.len(), 3);
+        assert_eq!(widget.node_details[0].node_name, "node-b");
+        assert_eq!(widget.node_details[1].node_name, "node-a");
+        assert_eq!(widget.node_details[2].node_name, "node-c");
     }
 }

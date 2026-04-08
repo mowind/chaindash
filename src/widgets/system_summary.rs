@@ -8,7 +8,6 @@ use ratatui::{
     },
     style::{
         Color,
-        Modifier,
         Style,
     },
     text::{
@@ -42,6 +41,14 @@ pub struct SystemSummaryWidget {
 impl SystemSummaryWidget {
     const FULL_SUMMARY_MIN_WIDTH: u16 = 133;
 
+    fn disk_usage_color(stats: &SystemStats) -> Color {
+        if stats.has_disk_alerts {
+            block::ACCENT_WARN
+        } else {
+            block::METRIC_POSITIVE
+        }
+    }
+
     pub fn new(collect_data: SharedData) -> SystemSummaryWidget {
         SystemSummaryWidget {
             title: " System Stats ".to_string(),
@@ -58,7 +65,7 @@ impl SystemSummaryWidget {
     }
 
     fn metric_value_style(color: Color) -> Style {
-        block::content_style().fg(color).add_modifier(Modifier::BOLD)
+        block::accent_style(color)
     }
 
     fn metric_cell(
@@ -81,18 +88,14 @@ impl SystemSummaryWidget {
     }
 
     fn disk_usage_cell(stats: &SystemStats) -> Cell<'static> {
-        let value_style = if stats.has_disk_alerts {
-            Self::metric_value_style(Color::Yellow)
-        } else {
-            Self::metric_value_style(Color::Indexed(150))
-        };
+        let value_style = Self::metric_value_style(Self::disk_usage_color(stats));
         let mut spans = vec![
             Span::styled("\u{f1c0}".to_string(), block::muted_style()),
             Span::raw(" "),
             Span::styled(format!("{:.2}%", stats.disk_usage_percent), value_style),
         ];
         if stats.has_disk_alerts {
-            spans.push(Span::styled(" !", Style::default().fg(Color::Yellow).bg(block::PANEL_BG)));
+            spans.push(Span::styled(" !", block::accent_style(block::ACCENT_WARN)));
         }
 
         Cell::from(Line::from(spans))
@@ -152,7 +155,7 @@ impl SystemSummaryWidget {
         buf: &mut Buffer,
     ) {
         let header = [
-            " CPU Usage",
+            "CPU Usage",
             "Memory Usage",
             "Memory Used/Total",
             "Disk Usage",
@@ -175,33 +178,33 @@ impl SystemSummaryWidget {
             Self::metric_cell(
                 "\u{f085}",
                 format!("{:.2}%", stats.cpu_usage),
-                Self::metric_value_style(Color::LightCyan),
+                Self::metric_value_style(block::METRIC_PRIMARY),
             ),
             Self::metric_cell(
                 "\u{f233}",
                 format!("{:.2}%", stats.memory_usage_percent),
-                Self::metric_value_style(Color::Indexed(117)),
+                Self::metric_value_style(block::METRIC_SECONDARY),
             ),
             Self::metric_cell(
                 "\u{f02a1}",
                 format!("{:.2}GB / {:.2}GB", memory_used_gb, memory_total_gb),
-                Self::metric_value_style(Color::Indexed(153)),
+                Self::metric_value_style(block::METRIC_TERTIARY),
             ),
             Self::disk_usage_cell(stats),
             Self::metric_cell(
                 "\u{f0a0f}",
                 format!("{:.2}GB / {:.2}GB", disk_used_gb, disk_total_gb),
-                Self::metric_value_style(Color::Indexed(150)),
+                Self::metric_value_style(block::METRIC_POSITIVE),
             ),
             Self::metric_cell(
                 "\u{f0045}",
                 format!("{:.2} MB/s", network_rx_mb),
-                Self::metric_value_style(Color::Indexed(159)),
+                Self::metric_value_style(block::METRIC_NETWORK),
             ),
             Self::metric_cell(
                 "\u{f005d}",
                 format!("{:.2} MB/s", network_tx_mb),
-                Self::metric_value_style(Color::Indexed(159)),
+                Self::metric_value_style(block::METRIC_NETWORK),
             ),
         ])];
 
@@ -249,27 +252,23 @@ impl SystemSummaryWidget {
         let rows = vec![Row::new(vec![
             Self::compact_metric_cell(
                 format!("{:.1}%", stats.cpu_usage),
-                Self::metric_value_style(Color::LightCyan),
+                Self::metric_value_style(block::METRIC_PRIMARY),
             ),
             Self::compact_metric_cell(
                 format!("{:.1}%", stats.memory_usage_percent),
-                Self::metric_value_style(Color::Indexed(117)),
+                Self::metric_value_style(block::METRIC_SECONDARY),
             ),
             Self::compact_metric_cell(
                 format!("{:.1}%", stats.disk_usage_percent),
-                Self::metric_value_style(if stats.has_disk_alerts {
-                    Color::Yellow
-                } else {
-                    Color::Indexed(150)
-                }),
+                Self::metric_value_style(Self::disk_usage_color(stats)),
             ),
             Self::compact_metric_cell(
                 format!("{:.1}M", network_rx_mb),
-                Self::metric_value_style(Color::Indexed(159)),
+                Self::metric_value_style(block::METRIC_NETWORK),
             ),
             Self::compact_metric_cell(
                 format!("{:.1}M", network_tx_mb),
-                Self::metric_value_style(Color::Indexed(159)),
+                Self::metric_value_style(block::METRIC_NETWORK),
             ),
         ])];
 
@@ -341,5 +340,15 @@ mod tests {
         assert_eq!(widget.system_stats.cpu_usage, 0.0);
         assert_eq!(widget.system_stats.memory_usage_percent, 0.0);
         assert_eq!(widget.system_stats.disk_usage_percent, 0.0);
+    }
+
+    #[test]
+    fn test_disk_usage_color_uses_shared_warning_and_positive_palette() {
+        let mut stats = SystemStats::default();
+
+        assert_eq!(SystemSummaryWidget::disk_usage_color(&stats), block::METRIC_POSITIVE);
+
+        stats.has_disk_alerts = true;
+        assert_eq!(SystemSummaryWidget::disk_usage_color(&stats), block::ACCENT_WARN);
     }
 }
