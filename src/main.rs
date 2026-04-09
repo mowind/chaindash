@@ -36,6 +36,7 @@ use crossterm::{
     event::{
         Event,
         KeyCode,
+        KeyEvent,
         KeyModifiers,
     },
     execute,
@@ -236,6 +237,69 @@ fn draw_app<B: Backend>(
     draw(terminal, app)
 }
 
+enum UiAction {
+    None,
+    Redraw,
+    Exit,
+}
+
+fn draw_or_capture_exit<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    exit_error: &mut Option<ChaindashError>,
+) -> bool {
+    if let Err(err) = draw_app(terminal, app) {
+        error!("绘制界面失败: {err}");
+        *exit_error = Some(err);
+        true
+    } else {
+        false
+    }
+}
+
+fn is_quit_key(key_event: &KeyEvent) -> bool {
+    key_event.code == KeyCode::Char('q') && key_event.modifiers.is_empty()
+}
+
+fn is_ctrl_c(key_event: &KeyEvent) -> bool {
+    key_event.code == KeyCode::Char('c') && key_event.modifiers == KeyModifiers::CONTROL
+}
+
+fn is_tab(key_event: &KeyEvent) -> bool {
+    key_event.code == KeyCode::Tab && key_event.modifiers.is_empty()
+}
+
+fn is_shift_tab(key_event: &KeyEvent) -> bool {
+    key_event.code == KeyCode::BackTab
+        || (key_event.code == KeyCode::Tab && key_event.modifiers == KeyModifiers::SHIFT)
+}
+
+fn handle_ui_event(
+    app: &mut App,
+    event: Event,
+) -> UiAction {
+    match event {
+        Event::Key(key_event) if is_shift_tab(&key_event) => {
+            if app.handle_shift_tab_key() {
+                UiAction::Redraw
+            } else {
+                UiAction::None
+            }
+        },
+        Event::Key(key_event) if is_quit_key(&key_event) => UiAction::Exit,
+        Event::Key(key_event) if is_tab(&key_event) => {
+            if app.handle_tab_key() {
+                UiAction::Redraw
+            } else {
+                UiAction::None
+            }
+        },
+        Event::Key(key_event) if is_ctrl_c(&key_event) => UiAction::Exit,
+        Event::Resize(_, _) => UiAction::Redraw,
+        _ => UiAction::None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ChaindashError> {
     better_panic::install();
@@ -304,9 +368,7 @@ async fn main() -> Result<(), ChaindashError> {
             recv(ticker)->_ => {
                 update_seconds += draw_interval;
                 update_widgets(&mut app.widgets, update_seconds);
-                if let Err(err) = draw_app(&mut terminal, &mut app) {
-                    error!("绘制界面失败: {err}");
-                    exit_error = Some(err);
+                if draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error) {
                     break 'event_loop;
                 }
             }
@@ -315,53 +377,15 @@ async fn main() -> Result<(), ChaindashError> {
                     // Channel closed, exit gracefully
                     break 'event_loop;
                 };
-                match event {
-                    Event::Key(key_event) => {
-                        match key_event.code {
-                            KeyCode::BackTab => {
-                                app.handle_shift_tab_key();
-                                if let Err(err) = draw_app(&mut terminal, &mut app) {
-                                    error!("绘制界面失败: {err}");
-                                    exit_error = Some(err);
-                                    break 'event_loop;
-                                }
-                            }
-                            KeyCode::Char('q') if key_event.modifiers.is_empty() => {
-                                break 'event_loop
-                            }
-                            KeyCode::Tab if key_event.modifiers.is_empty() => {
-                                // Tab键切换磁盘
-                                app.handle_tab_key();
-                                if let Err(err) = draw_app(&mut terminal, &mut app) {
-                                    error!("绘制界面失败: {err}");
-                                    exit_error = Some(err);
-                                    break 'event_loop;
-                                }
-                            }
-                            KeyCode::Tab if key_event.modifiers == KeyModifiers::SHIFT => {
-                                // Shift+Tab键切换到上一个磁盘
-                                app.handle_shift_tab_key();
-                                if let Err(err) = draw_app(&mut terminal, &mut app) {
-                                    error!("绘制界面失败: {err}");
-                                    exit_error = Some(err);
-                                    break 'event_loop;
-                                }
-                            }
-                            KeyCode::Char('c') if key_event.modifiers == KeyModifiers::CONTROL => {
-                                break 'event_loop
-                            }
-                            _ => {}
-                        }
-                    }
 
-                    Event::Resize(_width, _height) => {
-                        if let Err(err) = draw_app(&mut terminal, &mut app) {
-                            error!("绘制界面失败: {err}");
-                            exit_error = Some(err);
+                match handle_ui_event(&mut app, event) {
+                    UiAction::None => {}
+                    UiAction::Redraw => {
+                        if draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error) {
                             break 'event_loop;
                         }
                     }
-                    _ => {}
+                    UiAction::Exit => break 'event_loop,
                 }
             }
         }
@@ -385,9 +409,33 @@ async fn main() -> Result<(), ChaindashError> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use clap::Parser;
 
     use super::*;
+    use crate::collect::DiskDetail;
+
+    fn create_test_app() -> App {
+        let opts = Opts::parse_from(["test", "--url", "test@ws://127.0.0.1:6789"]);
+        setup_app(&opts)
+    }
+
+    #[cfg(target_family = "unix")]
+    fn create_test_disk_detail(mount_point: &str) -> DiskDetail {
+        DiskDetail {
+            mount_point: mount_point.to_string(),
+            filesystem: "ext4".to_string(),
+            total: 100_000_000_000,
+            used: 50_000_000_000,
+            available: 50_000_000_000,
+            usage_percent: 50.0,
+            device: "/dev/sda1".to_string(),
+            is_alert: false,
+            is_network: false,
+            last_updated: Instant::now(),
+        }
+    }
 
     #[test]
     fn test_scheduling_quantum_defaults_to_one_second_for_integer_intervals() {
@@ -417,5 +465,89 @@ mod tests {
             scheduling_quantum(&opts).expect("quantum should be computed"),
             Ratio::new(1, 3)
         );
+    }
+
+    #[test]
+    fn test_handle_ui_event_returns_exit_for_quit_key() {
+        let mut app = create_test_app();
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+
+        assert!(matches!(handle_ui_event(&mut app, event), UiAction::Exit));
+    }
+
+    #[test]
+    fn test_handle_ui_event_returns_redraw_for_resize() {
+        let mut app = create_test_app();
+
+        assert!(matches!(handle_ui_event(&mut app, Event::Resize(120, 40)), UiAction::Redraw));
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_handle_ui_event_returns_redraw_for_tab_with_disk_data() {
+        let mut app = create_test_app();
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_disk_details_for_test(vec![
+                create_test_disk_detail("/"),
+                create_test_disk_detail("/home"),
+            ]);
+        }
+
+        let event = Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert!(matches!(handle_ui_event(&mut app, event), UiAction::Redraw));
+        assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 1);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_handle_ui_event_returns_none_for_tab_with_single_disk() {
+        let mut app = create_test_app();
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_disk_details_for_test(vec![create_test_disk_detail("/")]);
+        }
+
+        let event = Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert!(matches!(handle_ui_event(&mut app, event), UiAction::None));
+        assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 0);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_handle_ui_event_returns_redraw_for_backtab_with_disk_data() {
+        let mut app = create_test_app();
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_disk_details_for_test(vec![
+                create_test_disk_detail("/"),
+                create_test_disk_detail("/home"),
+            ]);
+        }
+
+        let event = Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+
+        assert!(matches!(handle_ui_event(&mut app, event), UiAction::Redraw));
+        assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 1);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_handle_ui_event_returns_redraw_for_shift_tab_with_disk_data() {
+        let mut app = create_test_app();
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_disk_details_for_test(vec![
+                create_test_disk_detail("/"),
+                create_test_disk_detail("/home"),
+            ]);
+        }
+
+        let event = Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+
+        assert!(matches!(handle_ui_event(&mut app, event), UiAction::Redraw));
+        assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 1);
     }
 }

@@ -5,6 +5,7 @@ use crate::{
     },
     opts::Opts,
     sync::lock_or_panic,
+    update::UpdatableWidget,
     widgets::{
         DiskListWidget,
         NodeDetailWidget,
@@ -21,50 +22,76 @@ pub struct App {
 }
 
 impl App {
+    #[cfg(target_family = "unix")]
+    fn refresh_disk_list_widget(&mut self) {
+        self.widgets.disk_list.update();
+    }
+
+    #[cfg(not(target_family = "unix"))]
+    fn refresh_disk_list_widget(&mut self) {}
+
+    #[cfg(target_family = "unix")]
+    fn switch_disk_selection(
+        &mut self,
+        next_index: impl FnOnce(usize, usize) -> usize,
+    ) -> bool {
+        let should_refresh = {
+            let mut data = lock_or_panic(&self.data);
+            let stats = data.system_stats();
+            let disk_count = stats.disk_details.len();
+
+            if disk_count <= 1 {
+                false
+            } else {
+                let current_index = stats.current_disk_index;
+                let next_index = next_index(current_index, disk_count);
+                if next_index == current_index {
+                    false
+                } else {
+                    data.update_disk_index(next_index);
+                    true
+                }
+            }
+        };
+
+        if should_refresh {
+            self.refresh_disk_list_widget();
+        }
+
+        should_refresh
+    }
+
     /// 处理Tab键事件，切换当前选中的磁盘
     #[cfg(target_family = "unix")]
-    pub fn handle_tab_key(&self) {
-        let mut data = lock_or_panic(&self.data);
-        let stats = data.system_stats();
-        let disk_count = stats.disk_details.len();
-        if disk_count > 0 {
-            // 获取当前索引并计算下一个索引
-            let current_index = stats.current_disk_index;
-            let next_index = (current_index + 1) % disk_count;
-
-            // 更新索引
-            data.update_disk_index(next_index);
-        }
+    pub fn handle_tab_key(&mut self) -> bool {
+        self.switch_disk_selection(|current_index, disk_count| (current_index + 1) % disk_count)
     }
 
     /// 处理Tab键事件，切换当前选中的磁盘
     #[cfg(not(target_family = "unix"))]
-    pub fn handle_tab_key(&self) {}
+    pub fn handle_tab_key(&mut self) -> bool {
+        self.refresh_disk_list_widget();
+        false
+    }
 
     /// 处理Shift+Tab键事件，切换到上一个磁盘
     #[cfg(target_family = "unix")]
-    pub fn handle_shift_tab_key(&self) {
-        let mut data = lock_or_panic(&self.data);
-        let stats = data.system_stats();
-        let disk_count = stats.disk_details.len();
-
-        if disk_count > 0 {
-            // 获取当前索引并计算上一个索引
-            let current_index = stats.current_disk_index;
-            let prev_index = if current_index == 0 {
+    pub fn handle_shift_tab_key(&mut self) -> bool {
+        self.switch_disk_selection(|current_index, disk_count| {
+            if current_index == 0 {
                 disk_count - 1
             } else {
                 current_index - 1
-            };
-
-            // 更新索引
-            data.update_disk_index(prev_index);
-        }
+            }
+        })
     }
 
     /// 处理Shift+Tab键事件，切换到上一个磁盘
     #[cfg(not(target_family = "unix"))]
-    pub fn handle_shift_tab_key(&self) {}
+    pub fn handle_shift_tab_key(&mut self) -> bool {
+        self.refresh_disk_list_widget();
+        false
+    }
 }
 
 pub struct Widgets {
@@ -191,7 +218,7 @@ mod tests {
     #[test]
     fn test_handle_tab_key_empty_disk_list() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         let index_before = {
             let data = app.data.lock().expect("mutex poisoned");
@@ -212,14 +239,14 @@ mod tests {
     #[test]
     fn test_handle_tab_key_single_disk() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
             data.set_disk_details_for_test(vec![create_test_disk_detail("/")]);
         }
 
-        app.handle_tab_key();
+        assert!(!app.handle_tab_key());
 
         let index_after = {
             let data = app.data.lock().expect("mutex poisoned");
@@ -233,7 +260,7 @@ mod tests {
     #[test]
     fn test_handle_tab_key_multiple_disks() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -264,7 +291,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_empty_disk_list() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         let index_before = {
             let data = app.data.lock().expect("mutex poisoned");
@@ -285,14 +312,14 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_single_disk() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
             data.set_disk_details_for_test(vec![create_test_disk_detail("/")]);
         }
 
-        app.handle_shift_tab_key();
+        assert!(!app.handle_shift_tab_key());
 
         let index_after = {
             let data = app.data.lock().expect("mutex poisoned");
@@ -306,7 +333,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_wrap_around() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -331,7 +358,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_multiple_navigation() {
         let opts = create_test_opts();
-        let app = setup_app(&opts);
+        let mut app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -356,6 +383,44 @@ mod tests {
         };
 
         assert_eq!(indices, vec![0, 2, 1, 0, 2]);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_handle_tab_key_refreshes_disk_widget_immediately() {
+        let opts = create_test_opts();
+        let mut app = setup_app(&opts);
+
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_disk_details_for_test(vec![
+                create_test_disk_detail("/"),
+                create_test_disk_detail("/home"),
+                create_test_disk_detail("/opt"),
+            ]);
+        }
+
+        assert!(app.handle_tab_key());
+        assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 1);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_handle_shift_tab_key_refreshes_disk_widget_immediately() {
+        let opts = create_test_opts();
+        let mut app = setup_app(&opts);
+
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_disk_details_for_test(vec![
+                create_test_disk_detail("/"),
+                create_test_disk_detail("/home"),
+                create_test_disk_detail("/opt"),
+            ]);
+        }
+
+        assert!(app.handle_shift_tab_key());
+        assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 2);
     }
 
     #[test]

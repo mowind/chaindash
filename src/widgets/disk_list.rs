@@ -78,6 +78,11 @@ impl Widget for &DiskListWidget {
 }
 
 impl DiskListWidget {
+    #[cfg(test)]
+    pub fn current_disk_index_for_test(&self) -> usize {
+        self.system_stats.current_disk_index
+    }
+
     fn mount_value_style(is_selected: bool) -> Style {
         if is_selected {
             block::highlight_style().add_modifier(Modifier::BOLD)
