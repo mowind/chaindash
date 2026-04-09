@@ -1,3 +1,5 @@
+use crossbeam_channel::Sender;
+
 use crate::{
     collect::{
         Data,
@@ -22,6 +24,57 @@ pub struct App {
 }
 
 impl App {
+    pub fn install_ui_waker(
+        &self,
+        sender: Sender<()>,
+    ) {
+        let mut data = lock_or_panic(&self.data);
+        data.set_ui_waker(sender);
+    }
+
+    pub fn refresh_dirty_widgets(&mut self) -> bool {
+        let dirty = {
+            let mut data = lock_or_panic(&self.data);
+            data.take_ui_dirty()
+        };
+
+        let mut should_redraw = dirty.status;
+
+        if dirty.chain {
+            self.widgets.txs.update();
+            self.widgets.time.update();
+            should_redraw = true;
+        }
+
+        if dirty.node_state {
+            self.widgets.node.update();
+            should_redraw = true;
+        }
+
+        if dirty.node_details {
+            self.widgets.node_details.update();
+            should_redraw = true;
+        }
+
+        #[cfg(target_family = "unix")]
+        if dirty.system {
+            self.widgets.system_summary.update();
+            self.widgets.disk_list.update();
+            should_redraw = true;
+        }
+
+        should_redraw
+    }
+
+    pub fn needs_periodic_redraw(&self) -> bool {
+        if self.widgets.node_details.needs_periodic_redraw() {
+            return true;
+        }
+
+        let data = lock_or_panic(&self.data);
+        data.status_message().is_some()
+    }
+
     #[cfg(target_family = "unix")]
     fn refresh_disk_list_widget(&mut self) {
         self.widgets.disk_list.update();
@@ -421,6 +474,53 @@ mod tests {
 
         assert!(app.handle_shift_tab_key());
         assert_eq!(app.widgets.disk_list.current_disk_index_for_test(), 2);
+    }
+
+    #[test]
+    fn test_needs_periodic_redraw_returns_true_with_active_status_message() {
+        let opts = create_test_opts();
+        let app = setup_app(&opts);
+
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.set_status_message(crate::collect::StatusLevel::Info, "synced");
+        }
+
+        assert!(app.needs_periodic_redraw());
+    }
+
+    #[test]
+    fn test_needs_periodic_redraw_returns_true_with_node_details() {
+        let opts = create_test_opts();
+        let mut app = setup_app(&opts);
+
+        {
+            let mut data = app.data.lock().expect("mutex poisoned");
+            data.update_node_detail(Some(crate::collect::NodeDetail {
+                node_id: "test-node-id".to_string(),
+                node_name: "test-node".to_string(),
+                ranking: 1,
+                block_qty: 100,
+                block_rate: "50%".to_string(),
+                daily_block_rate: "10/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 1000.0,
+                reward_address: "0x123".to_string(),
+                verifier_time: 3600,
+                last_updated_at: Some(Instant::now()),
+            }));
+        }
+        app.widgets.node_details.update();
+
+        assert!(app.needs_periodic_redraw());
+    }
+
+    #[test]
+    fn test_needs_periodic_redraw_returns_false_without_status_or_details() {
+        let opts = create_test_opts();
+        let app = setup_app(&opts);
+
+        assert!(!app.needs_periodic_redraw());
     }
 
     #[test]

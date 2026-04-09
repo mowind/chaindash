@@ -8,7 +8,6 @@ mod update;
 mod widgets;
 
 use std::{
-    convert::TryFrom,
     fs,
     io::{
         self,
@@ -26,6 +25,7 @@ use app::{
 };
 use clap::Parser;
 use crossbeam_channel::{
+    bounded,
     select,
     tick,
     unbounded,
@@ -104,55 +104,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn gcd_u128(
-    mut left: u128,
-    mut right: u128,
-) -> u128 {
-    while right != 0 {
-        let remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-
-    left
-}
-
-fn lcm_u128(
-    left: u128,
-    right: u128,
-) -> Result<u128, ChaindashError> {
-    if left == 0 || right == 0 {
-        return Ok(0);
-    }
-
-    let gcd = gcd_u128(left, right);
-    left.checked_div(gcd)
-        .and_then(|value| value.checked_mul(right))
-        .ok_or_else(|| ChaindashError::Other("interval is too precise to schedule safely".into()))
-}
-
-fn scheduling_quantum(opts: &Opts) -> Result<Ratio<u64>, ChaindashError> {
-    let intervals = [opts.interval, Ratio::from_integer(1), Ratio::from_integer(2)];
-    let denominator_lcm = intervals
-        .iter()
-        .try_fold(1_u128, |acc, interval| lcm_u128(acc, u128::from(*interval.denom())))?;
-
-    let numerator_gcd = intervals
-        .iter()
-        .map(|interval| {
-            u128::from(*interval.numer()) * (denominator_lcm / u128::from(*interval.denom()))
-        })
-        .reduce(gcd_u128)
-        .unwrap_or(1);
-
-    let numerator = u64::try_from(numerator_gcd)
-        .map_err(|_| ChaindashError::Other("interval numerator exceeds supported range".into()))?;
-    let denominator = u64::try_from(denominator_lcm).map_err(|_| {
-        ChaindashError::Other("interval denominator exceeds supported range".into())
-    })?;
-
-    Ok(Ratio::new(numerator, denominator))
-}
+const PERIODIC_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 
 fn setup_ui_events() -> Receiver<Event> {
     let (sender, receiver) = unbounded();
@@ -313,8 +265,6 @@ async fn main() -> Result<(), ChaindashError> {
         // Continue without logging - not fatal
     }
 
-    let draw_interval = scheduling_quantum(&opts)?;
-
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
 
@@ -335,14 +285,12 @@ async fn main() -> Result<(), ChaindashError> {
 
     let mut terminal_guard = TerminalGuard::new();
 
-    let ticker = tick(Duration::from_secs_f64(
-        *draw_interval.numer() as f64 / *draw_interval.denom() as f64,
-    ));
+    let ticker = tick(PERIODIC_REDRAW_INTERVAL);
 
     let ui_event_receiver = setup_ui_events();
     let ctrl_c_events = setup_ctrl_c()?;
-
-    let mut update_seconds = Ratio::from_integer(0);
+    let (ui_refresh_sender, ui_refresh_receiver) = bounded(1);
+    app.install_ui_waker(ui_refresh_sender);
 
     let collector = Arc::new(collect::Collector::new(&opts, app.data.clone())?);
     let collector_handle = {
@@ -350,7 +298,7 @@ async fn main() -> Result<(), ChaindashError> {
         tokio::spawn(async move { collect::run(collector_clone).await })
     };
 
-    update_widgets(&mut app.widgets, update_seconds);
+    update_widgets(&mut app.widgets, Ratio::from_integer(0));
     if let Err(err) = draw_app(&mut terminal, &mut app) {
         collector.stop();
         terminal_guard.cleanup();
@@ -366,9 +314,20 @@ async fn main() -> Result<(), ChaindashError> {
                 break 'event_loop;
             }
             recv(ticker)->_ => {
-                update_seconds += draw_interval;
-                update_widgets(&mut app.widgets, update_seconds);
-                if draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error) {
+                if app.needs_periodic_redraw()
+                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                {
+                    break 'event_loop;
+                }
+            }
+            recv(ui_refresh_receiver) -> message => {
+                let Ok(()) = message else {
+                    break 'event_loop;
+                };
+
+                if app.refresh_dirty_widgets()
+                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                {
                     break 'event_loop;
                 }
             }
@@ -438,33 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn test_scheduling_quantum_defaults_to_one_second_for_integer_intervals() {
-        let opts = Opts::parse_from(["test", "--interval", "5"]);
-
-        assert_eq!(
-            scheduling_quantum(&opts).expect("quantum should be computed"),
-            Ratio::from_integer(1)
-        );
-    }
-
-    #[test]
-    fn test_scheduling_quantum_supports_fractional_interval_above_one_second() {
-        let opts = Opts::parse_from(["test", "--interval", "3/2"]);
-
-        assert_eq!(
-            scheduling_quantum(&opts).expect("quantum should be computed"),
-            Ratio::new(1, 2)
-        );
-    }
-
-    #[test]
-    fn test_scheduling_quantum_supports_subsecond_interval() {
-        let opts = Opts::parse_from(["test", "--interval", "2/3"]);
-
-        assert_eq!(
-            scheduling_quantum(&opts).expect("quantum should be computed"),
-            Ratio::new(1, 3)
-        );
+    fn test_periodic_redraw_interval_is_one_second() {
+        assert_eq!(PERIODIC_REDRAW_INTERVAL, Duration::from_secs(1));
     }
 
     #[test]

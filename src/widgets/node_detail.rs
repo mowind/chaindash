@@ -80,6 +80,10 @@ impl NodeDetailWidget {
         }
     }
 
+    pub fn needs_periodic_redraw(&self) -> bool {
+        !self.node_details.is_empty()
+    }
+
     fn flexible_width(
         area_width: u16,
         reserved_width: u16,

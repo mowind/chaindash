@@ -10,6 +10,7 @@ use std::{
     },
 };
 
+use crossbeam_channel::Sender;
 use log::warn;
 
 use crate::sync::lock_or_panic;
@@ -395,7 +396,7 @@ impl UiStatusStore {
         &mut self,
         level: StatusLevel,
         text: impl Into<String>,
-    ) {
+    ) -> bool {
         let text = text.into();
         let now = Instant::now();
 
@@ -409,7 +410,7 @@ impl UiStatusStore {
             })
             .is_some()
         {
-            return;
+            return false;
         }
 
         let expires_at = match level {
@@ -423,10 +424,14 @@ impl UiStatusStore {
             text,
             expires_at,
         });
+
+        true
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self) -> bool {
+        let had_status = self.status_message.is_some();
         self.status_message = None;
+        had_status
     }
 }
 
@@ -481,12 +486,39 @@ impl SystemState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UiDirtyState {
+    pub chain: bool,
+    pub node_state: bool,
+    pub node_details: bool,
+    pub status: bool,
+    #[cfg(target_family = "unix")]
+    pub system: bool,
+}
+
+impl UiDirtyState {
+    fn any(self) -> bool {
+        self.chain || self.node_state || self.node_details || self.status || {
+            #[cfg(target_family = "unix")]
+            {
+                self.system
+            }
+            #[cfg(not(target_family = "unix"))]
+            {
+                false
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Data {
     chain: ChainStats,
     node_state: NodeStateStore,
     node_details: NodeDetailStore,
     status: UiStatusStore,
+    ui_dirty: UiDirtyState,
+    ui_waker: Option<Sender<()>>,
     #[cfg(target_family = "unix")]
     system: SystemState,
 }
@@ -514,6 +546,53 @@ pub(crate) fn warn_with_status(
 impl Data {
     pub fn new() -> SharedData {
         Arc::new(Mutex::new(Data::default()))
+    }
+
+    fn notify_ui_if_needed(&self) {
+        if !self.ui_dirty.any() {
+            return;
+        }
+
+        if let Some(sender) = &self.ui_waker {
+            let _ = sender.try_send(());
+        }
+    }
+
+    fn mark_chain_dirty(&mut self) {
+        self.ui_dirty.chain = true;
+        self.notify_ui_if_needed();
+    }
+
+    fn mark_node_state_dirty(&mut self) {
+        self.ui_dirty.node_state = true;
+        self.notify_ui_if_needed();
+    }
+
+    fn mark_node_details_dirty(&mut self) {
+        self.ui_dirty.node_details = true;
+        self.notify_ui_if_needed();
+    }
+
+    fn mark_status_dirty(&mut self) {
+        self.ui_dirty.status = true;
+        self.notify_ui_if_needed();
+    }
+
+    #[cfg(target_family = "unix")]
+    fn mark_system_dirty(&mut self) {
+        self.ui_dirty.system = true;
+        self.notify_ui_if_needed();
+    }
+
+    pub(crate) fn set_ui_waker(
+        &mut self,
+        sender: Sender<()>,
+    ) {
+        self.ui_waker = Some(sender);
+    }
+
+    pub(crate) fn take_ui_dirty(&mut self) -> UiDirtyState {
+        std::mem::take(&mut self.ui_dirty)
     }
 
     pub fn cur_block_number(&self) -> u64 {
@@ -577,6 +656,7 @@ impl Data {
         detail: Option<NodeDetail>,
     ) {
         self.node_details.update_node_detail(detail);
+        self.mark_node_details_dirty();
     }
 
     pub fn merge_node_ranking(
@@ -584,6 +664,7 @@ impl Data {
         ranking: Option<i32>,
     ) {
         self.node_details.merge_node_ranking(ranking);
+        self.mark_node_details_dirty();
     }
 
     pub fn merge_node_ranking_for(
@@ -592,6 +673,7 @@ impl Data {
         ranking: Option<i32>,
     ) {
         self.node_details.merge_node_ranking_for(node_id, ranking);
+        self.mark_node_details_dirty();
     }
 
     pub fn merge_node_detail(
@@ -599,6 +681,7 @@ impl Data {
         detail: Option<NodeDetail>,
     ) {
         self.node_details.merge_node_detail(detail);
+        self.mark_node_details_dirty();
     }
 
     pub fn merge_node_detail_for(
@@ -607,6 +690,7 @@ impl Data {
         detail: Option<NodeDetail>,
     ) {
         self.node_details.merge_node_detail_for(node_id, detail);
+        self.mark_node_details_dirty();
     }
 
     pub(crate) fn record_block_sample(
@@ -616,6 +700,7 @@ impl Data {
         txs: u64,
     ) {
         self.chain.record_block_sample(block_number, block_timestamp, txs);
+        self.mark_chain_dirty();
     }
 
     pub(crate) fn update_consensus_state(
@@ -624,6 +709,7 @@ impl Data {
         state: ConsensusState,
     ) {
         self.node_state.update(name, state);
+        self.mark_node_state_dirty();
     }
 
     #[cfg(target_family = "unix")]
@@ -631,7 +717,9 @@ impl Data {
         &mut self,
         system_stats: SystemStats,
     ) -> bool {
-        self.system.replace_stats(system_stats)
+        let previous_alert = self.system.replace_stats(system_stats);
+        self.mark_system_dirty();
+        previous_alert
     }
 
     #[cfg(target_family = "unix")]
@@ -660,11 +748,15 @@ impl Data {
         level: StatusLevel,
         text: impl Into<String>,
     ) {
-        self.status.set(level, text);
+        if self.status.set(level, text) {
+            self.mark_status_dirty();
+        }
     }
 
     pub fn clear_status_message(&mut self) {
-        self.status.clear();
+        if self.status.clear() {
+            self.mark_status_dirty();
+        }
     }
 
     pub fn remove_node_detail(
@@ -672,10 +764,12 @@ impl Data {
         node_id: &str,
     ) {
         self.node_details.remove(node_id);
+        self.mark_node_details_dirty();
     }
 
     pub fn mark_node_details_loaded(&mut self) {
         self.node_details.mark_loaded();
+        self.mark_node_details_dirty();
     }
 }
 
@@ -696,6 +790,8 @@ impl Data {
 
 #[cfg(test)]
 mod tests {
+    use crossbeam_channel::bounded;
+
     use super::*;
 
     #[test]
@@ -1004,5 +1100,45 @@ mod tests {
         data.update_disk_index(10);
 
         assert_eq!(data.current_disk_index_for_test(), 1);
+    }
+
+    #[test]
+    fn test_record_block_sample_marks_chain_dirty_and_notifies_ui() {
+        let (sender, receiver) = bounded(1);
+        let mut data = Data::default();
+        data.set_ui_waker(sender);
+
+        data.record_block_sample(10, 20, 30);
+
+        receiver.try_recv().expect("ui should be notified");
+        assert_eq!(
+            data.take_ui_dirty(),
+            UiDirtyState {
+                chain: true,
+                ..UiDirtyState::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_duplicate_status_message_does_not_notify_ui_again() {
+        let (sender, receiver) = bounded(1);
+        let mut data = Data::default();
+        data.set_ui_waker(sender);
+
+        data.set_status_message(StatusLevel::Warn, "warn");
+        receiver.try_recv().expect("first status should notify ui");
+        assert_eq!(
+            data.take_ui_dirty(),
+            UiDirtyState {
+                status: true,
+                ..UiDirtyState::default()
+            }
+        );
+
+        data.set_status_message(StatusLevel::Warn, "warn");
+
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(data.take_ui_dirty(), UiDirtyState::default());
     }
 }
