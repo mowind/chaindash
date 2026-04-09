@@ -36,7 +36,9 @@ use crate::{
         block,
         helpers::{
             format_grouped_u64,
+            prefix_chars,
             select_prioritized_lines,
+            suffix_chars,
             PriorityLines,
         },
     },
@@ -59,6 +61,7 @@ impl NodeWidget {
     const STACKED_LAYOUT_HEIGHT: u16 = 9;
     const HEADING_LAYOUT_HEIGHT: u16 = 6;
     const INLINE_RIGHT_PADDING: u16 = 3;
+    const TABLE_LAYOUT_MIN_WIDTH: u16 = 129;
 
     pub fn new(collect_data: SharedData) -> NodeWidget {
         NodeWidget {
@@ -92,16 +95,17 @@ impl NodeWidget {
             return String::new();
         }
 
-        if host.len() <= max_len {
+        if host.chars().count() <= max_len {
             return host.to_string();
         }
 
         if let Some((base, port)) = host.rsplit_once(':') {
             if !base.is_empty() && !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
                 let suffix = format!(":{port}");
-                if max_len > suffix.len() + 1 {
-                    let prefix_len = max_len.saturating_sub(suffix.len() + 1);
-                    return format!("{}…{}", &base[..prefix_len.min(base.len())], suffix);
+                let suffix_len = suffix.chars().count();
+                if max_len > suffix_len + 1 {
+                    let prefix_len = max_len.saturating_sub(suffix_len + 1);
+                    return format!("{}…{}", prefix_chars(base, prefix_len), suffix);
                 }
             }
         }
@@ -109,11 +113,71 @@ impl NodeWidget {
         let suffix_len = ((max_len - 1) / 3).clamp(MIN_SUFFIX_LEN, MAX_SUFFIX_LEN);
         let prefix_len = max_len.saturating_sub(suffix_len + 1);
 
-        format!(
-            "{}…{}",
-            &host[..prefix_len.min(host.len())],
-            &host[host.len().saturating_sub(suffix_len)..]
-        )
+        format!("{}…{}", prefix_chars(host, prefix_len), suffix_chars(host, suffix_len))
+    }
+
+    fn compact_list_line(
+        node: &ConsensusState,
+        area_width: u16,
+    ) -> Line<'static> {
+        let (role_text, role_color) = Self::role_badge(node);
+        let metric_style = Self::metric_value_style();
+        let mut spans = vec![
+            Span::styled(node.name.clone(), Self::node_value_style()),
+            Span::raw(" "),
+            Span::styled(role_text.to_string(), Self::role_value_style(role_color)),
+            Span::raw(" "),
+            Span::styled(format!("#{}", Self::format_number(node.current_number)), metric_style),
+        ];
+
+        if area_width >= 48 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(format!("E{}", Self::format_number(node.epoch)), metric_style));
+        }
+
+        if area_width >= 60 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(format!("V{}", Self::format_number(node.view)), metric_style));
+        }
+
+        if area_width >= 76 {
+            let host_max_len = area_width.saturating_sub(38).max(12) as usize;
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                Self::shorten_host_for_width(&node.host, host_max_len),
+                block::content_style(),
+            ));
+        }
+
+        Line::from(spans)
+    }
+
+    fn compact_list_lines(
+        &self,
+        area_width: u16,
+        max_rows: u16,
+    ) -> Vec<Line<'static>> {
+        if max_rows == 0 {
+            return Vec::new();
+        }
+
+        let show_more = max_rows > 1 && self.nodes.len() > max_rows as usize;
+        let visible_nodes = max_rows.saturating_sub(if show_more { 1 } else { 0 }) as usize;
+        let mut lines = self
+            .nodes
+            .iter()
+            .take(visible_nodes)
+            .map(|node| Self::compact_list_line(node, area_width))
+            .collect::<Vec<_>>();
+
+        if show_more {
+            lines.push(Line::from(vec![Span::styled(
+                format!("+{} more nodes", self.nodes.len().saturating_sub(visible_nodes)),
+                block::muted_style(),
+            )]));
+        }
+
+        lines
     }
 
     fn select_prioritized_lines(
@@ -649,6 +713,23 @@ impl NodeWidget {
         Paragraph::new(lines).render(inner, buf);
     }
 
+    fn render_compact_node_list(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let outer_block = block::new(&self.title);
+        let inner = outer_block.inner(area);
+        outer_block.render(area, buf);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let lines = self.compact_list_lines(inner.width, inner.height);
+        Paragraph::new(lines).render(inner, buf);
+    }
+
     fn table_row_values(
         node: &ConsensusState,
         host_max_len: usize,
@@ -770,6 +851,11 @@ impl Widget for &NodeWidget {
 
         if self.nodes.len() == 1 {
             self.render_single_node(area, buf, &self.nodes[0]);
+            return;
+        }
+
+        if area.width < NodeWidget::TABLE_LAYOUT_MIN_WIDTH {
+            self.render_compact_node_list(area, buf);
             return;
         }
 
@@ -917,6 +1003,14 @@ mod tests {
     }
 
     #[test]
+    fn test_shorten_host_for_width_handles_unicode_safely() {
+        assert_eq!(
+            NodeWidget::shorten_host_for_width("验证节点.example.internal:6790", 16),
+            "验证节点.examp…:6790"
+        );
+    }
+
+    #[test]
     fn test_table_row_values_include_expected_columns() {
         let values = NodeWidget::table_row_values(&sample_node(), 20);
 
@@ -970,5 +1064,17 @@ mod tests {
         assert_eq!(lines[6], "QC: 145,333,143");
         assert_eq!(lines[7], "Locked: 145,333,142");
         assert_eq!(lines[8], "Committed: 145,333,141");
+    }
+
+    #[test]
+    fn test_compact_list_lines_include_more_indicator() {
+        let mut widget = NodeWidget::new(create_shared_data());
+        widget.nodes = vec![sample_node(), sample_node(), sample_node()];
+
+        let lines = widget.compact_list_lines(70, 2);
+
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("Satyrs OBSERVER #145,333,141 E337,985 V2"));
+        assert_eq!(line_text(&lines[1]), "+2 more nodes");
     }
 }

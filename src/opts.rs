@@ -10,6 +10,15 @@ fn parse_positive_interval(value: &str) -> Result<Ratio<u64>, String> {
     Ok(interval)
 }
 
+fn parse_positive_u64(value: &str) -> Result<u64, String> {
+    let parsed = value.parse::<u64>().map_err(|err| err.to_string())?;
+    if parsed == 0 {
+        return Err("value must be greater than 0".to_string());
+    }
+
+    Ok(parsed)
+}
+
 #[derive(Parser, Debug)]
 pub struct Opts {
     /// The platon connection endpoints, separated by `,`.
@@ -37,7 +46,7 @@ pub struct Opts {
     pub disk_alert_threshold: f32,
 
     /// Disk refresh interval in seconds (default: 2)
-    #[arg(long, default_value = "2")]
+    #[arg(long, default_value = "2", value_parser = parse_positive_u64)]
     pub disk_refresh_interval: u64,
 
     /// Node IDs to show details for (comma-separated)
@@ -75,6 +84,21 @@ mod tests {
         let opts = Opts::parse_from(["test", "--interval", "5"]);
 
         assert_eq!(opts.interval, Ratio::from_integer(5));
+    }
+
+    #[test]
+    fn test_zero_disk_refresh_interval_is_rejected() {
+        let result = Opts::try_parse_from(["test", "--disk-refresh-interval", "0"]);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("value must be greater than 0"));
+    }
+
+    #[test]
+    fn test_positive_disk_refresh_interval_is_accepted() {
+        let opts = Opts::parse_from(["test", "--disk-refresh-interval", "5"]);
+
+        assert_eq!(opts.disk_refresh_interval, 5);
     }
 
     #[test]

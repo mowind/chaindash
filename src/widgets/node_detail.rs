@@ -40,7 +40,9 @@ use crate::{
         block,
         helpers::{
             format_grouped_u64,
+            prefix_chars,
             select_prioritized_lines,
+            suffix_chars,
             PriorityLines,
         },
     },
@@ -64,6 +66,9 @@ impl NodeDetailWidget {
     const STACKED_LAYOUT_HEIGHT: u16 = 9;
     const HEADING_LAYOUT_HEIGHT: u16 = 5;
     const INLINE_RIGHT_PADDING: u16 = 3;
+    const TABLE_LAYOUT_MIN_WIDTH: u16 = 98;
+    const FRESH_DETAIL_MAX_AGE_SECS: u64 = 30;
+    const WARN_DETAIL_MAX_AGE_SECS: u64 = 5 * 60;
 
     pub fn new(collect_data: SharedData) -> NodeDetailWidget {
         NodeDetailWidget {
@@ -149,16 +154,35 @@ impl NodeDetailWidget {
         Self::format_elapsed(Instant::now().saturating_duration_since(updated_at))
     }
 
-    fn detail_status(_detail: &NodeDetail) -> &'static str {
-        "OK"
+    fn detail_age_secs(detail: &NodeDetail) -> Option<u64> {
+        detail
+            .last_updated_at
+            .map(|updated_at| Instant::now().saturating_duration_since(updated_at).as_secs())
+    }
+
+    fn detail_status(detail: &NodeDetail) -> &'static str {
+        match Self::detail_age_secs(detail) {
+            None => "UNKNOWN",
+            Some(elapsed) if elapsed <= Self::FRESH_DETAIL_MAX_AGE_SECS => "OK",
+            Some(_) => "STALE",
+        }
     }
 
     fn name_value_style() -> Style {
         block::content_style().add_modifier(Modifier::BOLD)
     }
 
-    fn status_value_style(_detail: &NodeDetail) -> Style {
-        block::accent_style(block::METRIC_POSITIVE)
+    fn status_value_style(detail: &NodeDetail) -> Style {
+        match Self::detail_age_secs(detail) {
+            None => block::muted_style(),
+            Some(elapsed) if elapsed <= Self::FRESH_DETAIL_MAX_AGE_SECS => {
+                block::accent_style(block::METRIC_POSITIVE)
+            },
+            Some(elapsed) if elapsed <= Self::WARN_DETAIL_MAX_AGE_SECS => {
+                block::accent_style(block::ACCENT_WARN)
+            },
+            Some(_) => block::accent_style(block::ACCENT_ERROR),
+        }
     }
 
     fn updated_value_style(updated_at: Option<Instant>) -> Style {
@@ -167,9 +191,9 @@ impl NodeDetailWidget {
         };
 
         let elapsed = Instant::now().saturating_duration_since(updated_at).as_secs();
-        if elapsed <= 30 {
+        if elapsed <= Self::FRESH_DETAIL_MAX_AGE_SECS {
             Self::metric_value_style()
-        } else if elapsed <= 5 * 60 {
+        } else if elapsed <= Self::WARN_DETAIL_MAX_AGE_SECS {
             block::accent_style(block::ACCENT_WARN)
         } else {
             block::accent_style(block::ACCENT_ERROR)
@@ -181,15 +205,11 @@ impl NodeDetailWidget {
         const PREFIX_LEN: usize = 10;
         const SUFFIX_LEN: usize = 8;
 
-        if address.len() <= MAX_LEN {
+        if address.chars().count() <= MAX_LEN {
             return address.to_string();
         }
 
-        format!(
-            "{}…{}",
-            &address[..PREFIX_LEN.min(address.len())],
-            &address[address.len().saturating_sub(SUFFIX_LEN)..]
-        )
+        format!("{}…{}", prefix_chars(address, PREFIX_LEN), suffix_chars(address, SUFFIX_LEN))
     }
 
     fn shorten_address_for_width(
@@ -200,7 +220,7 @@ impl NodeDetailWidget {
         const MAX_SUFFIX_LEN: usize = 8;
         const MIN_SUFFIX_LEN: usize = 6;
 
-        if max_len == 0 || address.len() <= max_len {
+        if max_len == 0 || address.chars().count() <= max_len {
             return address.to_string();
         }
 
@@ -211,11 +231,81 @@ impl NodeDetailWidget {
         let suffix_len = ((max_len - 1) / 3).clamp(MIN_SUFFIX_LEN, MAX_SUFFIX_LEN);
         let prefix_len = max_len.saturating_sub(suffix_len + 1);
 
-        format!(
-            "{}…{}",
-            &address[..prefix_len.min(address.len())],
-            &address[address.len().saturating_sub(suffix_len)..]
-        )
+        format!("{}…{}", prefix_chars(address, prefix_len), suffix_chars(address, suffix_len))
+    }
+
+    fn compact_list_line(
+        detail: &NodeDetail,
+        area_width: u16,
+    ) -> Line<'static> {
+        let mut spans = vec![
+            Span::styled(Self::display_name(detail), Self::name_value_style()),
+            Span::raw(" "),
+            Span::styled(
+                format!("R{}", Self::format_ranking(detail.ranking)),
+                Self::metric_value_style(),
+            ),
+        ];
+
+        if area_width >= 44 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("B{}", Self::format_number(detail.block_qty)),
+                Self::metric_value_style(),
+            ));
+        }
+
+        if area_width >= 62 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(detail.block_rate.clone(), Self::reward_value_style()));
+        }
+
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            Self::detail_status(detail).to_string(),
+            Self::status_value_style(detail),
+        ));
+
+        if area_width >= 78 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                Self::format_updated_at(detail.last_updated_at),
+                Self::updated_value_style(detail.last_updated_at),
+            ));
+        }
+
+        Line::from(spans)
+    }
+
+    fn compact_list_lines(
+        &self,
+        area_width: u16,
+        max_rows: u16,
+    ) -> Vec<Line<'static>> {
+        if max_rows == 0 {
+            return Vec::new();
+        }
+
+        let show_more = max_rows > 1 && self.node_details.len() > max_rows as usize;
+        let visible_details = max_rows.saturating_sub(if show_more { 1 } else { 0 }) as usize;
+        let mut lines = self
+            .node_details
+            .iter()
+            .take(visible_details)
+            .map(|detail| Self::compact_list_line(detail, area_width))
+            .collect::<Vec<_>>();
+
+        if show_more {
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "+{} more node details",
+                    self.node_details.len().saturating_sub(visible_details)
+                ),
+                block::muted_style(),
+            )]));
+        }
+
+        lines
     }
 
     fn select_prioritized_lines(
@@ -820,6 +910,23 @@ impl NodeDetailWidget {
         Paragraph::new(lines).render(inner, buf);
     }
 
+    fn render_compact_detail_list(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let outer_block = block::new(&self.title);
+        let inner = outer_block.inner(area);
+        outer_block.render(area, buf);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let lines = self.compact_list_lines(inner.width, inner.height);
+        Paragraph::new(lines).render(inner, buf);
+    }
+
     fn table_row_values(
         detail: &NodeDetail,
         address_max_len: usize,
@@ -915,6 +1022,11 @@ impl Widget for &NodeDetailWidget {
         }
 
         if self.node_details.len() > 1 {
+            if area.width < NodeDetailWidget::TABLE_LAYOUT_MIN_WIDTH {
+                self.render_compact_detail_list(area, buf);
+                return;
+            }
+
             self.render_table(area, buf);
             return;
         }
@@ -1040,7 +1152,7 @@ mod tests {
         let row = NodeDetailWidget::table_row_values(&detail, 18);
 
         assert_eq!(row[0], " node-a");
-        assert_eq!(row[6], "OK");
+        assert_eq!(row[6], "UNKNOWN");
         assert_eq!(row[7], "-");
     }
 
@@ -1078,11 +1190,35 @@ mod tests {
     }
 
     #[test]
+    fn test_detail_status_reflects_staleness() {
+        let mut detail = sample_detail();
+        detail.last_updated_at = None;
+        assert_eq!(NodeDetailWidget::detail_status(&detail), "UNKNOWN");
+        assert_eq!(NodeDetailWidget::status_value_style(&detail).fg, block::muted_style().fg);
+
+        detail.last_updated_at = Some(Instant::now() - StdDuration::from_secs(90));
+        assert_eq!(NodeDetailWidget::detail_status(&detail), "STALE");
+        assert_eq!(NodeDetailWidget::status_value_style(&detail).fg, Some(block::ACCENT_WARN));
+    }
+
+    #[test]
     fn test_shorten_address_preserves_prefix_and_suffix() {
         assert_eq!(
             NodeDetailWidget::shorten_address("lat1zytcgvw35sagn722cneh6sz92y8j3dp8gqj5h"),
             "lat1zytcgv…dp8gqj5h"
         );
+    }
+
+    #[test]
+    fn test_shorten_address_for_width_handles_unicode_safely() {
+        let shortened = NodeDetailWidget::shorten_address_for_width(
+            "地址前缀-1234567890-验证节点-额外字段",
+            16,
+        );
+
+        assert!(shortened.starts_with("地址前缀-123"));
+        assert!(shortened.ends_with("额外字段"));
+        assert!(shortened.contains('…'));
     }
 
     #[test]
@@ -1234,5 +1370,18 @@ mod tests {
         assert_eq!(widget.node_details[0].node_name, "node-b");
         assert_eq!(widget.node_details[1].node_name, "node-a");
         assert_eq!(widget.node_details[2].node_name, "node-c");
+    }
+
+    #[test]
+    fn test_compact_list_lines_include_more_indicator() {
+        let shared_data = create_shared_data();
+        let mut widget = NodeDetailWidget::new(shared_data);
+        widget.node_details = vec![sample_detail(), sample_detail(), sample_detail()];
+
+        let lines = widget.compact_list_lines(72, 2);
+
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("node-a R7 B123,456 12.34% OK"));
+        assert_eq!(line_text(&lines[1]), "+2 more node details");
     }
 }

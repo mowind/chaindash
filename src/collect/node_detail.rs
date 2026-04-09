@@ -38,6 +38,8 @@ use crate::{
 };
 
 const NODE_DETAIL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_RANKING_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_DETAIL_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const NODE_DETAIL_STATUS_PREVIEW_COUNT: usize = 3;
 
 fn summarize_node_detail_failures(node_ids: &[String]) -> String {
@@ -75,10 +77,11 @@ pub(crate) async fn collect_node_details(
     let client = reqwest::Client::new();
     let detail_url = format!("{explorer_api_url}/staking/stakingDetails");
     let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
-    let mut interval = time::interval(Duration::from_secs(10));
+    let mut interval = time::interval(NODE_DETAIL_REFRESH_INTERVAL);
 
     fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
     fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone()).await;
+    interval.tick().await;
 
     loop {
         if stop_flag.load(Ordering::Relaxed) {
@@ -142,6 +145,31 @@ async fn fetch_all_node_details(
 }
 
 async fn fetch_node_rankings(
+    client: &reqwest::Client,
+    url: &str,
+    node_ids: &[String],
+    data: SharedData,
+) {
+    match tokio::time::timeout(
+        NODE_RANKING_REQUEST_TIMEOUT,
+        fetch_node_rankings_once(client, url, node_ids, data.clone()),
+    )
+    .await
+    {
+        Ok(()) => {},
+        Err(err) => {
+            warn_with_status(
+                &data,
+                format!(
+                    "Node ranking request timed out after {:?}: {}",
+                    NODE_RANKING_REQUEST_TIMEOUT, err
+                ),
+            );
+        },
+    }
+}
+
+async fn fetch_node_rankings_once(
     client: &reqwest::Client,
     url: &str,
     node_ids: &[String],

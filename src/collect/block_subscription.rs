@@ -15,6 +15,7 @@ use alloy::{
     },
 };
 use futures::StreamExt;
+use log::warn;
 use tokio::time::{
     self,
     Duration,
@@ -123,7 +124,14 @@ pub(crate) async fn run_block_subscription_loop(
                             break;
                         },
                     };
-                    let txs = block.map(|b| b.transactions.len() as u64).unwrap_or(0);
+                    let Some(block) = block else {
+                        warn!(
+                            "Block body unavailable for {} via {}; skipping sample",
+                            head.number, endpoint_name
+                        );
+                        continue;
+                    };
+                    let txs = block.transactions.len() as u64;
 
                     let mut data = lock_or_panic(data);
                     data.record_block_sample(head.number, head.timestamp, txs);

@@ -294,6 +294,8 @@ async fn main() -> Result<(), ChaindashError> {
         return Err(err);
     }
 
+    let mut exit_error = None;
+
     'event_loop: loop {
         select! {
             recv(ctrl_c_events) -> _ => {
@@ -304,6 +306,7 @@ async fn main() -> Result<(), ChaindashError> {
                 update_widgets(&mut app.widgets, update_seconds);
                 if let Err(err) = draw_app(&mut terminal, &mut app) {
                     error!("绘制界面失败: {err}");
+                    exit_error = Some(err);
                     break 'event_loop;
                 }
             }
@@ -319,6 +322,7 @@ async fn main() -> Result<(), ChaindashError> {
                                 app.handle_shift_tab_key();
                                 if let Err(err) = draw_app(&mut terminal, &mut app) {
                                     error!("绘制界面失败: {err}");
+                                    exit_error = Some(err);
                                     break 'event_loop;
                                 }
                             }
@@ -330,6 +334,7 @@ async fn main() -> Result<(), ChaindashError> {
                                 app.handle_tab_key();
                                 if let Err(err) = draw_app(&mut terminal, &mut app) {
                                     error!("绘制界面失败: {err}");
+                                    exit_error = Some(err);
                                     break 'event_loop;
                                 }
                             }
@@ -338,6 +343,7 @@ async fn main() -> Result<(), ChaindashError> {
                                 app.handle_shift_tab_key();
                                 if let Err(err) = draw_app(&mut terminal, &mut app) {
                                     error!("绘制界面失败: {err}");
+                                    exit_error = Some(err);
                                     break 'event_loop;
                                 }
                             }
@@ -351,6 +357,7 @@ async fn main() -> Result<(), ChaindashError> {
                     Event::Resize(_width, _height) => {
                         if let Err(err) = draw_app(&mut terminal, &mut app) {
                             error!("绘制界面失败: {err}");
+                            exit_error = Some(err);
                             break 'event_loop;
                         }
                     }
@@ -367,6 +374,10 @@ async fn main() -> Result<(), ChaindashError> {
     match collector_join_result {
         Ok(result) => result?,
         Err(err) => return Err(ChaindashError::Other(format!("collector task join error: {err}"))),
+    }
+
+    if let Some(err) = exit_error {
+        return Err(err);
     }
 
     Ok(())
