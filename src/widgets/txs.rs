@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::{
     collect::SharedData,
+    sync::lock_or_panic,
     update::UpdatableWidget,
     widgets::{
         block,
@@ -99,7 +100,7 @@ impl TxsWidget {
 
 impl UpdatableWidget for TxsWidget {
     fn update(&mut self) {
-        let mut collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
+        let mut collect_data = lock_or_panic(&self.collect_data);
         self.cur_num = collect_data.cur_block_number();
         self.cur_txs = collect_data.cur_txs();
         self.max = collect_data.max_txs();

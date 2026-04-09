@@ -11,6 +11,7 @@ use ratatui::{
 
 use crate::{
     collect::SharedData,
+    sync::lock_or_panic,
     update::UpdatableWidget,
     widgets::{
         block,
@@ -96,7 +97,7 @@ impl TimeWidget {
 
 impl UpdatableWidget for TimeWidget {
     fn update(&mut self) {
-        let mut collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
+        let mut collect_data = lock_or_panic(&self.collect_data);
         self.cur_num = collect_data.cur_block_number();
         self.cur_time = collect_data.cur_interval();
         self.max_time = collect_data.max_interval();

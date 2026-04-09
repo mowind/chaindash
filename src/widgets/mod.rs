@@ -2,6 +2,7 @@ pub(crate) mod block;
 mod chart;
 #[cfg(target_family = "unix")]
 mod disk_list;
+pub(crate) mod helpers;
 mod node;
 mod node_detail;
 #[cfg(target_family = "unix")]

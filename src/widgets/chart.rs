@@ -10,7 +10,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::widgets::block;
+use crate::widgets::{
+    block,
+    helpers::format_grouped_u64,
+};
 
 pub const MAX_DATA_POINTS: usize = 200;
 pub const NARROW_CHART_WIDTH: u16 = 40;
@@ -247,15 +250,7 @@ pub fn info_labels(area_width: u16) -> (&'static str, &'static str, &'static str
 }
 
 pub fn format_grouped_number(value: u64) -> String {
-    let digits = value.to_string();
-    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, ch) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            formatted.push(',');
-        }
-        formatted.push(ch);
-    }
-    formatted.chars().rev().collect()
+    format_grouped_u64(value)
 }
 
 fn display_width(text: &str) -> usize {

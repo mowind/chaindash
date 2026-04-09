@@ -27,6 +27,7 @@ use crate::{
         SharedData,
         SystemStats,
     },
+    sync::lock_or_panic,
     update::UpdatableWidget,
     widgets::block,
 };
@@ -104,7 +105,7 @@ impl SystemSummaryWidget {
 
 impl UpdatableWidget for SystemSummaryWidget {
     fn update(&mut self) {
-        let collect_data = self.collect_data.lock().expect("mutex poisoned - recovering");
+        let collect_data = lock_or_panic(&self.collect_data);
         self.system_stats = collect_data.system_stats();
         debug!("update system stats: {:?}", &self.system_stats);
     }

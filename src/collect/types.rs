@@ -116,6 +116,7 @@ pub(crate) struct NodeDetail {
         deserialize_with = "deserialize_string_or_default"
     )]
     pub reward_value: String,
+    // Upstream explorer API field is spelled `denefitAddr`; keep this rename for compatibility.
     #[serde(
         rename = "denefitAddr",
         default,

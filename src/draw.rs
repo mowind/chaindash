@@ -30,6 +30,7 @@ use crate::{
         ChaindashError,
         Result,
     },
+    sync::lock_or_panic,
     widgets::block,
 };
 
@@ -41,7 +42,7 @@ pub fn draw<B: Backend>(
     app: &mut App,
 ) -> Result<()> {
     let status_message = {
-        let mut data = app.data.lock().expect("mutex poisoned - recovering");
+        let data = lock_or_panic(&app.data);
         data.status_message()
     };
 

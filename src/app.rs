@@ -4,6 +4,7 @@ use crate::{
         SharedData,
     },
     opts::Opts,
+    sync::lock_or_panic,
     widgets::{
         DiskListWidget,
         NodeDetailWidget,
@@ -23,7 +24,7 @@ impl App {
     /// 处理Tab键事件，切换当前选中的磁盘
     #[cfg(target_family = "unix")]
     pub fn handle_tab_key(&self) {
-        let mut data = self.data.lock().expect("mutex poisoned - recovering");
+        let mut data = lock_or_panic(&self.data);
         let stats = data.system_stats();
         let disk_count = stats.disk_details.len();
         if disk_count > 0 {
@@ -43,7 +44,7 @@ impl App {
     /// 处理Shift+Tab键事件，切换到上一个磁盘
     #[cfg(target_family = "unix")]
     pub fn handle_shift_tab_key(&self) {
-        let mut data = self.data.lock().expect("mutex poisoned - recovering");
+        let mut data = lock_or_panic(&self.data);
         let stats = data.system_stats();
         let disk_count = stats.disk_details.len();
 
@@ -77,10 +78,7 @@ pub struct Widgets {
     pub node_details: NodeDetailWidget,
 }
 
-pub fn setup_app(
-    opts: &Opts,
-    _program_name: &str,
-) -> App {
+pub fn setup_app(opts: &Opts) -> App {
     let data = Data::new();
     let txs = TxsWidget::new(opts.interval, data.clone());
     let time = TimeWidget::new(opts.interval, data.clone());
@@ -144,7 +142,7 @@ mod tests {
     #[test]
     fn test_setup_app_creates_app_with_widgets() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         assert_eq!(app.data.lock().expect("mutex poisoned").cur_block_number(), 0);
     }
@@ -152,7 +150,7 @@ mod tests {
     #[test]
     fn test_setup_app_initializes_shared_data() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         let data = app.data.lock().expect("mutex poisoned");
         assert_eq!(data.cur_block_number(), 0);
@@ -163,7 +161,7 @@ mod tests {
     #[test]
     fn test_app_data_is_shared_with_widgets() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         let data_clone = app.data.clone();
         {
@@ -193,7 +191,7 @@ mod tests {
     #[test]
     fn test_handle_tab_key_empty_disk_list() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         let index_before = {
             let data = app.data.lock().expect("mutex poisoned");
@@ -214,7 +212,7 @@ mod tests {
     #[test]
     fn test_handle_tab_key_single_disk() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -235,7 +233,7 @@ mod tests {
     #[test]
     fn test_handle_tab_key_multiple_disks() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -266,7 +264,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_empty_disk_list() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         let index_before = {
             let data = app.data.lock().expect("mutex poisoned");
@@ -287,7 +285,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_single_disk() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -308,7 +306,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_wrap_around() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -333,7 +331,7 @@ mod tests {
     #[test]
     fn test_handle_shift_tab_key_multiple_navigation() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         {
             let mut data = app.data.lock().expect("mutex poisoned");
@@ -363,7 +361,7 @@ mod tests {
     #[test]
     fn test_widgets_struct_fields() {
         let opts = create_test_opts();
-        let app = setup_app(&opts, "chaindash");
+        let app = setup_app(&opts);
 
         let _txs_ref = &app.widgets.txs;
         let _time_ref = &app.widgets.time;

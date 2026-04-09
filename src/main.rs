@@ -3,6 +3,7 @@ mod collect;
 mod draw;
 mod error;
 mod opts;
+mod sync;
 mod update;
 mod widgets;
 
@@ -19,7 +20,10 @@ use std::{
     time::Duration,
 };
 
-use app::setup_app;
+use app::{
+    setup_app,
+    App,
+};
 use clap::Parser;
 use crossbeam_channel::{
     select,
@@ -40,16 +44,17 @@ use crossterm::{
 use draw::draw;
 use error::ChaindashError;
 use log::error;
-//use log::{debug, info};
 use num_rational::Ratio;
 use opts::Opts;
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{
+        Backend,
+        CrosstermBackend,
+    },
     Terminal,
 };
+use sync::lock_or_panic;
 use update::update_widgets;
-
-const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 
 fn setup_terminal() -> Result<(), ChaindashError> {
     let mut stdout = io::stdout();
@@ -219,16 +224,25 @@ fn setup_panic_hook() {
     }));
 }
 
+fn draw_app<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> error::Result<()> {
+    {
+        let mut data = lock_or_panic(&app.data);
+        data.expire_status_message_if_needed();
+    }
+
+    draw(terminal, app)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ChaindashError> {
     better_panic::install();
 
     let opts: Opts = Opts::parse();
-    if opts.interval == Ratio::from_integer(0) {
-        return Err(ChaindashError::Other("interval must be greater than 0".to_string()));
-    }
 
-    let mut app = setup_app(&opts, PROGRAM_NAME);
+    let mut app = setup_app(&opts);
 
     if let Err(e) = setup_logfile(Path::new("./errors.log"), opts.debug) {
         eprintln!("Failed to setup logfile: {}", e);
@@ -273,7 +287,7 @@ async fn main() -> Result<(), ChaindashError> {
     };
 
     update_widgets(&mut app.widgets, update_seconds);
-    if let Err(err) = draw(&mut terminal, &mut app) {
+    if let Err(err) = draw_app(&mut terminal, &mut app) {
         collector.stop();
         terminal_guard.cleanup();
         let _ = collector_handle.await;
@@ -288,7 +302,7 @@ async fn main() -> Result<(), ChaindashError> {
             recv(ticker)->_ => {
                 update_seconds += draw_interval;
                 update_widgets(&mut app.widgets, update_seconds);
-                if let Err(err) = draw(&mut terminal, &mut app) {
+                if let Err(err) = draw_app(&mut terminal, &mut app) {
                     error!("绘制界面失败: {err}");
                     break 'event_loop;
                 }
@@ -303,7 +317,7 @@ async fn main() -> Result<(), ChaindashError> {
                         match key_event.code {
                             KeyCode::BackTab => {
                                 app.handle_shift_tab_key();
-                                if let Err(err) = draw(&mut terminal, &mut app) {
+                                if let Err(err) = draw_app(&mut terminal, &mut app) {
                                     error!("绘制界面失败: {err}");
                                     break 'event_loop;
                                 }
@@ -314,7 +328,7 @@ async fn main() -> Result<(), ChaindashError> {
                             KeyCode::Tab if key_event.modifiers.is_empty() => {
                                 // Tab键切换磁盘
                                 app.handle_tab_key();
-                                if let Err(err) = draw(&mut terminal, &mut app) {
+                                if let Err(err) = draw_app(&mut terminal, &mut app) {
                                     error!("绘制界面失败: {err}");
                                     break 'event_loop;
                                 }
@@ -322,7 +336,7 @@ async fn main() -> Result<(), ChaindashError> {
                             KeyCode::Tab if key_event.modifiers == KeyModifiers::SHIFT => {
                                 // Shift+Tab键切换到上一个磁盘
                                 app.handle_shift_tab_key();
-                                if let Err(err) = draw(&mut terminal, &mut app) {
+                                if let Err(err) = draw_app(&mut terminal, &mut app) {
                                     error!("绘制界面失败: {err}");
                                     break 'event_loop;
                                 }
@@ -335,7 +349,7 @@ async fn main() -> Result<(), ChaindashError> {
                     }
 
                     Event::Resize(_width, _height) => {
-                        if let Err(err) = draw(&mut terminal, &mut app) {
+                        if let Err(err) = draw_app(&mut terminal, &mut app) {
                             error!("绘制界面失败: {err}");
                             break 'event_loop;
                         }

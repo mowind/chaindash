@@ -1,9 +1,6 @@
-use std::{
-    collections::BTreeSet,
-    time::{
-        Duration as StdDuration,
-        Instant,
-    },
+use std::time::{
+    Duration as StdDuration,
+    Instant,
 };
 
 use num_rational::Ratio;
@@ -37,12 +34,18 @@ use crate::{
         NodeDetail,
         SharedData,
     },
+    sync::lock_or_panic,
     update::UpdatableWidget,
-    widgets::block,
+    widgets::{
+        block,
+        helpers::{
+            format_grouped_u64,
+            select_prioritized_lines,
+            PriorityLines,
+        },
+    },
 };
 
-type PriorityLine = (u8, Line<'static>);
-type PriorityLines = Vec<PriorityLine>;
 type DoublePriorityLines = (PriorityLines, PriorityLines);
 
 pub struct NodeDetailWidget {
@@ -101,15 +104,7 @@ impl NodeDetailWidget {
     }
 
     fn format_number(value: u64) -> String {
-        let digits = value.to_string();
-        let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
-        for (index, ch) in digits.chars().rev().enumerate() {
-            if index > 0 && index % 3 == 0 {
-                formatted.push(',');
-            }
-            formatted.push(ch);
-        }
-        formatted.chars().rev().collect()
+        format_grouped_u64(value)
     }
 
     fn format_amount(value: f64) -> String {
@@ -227,27 +222,7 @@ impl NodeDetailWidget {
         specs: PriorityLines,
         max_rows: u16,
     ) -> Vec<Line<'static>> {
-        let max_rows = max_rows as usize;
-        if max_rows == 0 {
-            return Vec::new();
-        }
-
-        if specs.len() <= max_rows {
-            return specs.into_iter().map(|(_, line)| line).collect();
-        }
-
-        let mut ranked: Vec<(usize, u8)> =
-            specs.iter().enumerate().map(|(index, (priority, _))| (index, *priority)).collect();
-        ranked.sort_by_key(|(index, priority)| (*priority, *index));
-
-        let keep: BTreeSet<usize> =
-            ranked.into_iter().take(max_rows).map(|(index, _)| index).collect();
-
-        specs
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, (_, line))| keep.contains(&index).then_some(line))
-            .collect()
+        select_prioritized_lines(specs, max_rows)
     }
 
     fn inline_value_max_len(
@@ -919,7 +894,7 @@ impl NodeDetailWidget {
 
 impl UpdatableWidget for NodeDetailWidget {
     fn update(&mut self) {
-        let data = self.collect_data.lock().expect("mutex poisoned - recovering");
+        let data = lock_or_panic(&self.collect_data);
         self.node_details = data.node_details();
         self.loading = self.node_details.is_empty() && !data.node_details_loaded();
     }
