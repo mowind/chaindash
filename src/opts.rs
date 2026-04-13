@@ -27,6 +27,8 @@ pub enum TelegramNotifyEvent {
     ConnectionRecovered,
     Ranking,
     RankingChanged,
+    Daily,
+    DailySummary,
 }
 
 fn parse_telegram_notify_event(value: &str) -> Result<TelegramNotifyEvent, String> {
@@ -39,9 +41,12 @@ fn parse_telegram_notify_event(value: &str) -> Result<TelegramNotifyEvent, Strin
         },
         "ranking" => Ok(TelegramNotifyEvent::Ranking),
         "ranking-changed" | "ranking_changed" => Ok(TelegramNotifyEvent::RankingChanged),
+        "daily" => Ok(TelegramNotifyEvent::Daily),
+        "daily-summary" | "daily_summary" => Ok(TelegramNotifyEvent::DailySummary),
         _ => Err(format!(
             "invalid telegram notify event: {value}. valid values: all, connection, \
-             connection-failed, connection-recovered, ranking, ranking-changed"
+             connection-failed, connection-recovered, ranking, ranking-changed, daily, \
+             daily-summary"
         )),
     }
 }
@@ -176,6 +181,10 @@ pub struct Opts {
     #[arg(long)]
     pub telegram_template_quiet_summary: Option<String>,
 
+    /// Template for daily-summary notifications
+    #[arg(long)]
+    pub telegram_template_daily_summary: Option<String>,
+
     /// Telegram Bot API base URL
     #[arg(long, default_value = "https://api.telegram.org")]
     pub telegram_api_url: String,
@@ -253,6 +262,8 @@ mod tests {
             "{prefix} {node}: {previous}->{current}",
             "--telegram-template-quiet-summary",
             "{prefix} summary {count}\\n{details}",
+            "--telegram-template-daily-summary",
+            "{prefix} daily {date}\\n{details}",
         ]);
 
         assert_eq!(opts.telegram_bot_token.as_deref(), Some("bot-token"));
@@ -284,6 +295,10 @@ mod tests {
         assert_eq!(
             opts.telegram_template_quiet_summary.as_deref(),
             Some("{prefix} summary {count}\\n{details}")
+        );
+        assert_eq!(
+            opts.telegram_template_daily_summary.as_deref(),
+            Some("{prefix} daily {date}\\n{details}")
         );
         assert_eq!(opts.telegram_api_url, "https://api.telegram.org");
     }

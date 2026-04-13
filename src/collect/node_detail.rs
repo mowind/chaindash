@@ -10,6 +10,10 @@ use std::{
     time::Instant,
 };
 
+use chrono::{
+    Local,
+    NaiveDate,
+};
 use log::{
     debug,
     warn,
@@ -42,6 +46,10 @@ const NODE_DETAIL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_RANKING_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_DETAIL_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const NODE_DETAIL_STATUS_PREVIEW_COUNT: usize = 3;
+
+fn next_daily_summary_date() -> NaiveDate {
+    Local::now().date_naive().succ_opt().unwrap_or_else(|| Local::now().date_naive())
+}
 
 fn summarize_node_detail_failures(node_ids: &[String]) -> String {
     if node_ids.is_empty() {
@@ -80,9 +88,11 @@ pub(crate) async fn collect_node_details(
     let detail_url = format!("{explorer_api_url}/staking/stakingDetails");
     let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
     let mut interval = time::interval(NODE_DETAIL_REFRESH_INTERVAL);
+    let mut next_daily_summary_date = next_daily_summary_date();
 
     fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
     fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone(), notifier.clone()).await;
+    maybe_send_daily_summary(&data, notifier.as_ref(), &mut next_daily_summary_date).await;
     interval.tick().await;
 
     loop {
@@ -93,9 +103,33 @@ pub(crate) async fn collect_node_details(
         interval.tick().await;
         fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
         fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone(), notifier.clone()).await;
+        maybe_send_daily_summary(&data, notifier.as_ref(), &mut next_daily_summary_date).await;
     }
 
     Ok(())
+}
+
+async fn maybe_send_daily_summary(
+    data: &SharedData,
+    notifier: Option<&Arc<TelegramNotifier>>,
+    next_daily_summary_date: &mut NaiveDate,
+) {
+    let Some(notifier) = notifier else {
+        return;
+    };
+
+    let today = Local::now().date_naive();
+    if today < *next_daily_summary_date {
+        return;
+    }
+
+    let node_details = {
+        let data = lock_or_panic(data);
+        data.node_details()
+    };
+
+    notifier.notify_daily_node_snapshot(&today.to_string(), &node_details).await;
+    *next_daily_summary_date = today.succ_opt().unwrap_or(today);
 }
 
 async fn fetch_all_node_details(
@@ -391,6 +425,13 @@ mod tests {
         let summary = summarize_node_detail_failures(&["node-a".to_string()]);
 
         assert_eq!(summary, "Node detail unavailable for node-a");
+    }
+
+    #[test]
+    fn test_next_daily_summary_date_advances_to_tomorrow() {
+        let today = Local::now().date_naive();
+
+        assert!(next_daily_summary_date() >= today);
     }
 
     #[test]

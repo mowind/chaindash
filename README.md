@@ -10,7 +10,7 @@ PlatON 节点终端仪表盘，使用 Rust + Ratatui + Crossterm 构建。
 - Unix 平台下展示本机 CPU / 内存 / 磁盘 / 网络摘要
 - Unix 平台下支持磁盘挂载点自动发现、手动指定挂载点与使用率告警
 - 顶部状态栏展示连接成功、重试、接口异常、磁盘告警等运行状态
-- 可选通过 Telegram Bot 推送节点连接失败 / 恢复、节点排名变化通知，并支持静默时间段、静默期摘要与限流防刷屏
+- 可选通过 Telegram Bot 推送节点连接失败 / 恢复、节点排名变化、每日节点快照通知，并支持静默时间段、静默期摘要与限流防刷屏
 - 支持多个 WebSocket 端点，断线后自动重连并按顺序切换到可用端点
 - 支持整数和分数刷新间隔，例如 `1`、`3/2`、`2/3`
 - 适配窄终端的紧凑布局
@@ -90,7 +90,8 @@ cargo run -- \
   --telegram-notify-events connection,ranking-changed \
   --telegram-quiet-hours 23:00-08:00 \
   --telegram-rate-limit-seconds 120 \
-  --telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})"
+  --telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})" \
+  --telegram-template-daily-summary "{prefix} {date}\n{details}"
 ```
 
 ### 使用 Docker 镜像运行
@@ -114,13 +115,14 @@ cargo run -- \
 | `--explorer-api-url <URL>` | `https://scan.platon.network/browser-server` | PlatON Explorer API 基础地址。 |
 | `--telegram-bot-token <TOKEN>` | - | Telegram Bot Token。与 `--telegram-chat-id` 一起使用时启用通知。 |
 | `--telegram-chat-id <CHAT_ID[,CHAT_ID...]>` | - | Telegram Chat ID 列表，支持逗号分隔多个接收方。 |
-| `--telegram-notify-events <EVENT[,EVENT...]>` | 全部事件 | Telegram 通知事件过滤。支持：`all`、`connection`、`connection-failed`、`connection-recovered`、`ranking`、`ranking-changed`。 |
+| `--telegram-notify-events <EVENT[,EVENT...]>` | 全部事件 | Telegram 通知事件过滤。支持：`all`、`connection`、`connection-failed`、`connection-recovered`、`ranking`、`ranking-changed`、`daily`、`daily-summary`。 |
 | `--telegram-quiet-hours <HH:MM-HH:MM>` | - | Telegram 通知静默时间段，使用本地时间，例如 `23:00-08:00`。 |
 | `--telegram-rate-limit-seconds <SECONDS>` | `0` | 同一事件键的最小通知间隔，`0` 表示不限制。 |
 | `--telegram-template-connection-failed <TEMPLATE>` | 默认模板 | 连接失败通知模板。支持占位符：`{prefix}`、`{node}`、`{reason}`。 |
 | `--telegram-template-connection-recovered <TEMPLATE>` | 默认模板 | 连接恢复通知模板。支持占位符：`{prefix}`、`{node}`。 |
 | `--telegram-template-ranking-changed <TEMPLATE>` | 默认模板 | 排名变化通知模板。支持占位符：`{prefix}`、`{icon}`、`{node}`、`{previous}`、`{current}`、`{delta}`、`{delta_text}`、`{direction}`。 |
 | `--telegram-template-quiet-summary <TEMPLATE>` | 默认模板 | 静默期摘要模板。支持占位符：`{prefix}`、`{count}`、`{details}`。可用 `\n` 表示换行。 |
+| `--telegram-template-daily-summary <TEMPLATE>` | 默认模板 | 每日节点快照模板。支持占位符：`{prefix}`、`{date}`、`{count}`、`{details}`。可用 `\n` 表示换行。 |
 | `--telegram-api-url <URL>` | `https://api.telegram.org` | Telegram Bot API 基础地址。 |
 
 ## 界面布局
@@ -183,16 +185,20 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - 节点连接失败通知
 - 节点连接恢复通知
 - `--node-id` 对应节点的排名变化通知
+- 每日 0 点后的首个采集周期推送当前节点出块数量与 `reward_value` 快照
 
 支持使用 `--telegram-notify-events` 过滤通知事件，例如：
 
 - `--telegram-notify-events connection`：仅发送连接失败 / 恢复通知
 - `--telegram-notify-events connection-failed`：仅发送连接失败通知
 - `--telegram-notify-events ranking-changed`：仅发送排名变化通知
+- `--telegram-notify-events daily-summary`：仅发送每日节点快照通知
 
 `--telegram-chat-id` 支持配置多个 chat id，程序会向每个接收方分别推送同一条通知。
 
 `--telegram-quiet-hours` 可配置本地时间静默窗口；落在该时间段内的通知会被缓存。静默结束后的下一次通知机会，会先发送一条静默期摘要。
+
+> `daily-summary` 为保证每日推送，会忽略静默时间段设置。
 
 `--telegram-rate-limit-seconds` 可限制相同事件键的发送频率，例如同一节点的排名变化、同一节点的连接失败 / 恢复通知，避免短时间内频繁刷屏。
 
@@ -201,6 +207,7 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - `--telegram-template-connection-failed "{prefix} FAIL {node}: {reason}"`
 - `--telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})"`
 - `--telegram-template-quiet-summary "{prefix} summary {count}\\n{details}"`
+- `--telegram-template-daily-summary "{prefix} {date}\\n{details}"`
 
 其中：
 
@@ -208,8 +215,10 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - `{delta}` 是纯数字变化量，例如 `2`
 - `{delta_text}` 带正负号，例如 `+2` / `-3`
 - `{direction}` 为 `up` / `down`
+- `{date}` 为每日快照日期，例如 `2026-04-14`
+- `{details}` 为逐节点详情列表，例如 `验证节点A：出块 123，reward_value 45.6`
 
-> 排名变化通知依赖节点详情采集，因此需要同时配置 `--node-id`。
+> 排名变化通知和每日节点快照都依赖节点详情采集，因此需要同时配置 `--node-id`。
 
 ### 4. Unix 磁盘监控
 

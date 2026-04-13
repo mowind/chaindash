@@ -24,6 +24,7 @@ use serde::{
 };
 
 use crate::{
+    collect::NodeDetail,
     error::{
         ChaindashError,
         Result,
@@ -41,6 +42,7 @@ const DEFAULT_CONNECTION_RECOVERED_TEMPLATE: &str = "{prefix} ✅ {node} 连接�
 const DEFAULT_RANKING_CHANGED_TEMPLATE: &str =
     "{prefix} {icon} {node} 排名 {previous} → {current}（{delta_text}）";
 const DEFAULT_QUIET_SUMMARY_TEMPLATE: &str = "{prefix} 🌙 静默期摘要（共 {count} 条）\n{details}";
+const DEFAULT_DAILY_SUMMARY_TEMPLATE: &str = "{prefix} 📊 每日节点快照（{date}）\n{details}";
 const QUIET_SUMMARY_PREVIEW_LIMIT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,7 @@ enum NotificationEventKind {
     ConnectionFailed,
     ConnectionRecovered,
     RankingChanged,
+    DailySummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,7 @@ struct TelegramNotificationFilter {
     connection_failed: bool,
     connection_recovered: bool,
     ranking_changed: bool,
+    daily_summary: bool,
 }
 
 impl TelegramNotificationFilter {
@@ -63,6 +67,7 @@ impl TelegramNotificationFilter {
             connection_failed: true,
             connection_recovered: true,
             ranking_changed: true,
+            daily_summary: true,
         }
     }
 
@@ -71,6 +76,7 @@ impl TelegramNotificationFilter {
             connection_failed: false,
             connection_recovered: false,
             ranking_changed: false,
+            daily_summary: false,
         }
     }
 
@@ -92,6 +98,9 @@ impl TelegramNotificationFilter {
                 TelegramNotifyEvent::Ranking | TelegramNotifyEvent::RankingChanged => {
                     filter.ranking_changed = true;
                 },
+                TelegramNotifyEvent::Daily | TelegramNotifyEvent::DailySummary => {
+                    filter.daily_summary = true;
+                },
             }
         }
 
@@ -106,6 +115,7 @@ impl TelegramNotificationFilter {
             NotificationEventKind::ConnectionFailed => self.connection_failed,
             NotificationEventKind::ConnectionRecovered => self.connection_recovered,
             NotificationEventKind::RankingChanged => self.ranking_changed,
+            NotificationEventKind::DailySummary => self.daily_summary,
         }
     }
 }
@@ -116,6 +126,7 @@ struct TelegramTemplates {
     connection_recovered: String,
     ranking_changed: String,
     quiet_summary: String,
+    daily_summary: String,
 }
 
 impl TelegramTemplates {
@@ -140,6 +151,11 @@ impl TelegramTemplates {
                 opts.telegram_template_quiet_summary
                     .as_deref()
                     .unwrap_or(DEFAULT_QUIET_SUMMARY_TEMPLATE),
+            ),
+            daily_summary: normalize_template(
+                opts.telegram_template_daily_summary
+                    .as_deref()
+                    .unwrap_or(DEFAULT_DAILY_SUMMARY_TEMPLATE),
             ),
         }
     }
@@ -273,6 +289,17 @@ fn display_node_name(node_name: &str) -> &str {
     }
 }
 
+fn format_reward_value(value: f64) -> String {
+    let mut rendered = format!("{value:.4}");
+    while rendered.contains('.') && rendered.ends_with('0') {
+        rendered.pop();
+    }
+    if rendered.ends_with('.') {
+        rendered.pop();
+    }
+    rendered
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Healthy,
@@ -343,6 +370,7 @@ impl QuietSummaryBuffer {
             NotificationEventKind::ConnectionFailed => self.connection_failed.record(subject),
             NotificationEventKind::ConnectionRecovered => self.connection_recovered.record(subject),
             NotificationEventKind::RankingChanged => self.ranking_changed.record(subject),
+            NotificationEventKind::DailySummary => {},
         }
     }
 
@@ -580,6 +608,20 @@ impl TelegramNotifier {
         .await;
     }
 
+    pub(crate) async fn notify_daily_node_snapshot(
+        &self,
+        date: &str,
+        node_details: &[NodeDetail],
+    ) {
+        self.send_if_enabled(
+            NotificationEventKind::DailySummary,
+            &format!("daily-summary:{date}"),
+            date,
+            self.render_daily_summary_message(date, node_details),
+        )
+        .await;
+    }
+
     fn connection_key(
         node_name: &str,
         node_url: &str,
@@ -656,6 +698,40 @@ impl TelegramNotifier {
         )
     }
 
+    fn render_daily_summary_message(
+        &self,
+        date: &str,
+        node_details: &[NodeDetail],
+    ) -> String {
+        let count = node_details.len().to_string();
+        let details = if node_details.is_empty() {
+            "暂无可用节点详情".to_string()
+        } else {
+            node_details
+                .iter()
+                .map(|detail| {
+                    format!(
+                        "{}：出块 {}，reward_value {}",
+                        display_node_name(&detail.node_name),
+                        detail.block_qty,
+                        format_reward_value(detail.reward_value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        render_template(
+            &self.config.templates.daily_summary,
+            &[
+                ("prefix", TELEGRAM_MESSAGE_PREFIX),
+                ("date", date),
+                ("count", count.as_str()),
+                ("details", details.as_str()),
+            ],
+        )
+    }
+
     async fn send_if_enabled(
         &self,
         event: NotificationEventKind,
@@ -668,11 +744,12 @@ impl TelegramNotifier {
         }
 
         let quiet_time_now = self.config.is_quiet_time_now();
+        let quiet_hours_enabled = !matches!(event, NotificationEventKind::DailySummary);
         let decision = {
             let mut state = self.state.lock().expect("telegram notifier mutex poisoned");
             if !state.allow_delivery(rate_limit_key, Instant::now(), self.config.rate_limit) {
                 SendDecision::SuppressedByRateLimit
-            } else if quiet_time_now {
+            } else if quiet_hours_enabled && quiet_time_now {
                 state.record_quiet_summary(event, summary_subject);
                 SendDecision::SuppressedByQuietHours
             } else {
@@ -838,6 +915,7 @@ mod tests {
             connection_recovered: DEFAULT_CONNECTION_RECOVERED_TEMPLATE.to_string(),
             ranking_changed: DEFAULT_RANKING_CHANGED_TEMPLATE.to_string(),
             quiet_summary: DEFAULT_QUIET_SUMMARY_TEMPLATE.to_string(),
+            daily_summary: DEFAULT_DAILY_SUMMARY_TEMPLATE.to_string(),
         })
     }
 
@@ -848,6 +926,7 @@ mod tests {
         assert!(filter.allows(NotificationEventKind::ConnectionFailed));
         assert!(filter.allows(NotificationEventKind::ConnectionRecovered));
         assert!(filter.allows(NotificationEventKind::RankingChanged));
+        assert!(filter.allows(NotificationEventKind::DailySummary));
     }
 
     #[test]
@@ -916,11 +995,13 @@ mod tests {
         let filter = TelegramNotificationFilter::from_opts(&[
             TelegramNotifyEvent::Connection,
             TelegramNotifyEvent::RankingChanged,
+            TelegramNotifyEvent::DailySummary,
         ]);
 
         assert!(filter.allows(NotificationEventKind::ConnectionFailed));
         assert!(filter.allows(NotificationEventKind::ConnectionRecovered));
         assert!(filter.allows(NotificationEventKind::RankingChanged));
+        assert!(filter.allows(NotificationEventKind::DailySummary));
     }
 
     #[test]
@@ -931,6 +1012,7 @@ mod tests {
         assert!(!filter.allows(NotificationEventKind::ConnectionFailed));
         assert!(filter.allows(NotificationEventKind::ConnectionRecovered));
         assert!(!filter.allows(NotificationEventKind::RankingChanged));
+        assert!(!filter.allows(NotificationEventKind::DailySummary));
     }
 
     #[test]
@@ -953,6 +1035,7 @@ mod tests {
         assert!(config.enabled_events.allows(NotificationEventKind::ConnectionFailed));
         assert!(config.enabled_events.allows(NotificationEventKind::ConnectionRecovered));
         assert!(config.enabled_events.allows(NotificationEventKind::RankingChanged));
+        assert!(!config.enabled_events.allows(NotificationEventKind::DailySummary));
     }
 
     #[test]
@@ -971,6 +1054,8 @@ mod tests {
             "{prefix} {node} {previous}->{current} {delta_text}",
             "--telegram-template-quiet-summary",
             "{prefix} summary {count}\\n{details}",
+            "--telegram-template-daily-summary",
+            "{prefix} daily {date}\\n{details}",
         ]);
 
         let config = TelegramConfig::from_opts(&opts)
@@ -984,6 +1069,7 @@ mod tests {
             "{prefix} {node} {previous}->{current} {delta_text}"
         );
         assert_eq!(config.templates.quiet_summary, "{prefix} summary {count}\n{details}");
+        assert_eq!(config.templates.daily_summary, "{prefix} daily {date}\n{details}");
     }
 
     #[test]
@@ -993,6 +1079,7 @@ mod tests {
             connection_recovered: DEFAULT_CONNECTION_RECOVERED_TEMPLATE.to_string(),
             ranking_changed: DEFAULT_RANKING_CHANGED_TEMPLATE.to_string(),
             quiet_summary: DEFAULT_QUIET_SUMMARY_TEMPLATE.to_string(),
+            daily_summary: DEFAULT_DAILY_SUMMARY_TEMPLATE.to_string(),
         });
 
         let message = notifier.render_connection_failed_message("main", "rpc timeout");
@@ -1120,6 +1207,62 @@ mod tests {
 
         assert_eq!(message, "[chaindash] 📈 未命名节点 排名 7 → 5（+2）");
         assert!(!message.contains("node-a-id"));
+    }
+
+    #[test]
+    fn test_daily_summary_renders_block_qty_and_reward_value() {
+        let notifier = create_test_notifier();
+        let node_details = vec![NodeDetail {
+            node_id: "node-a-id".to_string(),
+            node_name: "验证节点A".to_string(),
+            ranking: 5,
+            block_qty: 123,
+            block_rate: "75.00%".to_string(),
+            daily_block_rate: "1/day".to_string(),
+            reward_per: 10.0,
+            reward_value: 45.6,
+            reward_address: "addr-a".to_string(),
+            verifier_time: 0,
+            last_updated_at: None,
+        }];
+
+        let message = notifier.render_daily_summary_message("2026-04-14", &node_details);
+
+        assert_eq!(
+            message,
+            "[chaindash] 📊 每日节点快照（2026-04-14）\n验证节点A：出块 123，reward_value 45.6"
+        );
+    }
+
+    #[test]
+    fn test_custom_daily_summary_template_is_rendered() {
+        let notifier = create_test_notifier_with_templates(TelegramTemplates {
+            connection_failed: DEFAULT_CONNECTION_FAILED_TEMPLATE.to_string(),
+            connection_recovered: DEFAULT_CONNECTION_RECOVERED_TEMPLATE.to_string(),
+            ranking_changed: DEFAULT_RANKING_CHANGED_TEMPLATE.to_string(),
+            quiet_summary: DEFAULT_QUIET_SUMMARY_TEMPLATE.to_string(),
+            daily_summary: "{prefix} daily {date} count={count}\n{details}".to_string(),
+        });
+        let node_details = vec![NodeDetail {
+            node_id: "node-a-id".to_string(),
+            node_name: "验证节点A".to_string(),
+            ranking: 5,
+            block_qty: 123,
+            block_rate: "75.00%".to_string(),
+            daily_block_rate: "1/day".to_string(),
+            reward_per: 10.0,
+            reward_value: 45.6,
+            reward_address: "addr-a".to_string(),
+            verifier_time: 0,
+            last_updated_at: None,
+        }];
+
+        let message = notifier.render_daily_summary_message("2026-04-14", &node_details);
+
+        assert_eq!(
+            message,
+            "[chaindash] daily 2026-04-14 count=1\n验证节点A：出块 123，reward_value 45.6"
+        );
     }
 
     #[test]
