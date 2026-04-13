@@ -10,6 +10,7 @@ PlatON 节点终端仪表盘，使用 Rust + Ratatui + Crossterm 构建。
 - Unix 平台下展示本机 CPU / 内存 / 磁盘 / 网络摘要
 - Unix 平台下支持磁盘挂载点自动发现、手动指定挂载点与使用率告警
 - 顶部状态栏展示连接成功、重试、接口异常、磁盘告警等运行状态
+- 可选通过 Telegram Bot 推送节点连接失败 / 恢复、节点排名变化通知，并支持静默时间段、静默期摘要与限流防刷屏
 - 支持多个 WebSocket 端点，断线后自动重连并按顺序切换到可用端点
 - 支持整数和分数刷新间隔，例如 `1`、`3/2`、`2/3`
 - 适配窄终端的紧凑布局
@@ -24,6 +25,7 @@ PlatON 节点终端仪表盘，使用 Rust + Ratatui + Crossterm 构建。
 
 - **节点共识状态**：RPC 端点需要支持 debug 共识状态接口
 - **节点详情**：需要可访问的 PlatON Explorer API
+- **Telegram 通知**：需要可用的 Telegram Bot Token 和一个或多个 Chat ID
 
 > `--url` 仅支持 `ws://` / `wss://`。
 
@@ -77,6 +79,20 @@ cargo run -- --url main@wss://openapi2.platon.network/rpc --interval 3/2
 cargo run -- --url main@wss://openapi2.platon.network/rpc --interval 2/3
 ```
 
+### 启用 Telegram 通知
+
+```bash
+cargo run -- \
+  --url main@wss://openapi2.platon.network/rpc \
+  --node-id <NODE_ID> \
+  --telegram-bot-token <BOT_TOKEN> \
+  --telegram-chat-id <CHAT_ID_A>,<CHAT_ID_B> \
+  --telegram-notify-events connection,ranking-changed \
+  --telegram-quiet-hours 23:00-08:00 \
+  --telegram-rate-limit-seconds 120 \
+  --telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})"
+```
+
 ### 使用 Docker 镜像运行
 
 ```bash
@@ -96,6 +112,16 @@ cargo run -- --url main@wss://openapi2.platon.network/rpc --interval 2/3
 | `--disk-refresh-interval <SECONDS>` | `2` | Unix 下系统与磁盘采集间隔。 |
 | `--node-id <NODE_ID[,NODE_ID...]>` | - | 拉取节点详情时使用的节点 ID 列表，支持逗号分隔多个节点。 |
 | `--explorer-api-url <URL>` | `https://scan.platon.network/browser-server` | PlatON Explorer API 基础地址。 |
+| `--telegram-bot-token <TOKEN>` | - | Telegram Bot Token。与 `--telegram-chat-id` 一起使用时启用通知。 |
+| `--telegram-chat-id <CHAT_ID[,CHAT_ID...]>` | - | Telegram Chat ID 列表，支持逗号分隔多个接收方。 |
+| `--telegram-notify-events <EVENT[,EVENT...]>` | 全部事件 | Telegram 通知事件过滤。支持：`all`、`connection`、`connection-failed`、`connection-recovered`、`ranking`、`ranking-changed`。 |
+| `--telegram-quiet-hours <HH:MM-HH:MM>` | - | Telegram 通知静默时间段，使用本地时间，例如 `23:00-08:00`。 |
+| `--telegram-rate-limit-seconds <SECONDS>` | `0` | 同一事件键的最小通知间隔，`0` 表示不限制。 |
+| `--telegram-template-connection-failed <TEMPLATE>` | 默认模板 | 连接失败通知模板。支持占位符：`{prefix}`、`{node}`、`{reason}`。 |
+| `--telegram-template-connection-recovered <TEMPLATE>` | 默认模板 | 连接恢复通知模板。支持占位符：`{prefix}`、`{node}`。 |
+| `--telegram-template-ranking-changed <TEMPLATE>` | 默认模板 | 排名变化通知模板。支持占位符：`{prefix}`、`{icon}`、`{node}`、`{previous}`、`{current}`、`{delta}`、`{delta_text}`、`{direction}`。 |
+| `--telegram-template-quiet-summary <TEMPLATE>` | 默认模板 | 静默期摘要模板。支持占位符：`{prefix}`、`{count}`、`{details}`。可用 `\n` 表示换行。 |
+| `--telegram-api-url <URL>` | `https://api.telegram.org` | Telegram Bot API 基础地址。 |
 
 ## 界面布局
 
@@ -150,7 +176,42 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 
 如果未传入 `--node-id`，程序不会启动节点详情采集，右下角详情面板会保持 `Loading...`。当只配置一个节点时，面板会展示详细卡片；配置多个节点时，会切换为汇总表格。
 
-### 3. Unix 磁盘监控
+### 3. Telegram 通知
+
+同时配置 `--telegram-bot-token` 和 `--telegram-chat-id` 后，会启用 Telegram 推送，当前支持：
+
+- 节点连接失败通知
+- 节点连接恢复通知
+- `--node-id` 对应节点的排名变化通知
+
+支持使用 `--telegram-notify-events` 过滤通知事件，例如：
+
+- `--telegram-notify-events connection`：仅发送连接失败 / 恢复通知
+- `--telegram-notify-events connection-failed`：仅发送连接失败通知
+- `--telegram-notify-events ranking-changed`：仅发送排名变化通知
+
+`--telegram-chat-id` 支持配置多个 chat id，程序会向每个接收方分别推送同一条通知。
+
+`--telegram-quiet-hours` 可配置本地时间静默窗口；落在该时间段内的通知会被缓存。静默结束后的下一次通知机会，会先发送一条静默期摘要。
+
+`--telegram-rate-limit-seconds` 可限制相同事件键的发送频率，例如同一节点的排名变化、同一节点的连接失败 / 恢复通知，避免短时间内频繁刷屏。
+
+支持通过模板参数自定义通知文案，例如：
+
+- `--telegram-template-connection-failed "{prefix} FAIL {node}: {reason}"`
+- `--telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})"`
+- `--telegram-template-quiet-summary "{prefix} summary {count}\\n{details}"`
+
+其中：
+
+- `{prefix}` 默认是 `[chaindash]`
+- `{delta}` 是纯数字变化量，例如 `2`
+- `{delta_text}` 带正负号，例如 `+2` / `-3`
+- `{direction}` 为 `up` / `down`
+
+> 排名变化通知依赖节点详情采集，因此需要同时配置 `--node-id`。
+
+### 4. Unix 磁盘监控
 
 Unix 平台下支持两种挂载点来源：
 
@@ -182,3 +243,4 @@ Unix 平台下支持两种挂载点来源：
 - 非 Unix 平台不会显示系统摘要和磁盘详情
 - `--interval` 必须大于 `0`
 - 节点状态采集、区块订阅与节点详情采集彼此独立；某一项失败时会通过状态栏和日志提示
+- Telegram 通知仅在同时配置 `--telegram-bot-token` 和至少一个 `--telegram-chat-id` 时启用

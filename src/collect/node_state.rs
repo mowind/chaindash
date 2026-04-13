@@ -24,6 +24,7 @@ use super::data::{
 };
 use crate::{
     error::Result,
+    notify::TelegramNotifier,
     sync::lock_or_panic,
 };
 
@@ -35,6 +36,7 @@ pub(crate) async fn collect_node_state(
     name: String,
     url: String,
     data: SharedData,
+    notifier: Option<Arc<TelegramNotifier>>,
     stop_flag: Arc<AtomicBool>,
     retry_delay: Duration,
 ) -> Result<()> {
@@ -45,6 +47,15 @@ pub(crate) async fn collect_node_state(
         let provider = match ProviderBuilder::new().connect_ws(ws).await {
             Ok(provider) => provider,
             Err(err) => {
+                if let Some(notifier) = notifier.as_ref() {
+                    notifier
+                        .notify_node_connection_failed(
+                            &name,
+                            &url,
+                            &format!("建立 WebSocket 连接失败: {err}"),
+                        )
+                        .await;
+                }
                 warn_with_status(
                     &data,
                     format!(
@@ -68,6 +79,15 @@ pub(crate) async fn collect_node_state(
             let status = match provider.debug_consensus_status().await {
                 Ok(status) => status,
                 Err(err) => {
+                    if let Some(notifier) = notifier.as_ref() {
+                        notifier
+                            .notify_node_connection_failed(
+                                &name,
+                                &url,
+                                &format!("debug_consensus_status 调用失败: {err}"),
+                            )
+                            .await;
+                    }
                     warn_with_status(
                         &data,
                         format!("Node state RPC failed for {}: {}. Reconnecting soon", name, err),
@@ -78,6 +98,15 @@ pub(crate) async fn collect_node_state(
             let cur_number = match provider.get_block_number().await {
                 Ok(cur_number) => cur_number,
                 Err(err) => {
+                    if let Some(notifier) = notifier.as_ref() {
+                        notifier
+                            .notify_node_connection_failed(
+                                &name,
+                                &url,
+                                &format!("eth_blockNumber 调用失败: {err}"),
+                            )
+                            .await;
+                    }
                     warn_with_status(
                         &data,
                         format!(
@@ -108,8 +137,14 @@ pub(crate) async fn collect_node_state(
                 validator,
             };
 
-            let mut data = lock_or_panic(&data);
-            data.update_consensus_state(name.clone(), node);
+            {
+                let mut data = lock_or_panic(&data);
+                data.update_consensus_state(name.clone(), node);
+            }
+
+            if let Some(notifier) = notifier.as_ref() {
+                notifier.notify_node_connection_recovered(&name, &url).await;
+            }
         }
 
         time::sleep(retry_delay).await;

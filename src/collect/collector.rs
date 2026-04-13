@@ -31,6 +31,7 @@ use crate::{
         ChaindashError,
         Result,
     },
+    notify::TelegramNotifier,
     opts::Opts,
 };
 
@@ -46,6 +47,7 @@ pub struct Collector {
     disk_refresh_interval: u64,
     node_ids: Vec<String>,
     explorer_api_url: String,
+    notifier: Option<Arc<TelegramNotifier>>,
     stop_flag: Arc<AtomicBool>,
 }
 
@@ -85,6 +87,7 @@ impl Collector {
             }
         }
         let explorer_api_url = opts.explorer_api_url.clone();
+        let notifier = TelegramNotifier::from_opts(opts)?;
 
         Ok(Collector {
             data,
@@ -95,6 +98,7 @@ impl Collector {
             disk_refresh_interval,
             node_ids,
             explorer_api_url,
+            notifier,
             stop_flag: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -105,12 +109,14 @@ impl Collector {
     ) {
         for (name, url_str) in self.urls.clone() {
             let data = self.data.clone();
+            let notifier = self.notifier.clone();
             let stop_flag = self.stop_flag.clone();
             background_tasks.spawn(async move {
                 if let Err(e) = collect_node_state(
                     name.clone(),
                     url_str.clone(),
                     data,
+                    notifier,
                     stop_flag,
                     COLLECTOR_RETRY_DELAY,
                 )
@@ -126,10 +132,12 @@ impl Collector {
             let node_ids = self.node_ids.clone();
             let explorer_api_url = self.explorer_api_url.clone();
             let data = self.data.clone();
+            let notifier = self.notifier.clone();
             let stop_flag = self.stop_flag.clone();
             background_tasks.spawn(async move {
                 if let Err(e) =
-                    collect_node_details(node_ids, data, explorer_api_url, stop_flag).await
+                    collect_node_details(node_ids, data, explorer_api_url, notifier, stop_flag)
+                        .await
                 {
                     warn!("collect_node_details failed: {}", e);
                 }
@@ -265,6 +273,44 @@ mod tests {
         let result = Collector::new(&opts, data);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid websocket url for backup"));
+    }
+
+    #[test]
+    fn test_collector_new_requires_chat_id_when_bot_token_is_set() {
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--telegram-bot-token",
+            "token",
+        ]);
+        let data: SharedData = Arc::new(Mutex::new(Data::default()));
+
+        let result = Collector::new(&opts, data);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("at least one telegram chat id is required"));
+    }
+
+    #[test]
+    fn test_collector_new_accepts_complete_telegram_config() {
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--telegram-bot-token",
+            "token",
+            "--telegram-chat-id",
+            "123456,789012",
+            "--telegram-notify-events",
+            "connection-failed,ranking-changed",
+        ]);
+        let data: SharedData = Arc::new(Mutex::new(Data::default()));
+
+        let result = Collector::new(&opts, data);
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

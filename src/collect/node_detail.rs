@@ -34,6 +34,7 @@ use super::{
 };
 use crate::{
     error::Result,
+    notify::TelegramNotifier,
     sync::lock_or_panic,
 };
 
@@ -72,6 +73,7 @@ pub(crate) async fn collect_node_details(
     node_ids: Vec<String>,
     data: SharedData,
     explorer_api_url: String,
+    notifier: Option<Arc<TelegramNotifier>>,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     let client = reqwest::Client::new();
@@ -80,7 +82,7 @@ pub(crate) async fn collect_node_details(
     let mut interval = time::interval(NODE_DETAIL_REFRESH_INTERVAL);
 
     fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
-    fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone()).await;
+    fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone(), notifier.clone()).await;
     interval.tick().await;
 
     loop {
@@ -90,7 +92,7 @@ pub(crate) async fn collect_node_details(
 
         interval.tick().await;
         fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
-        fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone()).await;
+        fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone(), notifier.clone()).await;
     }
 
     Ok(())
@@ -149,10 +151,11 @@ async fn fetch_node_rankings(
     url: &str,
     node_ids: &[String],
     data: SharedData,
+    notifier: Option<Arc<TelegramNotifier>>,
 ) {
     match tokio::time::timeout(
         NODE_RANKING_REQUEST_TIMEOUT,
-        fetch_node_rankings_once(client, url, node_ids, data.clone()),
+        fetch_node_rankings_once(client, url, node_ids, data.clone(), notifier.clone()),
     )
     .await
     {
@@ -174,6 +177,7 @@ async fn fetch_node_rankings_once(
     url: &str,
     node_ids: &[String],
     data: SharedData,
+    notifier: Option<Arc<TelegramNotifier>>,
 ) {
     let body = serde_json::json!({
         "pageNo": 1,
@@ -213,10 +217,35 @@ async fn fetch_node_rankings_once(
 
             if node_list_resp.code == 0 {
                 if let Some(data_obj) = node_list_resp.data {
-                    let mut data = lock_or_panic(&data);
-                    for node_id in node_ids {
-                        let ranking = parse_node_ranking(&data_obj, node_id);
-                        data.merge_node_ranking_for(node_id, ranking);
+                    let ranking_observations = {
+                        let mut data = lock_or_panic(&data);
+                        let mut ranking_observations = Vec::new();
+
+                        for node_id in node_ids {
+                            let ranking = parse_node_ranking(&data_obj, node_id);
+                            data.merge_node_ranking_for(node_id, ranking);
+
+                            let Some(ranking) = ranking.filter(|ranking| *ranking > 0) else {
+                                continue;
+                            };
+
+                            let node_name = data
+                                .node_detail_for(node_id)
+                                .map(|detail| detail.node_name)
+                                .unwrap_or_default();
+
+                            ranking_observations.push((node_id.clone(), node_name, ranking));
+                        }
+
+                        ranking_observations
+                    };
+
+                    if let Some(notifier) = notifier.as_ref() {
+                        for (node_id, node_name, ranking) in ranking_observations {
+                            notifier
+                                .notify_node_ranking_change(&node_id, &node_name, ranking)
+                                .await;
+                        }
                     }
                 } else {
                     warn_with_status(&data, "Node ranking response missing data field");

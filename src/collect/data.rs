@@ -245,6 +245,13 @@ impl NodeDetailStore {
         self.sorted().into_iter().next()
     }
 
+    fn get(
+        &self,
+        node_id: &str,
+    ) -> Option<NodeDetail> {
+        self.details.get(&Self::node_detail_key(node_id)).cloned()
+    }
+
     fn update_node_detail(
         &mut self,
         detail: Option<NodeDetail>,
@@ -643,6 +650,13 @@ impl Data {
         self.node_details.first()
     }
 
+    pub fn node_detail_for(
+        &self,
+        node_id: &str,
+    ) -> Option<NodeDetail> {
+        self.node_details.get(node_id)
+    }
+
     pub fn node_details_loaded(&self) -> bool {
         self.node_details.loaded
     }
@@ -961,6 +975,48 @@ mod tests {
         let details = data.node_details();
         assert_eq!(details.len(), 1);
         assert_eq!(details[0].node_id, "node-b-id");
+    }
+
+    #[test]
+    fn test_node_detail_for_returns_requested_node() {
+        let mut data = Data::default();
+        data.merge_node_detail_for(
+            "node-a-id",
+            Some(NodeDetail {
+                node_id: "node-a-id".to_string(),
+                node_name: "node-a".to_string(),
+                ranking: 1,
+                block_qty: 12,
+                block_rate: "75.00%".to_string(),
+                daily_block_rate: "1/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 20.0,
+                reward_address: "addr-a".to_string(),
+                verifier_time: 30,
+                last_updated_at: None,
+            }),
+        );
+        data.merge_node_detail_for(
+            "node-b-id",
+            Some(NodeDetail {
+                node_id: "node-b-id".to_string(),
+                node_name: "node-b".to_string(),
+                ranking: 2,
+                block_qty: 24,
+                block_rate: "80.00%".to_string(),
+                daily_block_rate: "2/day".to_string(),
+                reward_per: 5.0,
+                reward_value: 40.0,
+                reward_address: "addr-b".to_string(),
+                verifier_time: 60,
+                last_updated_at: None,
+            }),
+        );
+
+        let detail = data.node_detail_for("node-b-id").expect("requested detail should exist");
+
+        assert_eq!(detail.node_id, "node-b-id");
+        assert_eq!(detail.node_name, "node-b");
     }
 
     #[test]

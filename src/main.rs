@@ -2,6 +2,7 @@ mod app;
 mod collect;
 mod draw;
 mod error;
+mod notify;
 mod opts;
 mod sync;
 mod update;
