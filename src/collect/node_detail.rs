@@ -12,7 +12,9 @@ use std::{
 
 use chrono::{
     Local,
+    LocalResult,
     NaiveDate,
+    TimeZone,
 };
 use log::{
     debug,
@@ -21,6 +23,7 @@ use log::{
 use tokio::time::{
     self,
     Duration,
+    Instant as TokioInstant,
 };
 
 use super::{
@@ -46,9 +49,53 @@ const NODE_DETAIL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_RANKING_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_DETAIL_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const NODE_DETAIL_STATUS_PREVIEW_COUNT: usize = 3;
+const DAILY_SUMMARY_STOP_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-fn next_daily_summary_date() -> NaiveDate {
-    Local::now().date_naive().succ_opt().unwrap_or_else(|| Local::now().date_naive())
+struct DailySummarySchedule {
+    date: NaiveDate,
+    deadline: TokioInstant,
+}
+
+fn next_local_midnight_after(now: &chrono::DateTime<Local>) -> chrono::DateTime<Local> {
+    let next_date = now.date_naive().succ_opt().unwrap_or(now.date_naive());
+    let mut candidate = next_date.and_hms_opt(0, 0, 0).expect("midnight should be valid");
+
+    loop {
+        match Local.from_local_datetime(&candidate) {
+            LocalResult::Single(datetime) => return datetime,
+            LocalResult::Ambiguous(first, _) => return first,
+            LocalResult::None => {
+                candidate += chrono::Duration::minutes(1);
+            },
+        }
+    }
+}
+
+fn next_daily_summary_schedule_from(
+    now: &chrono::DateTime<Local>,
+    now_instant: TokioInstant,
+) -> DailySummarySchedule {
+    let next_midnight = next_local_midnight_after(now);
+    let deadline_offset = next_midnight
+        .signed_duration_since(*now)
+        .to_std()
+        .unwrap_or_else(|_| Duration::from_secs(1));
+    let deadline_offset = if deadline_offset.is_zero() {
+        Duration::from_secs(1)
+    } else {
+        deadline_offset
+    };
+
+    DailySummarySchedule {
+        date: next_midnight.date_naive(),
+        deadline: now_instant + deadline_offset,
+    }
+}
+
+fn next_daily_summary_schedule() -> DailySummarySchedule {
+    let now = Local::now();
+
+    next_daily_summary_schedule_from(&now, TokioInstant::now())
 }
 
 fn summarize_node_detail_failures(node_ids: &[String]) -> String {
@@ -87,12 +134,49 @@ pub(crate) async fn collect_node_details(
     let client = reqwest::Client::new();
     let detail_url = format!("{explorer_api_url}/staking/stakingDetails");
     let ranking_url = format!("{explorer_api_url}/staking/aliveStakingList");
+
+    if let Some(daily_summary_notifier) = notifier.clone() {
+        tokio::join!(
+            run_node_detail_refresh_loop(
+                client,
+                detail_url,
+                ranking_url,
+                node_ids,
+                data.clone(),
+                notifier,
+                stop_flag.clone(),
+            ),
+            run_daily_summary_loop(data, daily_summary_notifier, stop_flag),
+        );
+    } else {
+        run_node_detail_refresh_loop(
+            client,
+            detail_url,
+            ranking_url,
+            node_ids,
+            data,
+            notifier,
+            stop_flag,
+        )
+        .await;
+    }
+
+    Ok(())
+}
+
+async fn run_node_detail_refresh_loop(
+    client: reqwest::Client,
+    detail_url: String,
+    ranking_url: String,
+    node_ids: Vec<String>,
+    data: SharedData,
+    notifier: Option<Arc<TelegramNotifier>>,
+    stop_flag: Arc<AtomicBool>,
+) {
     let mut interval = time::interval(NODE_DETAIL_REFRESH_INTERVAL);
-    let mut next_daily_summary_date = next_daily_summary_date();
 
     fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
     fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone(), notifier.clone()).await;
-    maybe_send_daily_summary(&data, notifier.as_ref(), &mut next_daily_summary_date).await;
     interval.tick().await;
 
     loop {
@@ -101,35 +185,55 @@ pub(crate) async fn collect_node_details(
         }
 
         interval.tick().await;
+
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
         fetch_all_node_details(&client, &detail_url, &node_ids, data.clone()).await;
         fetch_node_rankings(&client, &ranking_url, &node_ids, data.clone(), notifier.clone()).await;
-        maybe_send_daily_summary(&data, notifier.as_ref(), &mut next_daily_summary_date).await;
     }
-
-    Ok(())
 }
 
-async fn maybe_send_daily_summary(
-    data: &SharedData,
-    notifier: Option<&Arc<TelegramNotifier>>,
-    next_daily_summary_date: &mut NaiveDate,
+async fn run_daily_summary_loop(
+    data: SharedData,
+    notifier: Arc<TelegramNotifier>,
+    stop_flag: Arc<AtomicBool>,
 ) {
-    let Some(notifier) = notifier else {
-        return;
-    };
+    let mut schedule = next_daily_summary_schedule();
 
-    let today = Local::now().date_naive();
-    if today < *next_daily_summary_date {
-        return;
+    loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let stop_poll = time::sleep(DAILY_SUMMARY_STOP_POLL_INTERVAL);
+        let daily_summary_sleep = time::sleep_until(schedule.deadline);
+        tokio::pin!(stop_poll);
+        tokio::pin!(daily_summary_sleep);
+
+        tokio::select! {
+            biased;
+            _ = &mut daily_summary_sleep => {
+                send_daily_summary(&data, &notifier, schedule.date).await;
+                schedule = next_daily_summary_schedule();
+            }
+            _ = &mut stop_poll => {},
+        }
     }
+}
 
+async fn send_daily_summary(
+    data: &SharedData,
+    notifier: &Arc<TelegramNotifier>,
+    scheduled_date: NaiveDate,
+) {
     let node_details = {
         let data = lock_or_panic(data);
         data.node_details()
     };
 
-    notifier.notify_daily_node_snapshot(&today.to_string(), &node_details).await;
-    *next_daily_summary_date = today.succ_opt().unwrap_or(today);
+    notifier.notify_daily_node_snapshot(&scheduled_date.to_string(), &node_details).await;
 }
 
 async fn fetch_all_node_details(
@@ -428,10 +532,14 @@ mod tests {
     }
 
     #[test]
-    fn test_next_daily_summary_date_advances_to_tomorrow() {
-        let today = Local::now().date_naive();
+    fn test_next_daily_summary_schedule_is_in_the_future() {
+        let now = Local::now();
+        let now_instant = TokioInstant::now();
+        let schedule = next_daily_summary_schedule_from(&now, now_instant);
 
-        assert!(next_daily_summary_date() >= today);
+        assert_eq!(schedule.date, next_local_midnight_after(&now).date_naive());
+        assert!(schedule.deadline > now_instant);
+        assert!(schedule.deadline <= now_instant + Duration::from_secs(25 * 60 * 60));
     }
 
     #[test]

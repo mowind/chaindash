@@ -185,7 +185,7 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - 节点连接失败通知
 - 节点连接恢复通知
 - `--node-id` 对应节点的排名变化通知
-- 每日 0 点后的首个采集周期推送当前节点出块数量与 `reward_value` 快照
+- 每日 0 点按本地时间精确调度推送当前节点出块数量与 `reward_value` 快照
 
 支持使用 `--telegram-notify-events` 过滤通知事件，例如：
 
@@ -208,6 +208,8 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - `--telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})"`
 - `--telegram-template-quiet-summary "{prefix} summary {count}\\n{details}"`
 - `--telegram-template-daily-summary "{prefix} {date}\\n{details}"`
+
+每日节点快照会在本地时间 00:00 精确调度发送，使用当时缓存中的最新节点详情数据。
 
 其中：
 
