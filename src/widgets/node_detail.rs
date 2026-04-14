@@ -1347,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_collects_multiple_node_details() {
+    fn test_update_collects_multiple_node_details_sorted_by_node_name() {
         let shared_data = create_shared_data();
         {
             let mut data = shared_data.lock().expect("mutex poisoned");
@@ -1371,8 +1371,8 @@ mod tests {
         widget.update();
 
         assert_eq!(widget.node_details.len(), 3);
-        assert_eq!(widget.node_details[0].node_name, "node-b");
-        assert_eq!(widget.node_details[1].node_name, "node-a");
+        assert_eq!(widget.node_details[0].node_name, "node-a");
+        assert_eq!(widget.node_details[1].node_name, "node-b");
         assert_eq!(widget.node_details[2].node_name, "node-c");
     }
 

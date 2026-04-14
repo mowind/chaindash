@@ -219,24 +219,10 @@ impl NodeDetailStore {
     fn sorted(&self) -> Vec<NodeDetail> {
         let mut node_details: Vec<_> = self.details.values().cloned().collect();
         node_details.sort_by(|left, right| {
-            let left_unranked = left.ranking <= 0;
-            let right_unranked = right.ranking <= 0;
-            let left_ranking = if left_unranked {
-                i32::MAX
-            } else {
-                left.ranking
-            };
-            let right_ranking = if right_unranked {
-                i32::MAX
-            } else {
-                right.ranking
-            };
-
-            left_unranked
-                .cmp(&right_unranked)
-                .then_with(|| left_ranking.cmp(&right_ranking))
-                .then_with(|| left.node_name.cmp(&right.node_name))
+            left.node_name
+                .cmp(&right.node_name)
                 .then_with(|| left.node_id.cmp(&right.node_id))
+                .then_with(|| left.ranking.cmp(&right.ranking))
         });
         node_details
     }
@@ -1044,6 +1030,64 @@ mod tests {
         let names: Vec<String> = data.states().into_iter().map(|state| state.name).collect();
 
         assert_eq!(names, vec!["node-a".to_string(), "node-b".to_string()]);
+    }
+
+    #[test]
+    fn test_node_details_return_results_sorted_by_node_name() {
+        let mut data = Data::default();
+        data.merge_node_detail_for(
+            "node-b-id",
+            Some(NodeDetail {
+                node_id: "node-b-id".to_string(),
+                node_name: "node-b".to_string(),
+                ranking: 2,
+                block_qty: 24,
+                block_rate: "80.00%".to_string(),
+                daily_block_rate: "2/day".to_string(),
+                reward_per: 5.0,
+                reward_value: 40.0,
+                reward_address: "addr-b".to_string(),
+                verifier_time: 60,
+                last_updated_at: None,
+            }),
+        );
+        data.merge_node_detail_for(
+            "node-a-id",
+            Some(NodeDetail {
+                node_id: "node-a-id".to_string(),
+                node_name: "node-a".to_string(),
+                ranking: 7,
+                block_qty: 12,
+                block_rate: "75.00%".to_string(),
+                daily_block_rate: "1/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 20.0,
+                reward_address: "addr-a".to_string(),
+                verifier_time: 30,
+                last_updated_at: None,
+            }),
+        );
+        data.merge_node_detail_for(
+            "node-c-id",
+            Some(NodeDetail {
+                node_id: "node-c-id".to_string(),
+                node_name: "node-c".to_string(),
+                ranking: 0,
+                block_qty: 36,
+                block_rate: "85.00%".to_string(),
+                daily_block_rate: "3/day".to_string(),
+                reward_per: 3.0,
+                reward_value: 60.0,
+                reward_address: "addr-c".to_string(),
+                verifier_time: 90,
+                last_updated_at: None,
+            }),
+        );
+
+        let names: Vec<String> =
+            data.node_details().into_iter().map(|detail| detail.node_name).collect();
+
+        assert_eq!(names, vec!["node-a".to_string(), "node-b".to_string(), "node-c".to_string(),]);
     }
 
     #[test]

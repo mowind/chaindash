@@ -707,8 +707,16 @@ impl TelegramNotifier {
         let details = if node_details.is_empty() {
             "暂无可用节点详情".to_string()
         } else {
-            node_details
-                .iter()
+            let mut sorted_details = node_details.iter().collect::<Vec<_>>();
+            sorted_details.sort_by(|left, right| {
+                left.node_name
+                    .cmp(&right.node_name)
+                    .then_with(|| left.node_id.cmp(&right.node_id))
+                    .then_with(|| left.ranking.cmp(&right.ranking))
+            });
+
+            sorted_details
+                .into_iter()
                 .map(|detail| {
                     format!(
                         "{}：出块 {}，reward_value {}",
@@ -1262,6 +1270,60 @@ mod tests {
         assert_eq!(
             message,
             "[chaindash] daily 2026-04-14 count=1\n验证节点A：出块 123，reward_value 45.6"
+        );
+    }
+
+    #[test]
+    fn test_daily_summary_sorts_node_details_by_node_name() {
+        let notifier = create_test_notifier();
+        let node_details = vec![
+            NodeDetail {
+                node_id: "node-c-id".to_string(),
+                node_name: "node-c".to_string(),
+                ranking: 1,
+                block_qty: 300,
+                block_rate: "75.00%".to_string(),
+                daily_block_rate: "3/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 30.0,
+                reward_address: "addr-c".to_string(),
+                verifier_time: 0,
+                last_updated_at: None,
+            },
+            NodeDetail {
+                node_id: "node-a-id".to_string(),
+                node_name: "node-a".to_string(),
+                ranking: 9,
+                block_qty: 100,
+                block_rate: "75.00%".to_string(),
+                daily_block_rate: "1/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 10.0,
+                reward_address: "addr-a".to_string(),
+                verifier_time: 0,
+                last_updated_at: None,
+            },
+            NodeDetail {
+                node_id: "node-b-id".to_string(),
+                node_name: "node-b".to_string(),
+                ranking: 3,
+                block_qty: 200,
+                block_rate: "75.00%".to_string(),
+                daily_block_rate: "2/day".to_string(),
+                reward_per: 10.0,
+                reward_value: 20.0,
+                reward_address: "addr-b".to_string(),
+                verifier_time: 0,
+                last_updated_at: None,
+            },
+        ];
+
+        let message = notifier.render_daily_summary_message("2026-04-14", &node_details);
+
+        assert_eq!(
+            message,
+            "[chaindash] 📊 每日节点快照（2026-04-14）\nnode-a：出块 100，reward_value \
+             10\nnode-b：出块 200，reward_value 20\nnode-c：出块 300，reward_value 30"
         );
     }
 
