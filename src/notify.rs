@@ -11,7 +11,9 @@ use std::{
 };
 
 use chrono::{
+    Datelike,
     Local,
+    NaiveDate,
     Timelike,
 };
 use log::{
@@ -24,7 +26,7 @@ use serde::{
 };
 
 use crate::{
-    collect::NodeDetail,
+    collect::DailyNodeSummaryDetail,
     error::{
         ChaindashError,
         Result,
@@ -37,12 +39,13 @@ use crate::{
 };
 
 const TELEGRAM_MESSAGE_PREFIX: &str = "[chaindash]";
-const DEFAULT_CONNECTION_FAILED_TEMPLATE: &str = "{prefix} ❌ {node} 连接失败：{reason}";
-const DEFAULT_CONNECTION_RECOVERED_TEMPLATE: &str = "{prefix} ✅ {node} 连接恢复";
+const DEFAULT_CONNECTION_FAILED_TEMPLATE: &str =
+    "🚨 节点连接异常\n🔹 节点：{node}\n📝 原因：{reason}";
+const DEFAULT_CONNECTION_RECOVERED_TEMPLATE: &str = "✅ 节点连接已恢复\n🔹 节点：{node}";
 const DEFAULT_RANKING_CHANGED_TEMPLATE: &str =
-    "{prefix} {icon} {node} 排名 {previous} → {current}（{delta_text}）";
-const DEFAULT_QUIET_SUMMARY_TEMPLATE: &str = "{prefix} 🌙 静默期摘要（共 {count} 条）\n{details}";
-const DEFAULT_DAILY_SUMMARY_TEMPLATE: &str = "{prefix} 📊 每日节点快照（{date}）\n{details}";
+    "{icon} 节点排名变动\n🔹 节点：{node}\n📍 排名：{previous} → {current}（{delta_text}）";
+const DEFAULT_QUIET_SUMMARY_TEMPLATE: &str = "🌙 静默期摘要\n🧾 共 {count} 条\n{details}";
+const DEFAULT_DAILY_SUMMARY_TEMPLATE: &str = "{title}（{date}）\n🧾 节点数：{count}\n{details}";
 const QUIET_SUMMARY_PREVIEW_LIMIT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +301,50 @@ fn format_reward_value(value: f64) -> String {
         rendered.pop();
     }
     rendered
+}
+
+fn format_optional_daily_count(value: Option<u64>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string())
+}
+
+fn format_optional_reward_value(value: Option<f64>) -> String {
+    value.map(format_reward_value).unwrap_or_else(|| "-".to_string())
+}
+
+fn resolve_daily_summary_title(
+    date: &str,
+    node_details: &[DailyNodeSummaryDetail],
+) -> &'static str {
+    if node_details.iter().any(|detail| detail.show_monthly_totals)
+        || NaiveDate::parse_from_str(date, "%Y-%m-%d").map(|date| date.day() == 1).unwrap_or(false)
+    {
+        "📅 月度节点简报"
+    } else {
+        "📊 每日节点快照"
+    }
+}
+
+fn render_daily_summary_detail(detail: &DailyNodeSummaryDetail) -> String {
+    let mut lines = vec![
+        format!("🔹 {}", display_node_name(&detail.node_name)),
+        format!("  🧱 累计出块：{}", detail.block_qty),
+        format!("  💰 累计系统奖励：{}", format_reward_value(detail.reward_value)),
+        format!("  📅 当天出块：{}", format_optional_daily_count(detail.daily_block_qty)),
+        format!("  🎁 当天系统奖励：{}", format_optional_reward_value(detail.daily_reward_value)),
+    ];
+
+    if detail.show_monthly_totals {
+        lines.push(format!(
+            "  🗓️ 上月总出块：{}",
+            format_optional_daily_count(detail.monthly_block_qty)
+        ));
+        lines.push(format!(
+            "  🏆 上月总系统奖励：{}",
+            format_optional_reward_value(detail.monthly_reward_value)
+        ));
+    }
+
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -611,7 +658,7 @@ impl TelegramNotifier {
     pub(crate) async fn notify_daily_node_snapshot(
         &self,
         date: &str,
-        node_details: &[NodeDetail],
+        node_details: &[DailyNodeSummaryDetail],
     ) {
         self.send_if_enabled(
             NotificationEventKind::DailySummary,
@@ -701,11 +748,12 @@ impl TelegramNotifier {
     fn render_daily_summary_message(
         &self,
         date: &str,
-        node_details: &[NodeDetail],
+        node_details: &[DailyNodeSummaryDetail],
     ) -> String {
         let count = node_details.len().to_string();
+        let title = resolve_daily_summary_title(date, node_details);
         let details = if node_details.is_empty() {
-            "暂无可用节点详情".to_string()
+            "📭 暂无可用节点详情".to_string()
         } else {
             let mut sorted_details = node_details.iter().collect::<Vec<_>>();
             sorted_details.sort_by(|left, right| {
@@ -717,22 +765,16 @@ impl TelegramNotifier {
 
             sorted_details
                 .into_iter()
-                .map(|detail| {
-                    format!(
-                        "{}：出块 {}，reward_value {}",
-                        display_node_name(&detail.node_name),
-                        detail.block_qty,
-                        format_reward_value(detail.reward_value)
-                    )
-                })
+                .map(render_daily_summary_detail)
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join("\n\n")
         };
 
         render_template(
             &self.config.templates.daily_summary,
             &[
                 ("prefix", TELEGRAM_MESSAGE_PREFIX),
+                ("title", title),
                 ("date", date),
                 ("count", count.as_str()),
                 ("details", details.as_str()),
@@ -1081,6 +1123,40 @@ mod tests {
     }
 
     #[test]
+    fn test_default_connection_failed_template_is_rendered() {
+        let notifier = create_test_notifier();
+
+        let message = notifier.render_connection_failed_message("main", "rpc timeout");
+
+        assert_eq!(message, "🚨 节点连接异常\n🔹 节点：main\n📝 原因：rpc timeout");
+    }
+
+    #[test]
+    fn test_default_connection_recovered_template_is_rendered() {
+        let notifier = create_test_notifier();
+
+        let message = notifier.render_connection_recovered_message("main");
+
+        assert_eq!(message, "✅ 节点连接已恢复\n🔹 节点：main");
+    }
+
+    #[test]
+    fn test_default_quiet_summary_template_is_rendered() {
+        let notifier = create_test_notifier();
+        let summary = QuietSummarySnapshot {
+            total_count: 2,
+            details: "连接失败 1 次：main\n连接恢复 1 次：backup".to_string(),
+        };
+
+        let message = notifier.render_quiet_summary_message(&summary);
+
+        assert_eq!(
+            message,
+            "🌙 静默期摘要\n🧾 共 2 条\n连接失败 1 次：main\n连接恢复 1 次：backup"
+        );
+    }
+
+    #[test]
     fn test_custom_connection_failed_template_is_rendered() {
         let notifier = create_test_notifier_with_templates(TelegramTemplates {
             connection_failed: "{prefix} FAIL {node}: {reason}".to_string(),
@@ -1159,7 +1235,7 @@ mod tests {
             },
         );
 
-        assert_eq!(message, "[chaindash] 📈 验证节点A 排名 7 → 5（+2）");
+        assert_eq!(message, "📈 节点排名变动\n🔹 节点：验证节点A\n📍 排名：7 → 5（+2）");
         assert!(!message.contains("Node ID"));
         assert!(!message.contains("节点:"));
     }
@@ -1176,7 +1252,7 @@ mod tests {
             },
         );
 
-        assert_eq!(message, "[chaindash] 📉 验证节点A 排名 5 → 8（-3）");
+        assert_eq!(message, "📉 节点排名变动\n🔹 节点：验证节点A\n📍 排名：5 → 8（-3）");
         assert!(!message.contains("Node ID"));
         assert!(!message.contains("节点:"));
     }
@@ -1213,32 +1289,83 @@ mod tests {
             },
         );
 
-        assert_eq!(message, "[chaindash] 📈 未命名节点 排名 7 → 5（+2）");
+        assert_eq!(message, "📈 节点排名变动\n🔹 节点：未命名节点\n📍 排名：7 → 5（+2）");
         assert!(!message.contains("node-a-id"));
     }
 
     #[test]
-    fn test_daily_summary_renders_block_qty_and_reward_value() {
+    fn test_daily_summary_renders_total_and_daily_metrics() {
         let notifier = create_test_notifier();
-        let node_details = vec![NodeDetail {
+        let node_details = vec![DailyNodeSummaryDetail {
             node_id: "node-a-id".to_string(),
             node_name: "验证节点A".to_string(),
             ranking: 5,
             block_qty: 123,
-            block_rate: "75.00%".to_string(),
-            daily_block_rate: "1/day".to_string(),
-            reward_per: 10.0,
             reward_value: 45.6,
-            reward_address: "addr-a".to_string(),
-            verifier_time: 0,
-            last_updated_at: None,
+            daily_block_qty: Some(12),
+            daily_reward_value: Some(5.6),
+            show_monthly_totals: false,
+            monthly_block_qty: None,
+            monthly_reward_value: None,
         }];
 
         let message = notifier.render_daily_summary_message("2026-04-14", &node_details);
 
         assert_eq!(
             message,
-            "[chaindash] 📊 每日节点快照（2026-04-14）\n验证节点A：出块 123，reward_value 45.6"
+            "📊 每日节点快照（2026-04-14）\n🧾 节点数：1\n🔹 验证节点A\n  🧱 累计出块：123\n  💰 \
+             累计系统奖励：45.6\n  📅 当天出块：12\n  🎁 当天系统奖励：5.6"
+        );
+    }
+
+    #[test]
+    fn test_daily_summary_renders_previous_month_totals_on_month_boundary() {
+        let notifier = create_test_notifier();
+        let node_details = vec![DailyNodeSummaryDetail {
+            node_id: "node-a-id".to_string(),
+            node_name: "验证节点A".to_string(),
+            ranking: 5,
+            block_qty: 123,
+            reward_value: 45.6,
+            daily_block_qty: Some(12),
+            daily_reward_value: Some(5.6),
+            show_monthly_totals: true,
+            monthly_block_qty: Some(300),
+            monthly_reward_value: Some(30.0),
+        }];
+
+        let message = notifier.render_daily_summary_message("2026-05-01", &node_details);
+
+        assert_eq!(
+            message,
+            "📅 月度节点简报（2026-05-01）\n🧾 节点数：1\n🔹 验证节点A\n  🧱 累计出块：123\n  💰 \
+             累计系统奖励：45.6\n  📅 当天出块：12\n  🎁 当天系统奖励：5.6\n  🗓️ \
+             上月总出块：300\n  🏆 上月总系统奖励：30"
+        );
+    }
+
+    #[test]
+    fn test_daily_summary_uses_placeholder_when_previous_snapshot_is_unavailable() {
+        let notifier = create_test_notifier();
+        let node_details = vec![DailyNodeSummaryDetail {
+            node_id: "node-a-id".to_string(),
+            node_name: "验证节点A".to_string(),
+            ranking: 5,
+            block_qty: 123,
+            reward_value: 45.6,
+            daily_block_qty: None,
+            daily_reward_value: None,
+            show_monthly_totals: false,
+            monthly_block_qty: None,
+            monthly_reward_value: None,
+        }];
+
+        let message = notifier.render_daily_summary_message("2026-04-14", &node_details);
+
+        assert_eq!(
+            message,
+            "📊 每日节点快照（2026-04-14）\n🧾 节点数：1\n🔹 验证节点A\n  🧱 累计出块：123\n  💰 \
+             累计系统奖励：45.6\n  📅 当天出块：-\n  🎁 当天系统奖励：-"
         );
     }
 
@@ -1251,25 +1378,25 @@ mod tests {
             quiet_summary: DEFAULT_QUIET_SUMMARY_TEMPLATE.to_string(),
             daily_summary: "{prefix} daily {date} count={count}\n{details}".to_string(),
         });
-        let node_details = vec![NodeDetail {
+        let node_details = vec![DailyNodeSummaryDetail {
             node_id: "node-a-id".to_string(),
             node_name: "验证节点A".to_string(),
             ranking: 5,
             block_qty: 123,
-            block_rate: "75.00%".to_string(),
-            daily_block_rate: "1/day".to_string(),
-            reward_per: 10.0,
             reward_value: 45.6,
-            reward_address: "addr-a".to_string(),
-            verifier_time: 0,
-            last_updated_at: None,
+            daily_block_qty: Some(12),
+            daily_reward_value: Some(5.6),
+            show_monthly_totals: false,
+            monthly_block_qty: None,
+            monthly_reward_value: None,
         }];
 
         let message = notifier.render_daily_summary_message("2026-04-14", &node_details);
 
         assert_eq!(
             message,
-            "[chaindash] daily 2026-04-14 count=1\n验证节点A：出块 123，reward_value 45.6"
+            "[chaindash] daily 2026-04-14 count=1\n🔹 验证节点A\n  🧱 累计出块：123\n  💰 \
+             累计系统奖励：45.6\n  📅 当天出块：12\n  🎁 当天系统奖励：5.6"
         );
     }
 
@@ -1277,44 +1404,41 @@ mod tests {
     fn test_daily_summary_sorts_node_details_by_node_name() {
         let notifier = create_test_notifier();
         let node_details = vec![
-            NodeDetail {
+            DailyNodeSummaryDetail {
                 node_id: "node-c-id".to_string(),
                 node_name: "node-c".to_string(),
                 ranking: 1,
                 block_qty: 300,
-                block_rate: "75.00%".to_string(),
-                daily_block_rate: "3/day".to_string(),
-                reward_per: 10.0,
                 reward_value: 30.0,
-                reward_address: "addr-c".to_string(),
-                verifier_time: 0,
-                last_updated_at: None,
+                daily_block_qty: Some(30),
+                daily_reward_value: Some(3.0),
+                show_monthly_totals: false,
+                monthly_block_qty: None,
+                monthly_reward_value: None,
             },
-            NodeDetail {
+            DailyNodeSummaryDetail {
                 node_id: "node-a-id".to_string(),
                 node_name: "node-a".to_string(),
                 ranking: 9,
                 block_qty: 100,
-                block_rate: "75.00%".to_string(),
-                daily_block_rate: "1/day".to_string(),
-                reward_per: 10.0,
                 reward_value: 10.0,
-                reward_address: "addr-a".to_string(),
-                verifier_time: 0,
-                last_updated_at: None,
+                daily_block_qty: Some(10),
+                daily_reward_value: Some(1.0),
+                show_monthly_totals: false,
+                monthly_block_qty: None,
+                monthly_reward_value: None,
             },
-            NodeDetail {
+            DailyNodeSummaryDetail {
                 node_id: "node-b-id".to_string(),
                 node_name: "node-b".to_string(),
                 ranking: 3,
                 block_qty: 200,
-                block_rate: "75.00%".to_string(),
-                daily_block_rate: "2/day".to_string(),
-                reward_per: 10.0,
                 reward_value: 20.0,
-                reward_address: "addr-b".to_string(),
-                verifier_time: 0,
-                last_updated_at: None,
+                daily_block_qty: Some(20),
+                daily_reward_value: Some(2.0),
+                show_monthly_totals: false,
+                monthly_block_qty: None,
+                monthly_reward_value: None,
             },
         ];
 
@@ -1322,8 +1446,11 @@ mod tests {
 
         assert_eq!(
             message,
-            "[chaindash] 📊 每日节点快照（2026-04-14）\nnode-a：出块 100，reward_value \
-             10\nnode-b：出块 200，reward_value 20\nnode-c：出块 300，reward_value 30"
+            "📊 每日节点快照（2026-04-14）\n🧾 节点数：3\n🔹 node-a\n  🧱 累计出块：100\n  💰 \
+             累计系统奖励：10\n  📅 当天出块：10\n  🎁 当天系统奖励：1\n\n🔹 node-b\n  🧱 \
+             累计出块：200\n  💰 累计系统奖励：20\n  📅 当天出块：20\n  🎁 当天系统奖励：2\n\n🔹 \
+             node-c\n  🧱 累计出块：300\n  💰 累计系统奖励：30\n  📅 当天出块：30\n  🎁 \
+             当天系统奖励：3"
         );
     }
 

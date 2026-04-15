@@ -90,8 +90,8 @@ cargo run -- \
   --telegram-notify-events connection,ranking-changed \
   --telegram-quiet-hours 23:00-08:00 \
   --telegram-rate-limit-seconds 120 \
-  --telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})" \
-  --telegram-template-daily-summary "{prefix} {date}\n{details}"
+  --telegram-template-ranking-changed "{icon} {node} {previous}->{current} ({delta_text})" \
+  --telegram-template-daily-summary "{title}（{date}）\n🧾 节点数：{count}\n{details}"
 ```
 
 ### 使用 Docker 镜像运行
@@ -122,7 +122,7 @@ cargo run -- \
 | `--telegram-template-connection-recovered <TEMPLATE>` | 默认模板 | 连接恢复通知模板。支持占位符：`{prefix}`、`{node}`。 |
 | `--telegram-template-ranking-changed <TEMPLATE>` | 默认模板 | 排名变化通知模板。支持占位符：`{prefix}`、`{icon}`、`{node}`、`{previous}`、`{current}`、`{delta}`、`{delta_text}`、`{direction}`。 |
 | `--telegram-template-quiet-summary <TEMPLATE>` | 默认模板 | 静默期摘要模板。支持占位符：`{prefix}`、`{count}`、`{details}`。可用 `\n` 表示换行。 |
-| `--telegram-template-daily-summary <TEMPLATE>` | 默认模板 | 每日节点快照模板。支持占位符：`{prefix}`、`{date}`、`{count}`、`{details}`。可用 `\n` 表示换行。 |
+| `--telegram-template-daily-summary <TEMPLATE>` | 默认模板 | 每日节点快照模板。支持占位符：`{prefix}`、`{title}`、`{date}`、`{count}`、`{details}`。可用 `\n` 表示换行。 |
 | `--telegram-api-url <URL>` | `https://api.telegram.org` | Telegram Bot API 基础地址。 |
 
 ## 界面布局
@@ -185,7 +185,7 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 - 节点连接失败通知
 - 节点连接恢复通知
 - `--node-id` 对应节点的排名变化通知
-- 每日 0 点按本地时间精确调度推送当前节点出块数量与 `reward_value` 快照
+- 每日 0 点按本地时间精确调度推送当前节点累计出块数量、累计系统奖励，以及基于前一日快照计算的当天出块数和当天系统奖励；每月 1 号的日报会额外统计上一自然月总出块数量和总系统奖励
 
 支持使用 `--telegram-notify-events` 过滤通知事件，例如：
 
@@ -204,21 +204,32 @@ main@wss://rpc-a.example,backup@wss://rpc-b.example
 
 支持通过模板参数自定义通知文案，例如：
 
-- `--telegram-template-connection-failed "{prefix} FAIL {node}: {reason}"`
-- `--telegram-template-ranking-changed "{prefix} {icon} {node} {previous}->{current} ({delta_text})"`
-- `--telegram-template-quiet-summary "{prefix} summary {count}\\n{details}"`
-- `--telegram-template-daily-summary "{prefix} {date}\\n{details}"`
+- `--telegram-template-connection-failed "🚨 节点连接异常\\n🔹 节点：{node}\\n📝 原因：{reason}"`
+- `--telegram-template-ranking-changed "{icon} 节点排名变动\\n🔹 节点：{node}\\n📍 排名：{previous} → {current}（{delta_text}）"`
+- `--telegram-template-quiet-summary "🌙 静默期摘要\\n🧾 共 {count} 条\\n{details}"`
+- `--telegram-template-daily-summary "{title}（{date}）\\n🧾 节点数：{count}\\n{details}"`
 
-每日节点快照会在本地时间 00:00 精确调度发送，使用当时缓存中的最新节点详情数据。
+每日节点快照会在本地时间 00:00 精确调度发送，使用当时缓存中的最新节点详情数据。程序会持久化最近的每日节点快照，并在次日对比前一日快照，计算当天出块数与当天系统奖励；如果缺少前一日快照，则对应字段显示为 `-`。当日报日期为每月 1 号时，还会额外对比上一个自然月首日快照，统计上一自然月总出块数量和总系统奖励；如果缺少该月首日快照，则对应月度字段显示为 `-`。
 
 其中：
 
-- `{prefix}` 默认是 `[chaindash]`
+- `{prefix}` 可用于自定义前缀；默认模板已不再使用该占位符
+- `{title}` 为日报标题，默认会根据日期自动渲染为 `📊 每日节点快照` 或 `📅 月度节点简报`
 - `{delta}` 是纯数字变化量，例如 `2`
 - `{delta_text}` 带正负号，例如 `+2` / `-3`
 - `{direction}` 为 `up` / `down`
 - `{date}` 为每日快照日期，例如 `2026-04-14`
-- `{details}` 为逐节点详情列表，例如 `验证节点A：出块 123，reward_value 45.6`
+- `{count}` 为本次快照包含的节点数量，例如 `2`
+- `{details}` 为逐节点详情列表，例如：
+  ```text
+  🔹 验证节点A
+    🧱 累计出块：123
+    💰 累计系统奖励：45.6
+    📅 当天出块：12
+    🎁 当天系统奖励：5.6
+    🗓️ 上月总出块：300
+    🏆 上月总系统奖励：30
+  ```
 
 > 排名变化通知和每日节点快照都依赖节点详情采集，因此需要同时配置 `--node-id`。
 

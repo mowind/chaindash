@@ -27,6 +27,7 @@ use tokio::time::{
 };
 
 use super::{
+    daily_snapshot::DailyNodeSnapshotStore,
     data::{
         record_status_message,
         warn_with_status,
@@ -232,8 +233,17 @@ async fn send_daily_summary(
         let data = lock_or_panic(data);
         data.node_details()
     };
+    let snapshot_store = DailyNodeSnapshotStore::default();
+    let daily_summary_details = snapshot_store.daily_summary_details(scheduled_date, &node_details);
 
-    notifier.notify_daily_node_snapshot(&scheduled_date.to_string(), &node_details).await;
+    if let Err(err) = snapshot_store.save_snapshot(scheduled_date, &node_details) {
+        warn_with_status(
+            data,
+            format!("Failed to persist daily node snapshot for {}: {}", scheduled_date, err),
+        );
+    }
+
+    notifier.notify_daily_node_snapshot(&scheduled_date.to_string(), &daily_summary_details).await;
 }
 
 async fn fetch_all_node_details(
