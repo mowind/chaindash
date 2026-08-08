@@ -8,7 +8,10 @@ use num_rational::Ratio;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Color,
+    style::{
+        Color,
+        Style,
+    },
     widgets::Widget,
 };
 
@@ -2472,25 +2475,40 @@ struct GlobePalette {
     trail: Color,
     peers: [Color; 4],
     background: Color,
+    border: Color,
+    title: Color,
+    stats: Color,
 }
 
 fn color_mode() -> ColorMode {
-    if env::var_os("NO_COLOR").is_some() {
+    let term = env::var("TERM").unwrap_or_default();
+    let color_term = env::var("COLORTERM").unwrap_or_default();
+    color_mode_from_values(env::var_os("NO_COLOR").is_some(), &term, &color_term)
+}
+
+fn color_mode_from_values(
+    no_color: bool,
+    term: &str,
+    color_term: &str,
+) -> ColorMode {
+    if no_color {
         return ColorMode::Monochrome;
     }
 
-    let term = env::var("TERM").unwrap_or_default().to_ascii_lowercase();
+    let term = term.to_ascii_lowercase();
     if term == "dumb" {
         return ColorMode::Monochrome;
     }
 
-    let color_term = env::var("COLORTERM").unwrap_or_default().to_ascii_lowercase();
-    if color_term.contains("truecolor") || color_term.contains("24bit") {
+    let color_term = color_term.to_ascii_lowercase();
+    if color_term.contains("truecolor")
+        || color_term.contains("24bit")
+        || term.contains("direct")
+        || term.contains("truecolor")
+    {
         ColorMode::TrueColor
     } else if term.contains("256color") {
         ColorMode::Ansi256
-    } else if term.is_empty() {
-        ColorMode::TrueColor
     } else {
         ColorMode::Ansi16
     }
@@ -2508,6 +2526,9 @@ fn palette(mode: ColorMode) -> GlobePalette {
                 Color::Rgb(151, 122, 255),
             ],
             background: panel::PANEL_BG,
+            border: panel::PANEL_BORDER,
+            title: panel::PANEL_TITLE,
+            stats: panel::PANEL_MUTED,
         },
         ColorMode::Ansi256 => GlobePalette {
             land: Color::Indexed(245),
@@ -2518,19 +2539,28 @@ fn palette(mode: ColorMode) -> GlobePalette {
                 Color::Indexed(205),
                 Color::Indexed(141),
             ],
-            background: panel::PANEL_BG,
+            background: Color::Indexed(236),
+            border: Color::Indexed(239),
+            title: Color::Indexed(252),
+            stats: Color::Indexed(245),
         },
         ColorMode::Ansi16 => GlobePalette {
             land: Color::DarkGray,
             trail: Color::DarkGray,
             peers: [Color::Cyan, Color::Yellow, Color::Magenta, Color::Green],
-            background: panel::PANEL_BG,
+            background: Color::Black,
+            border: Color::DarkGray,
+            title: Color::White,
+            stats: Color::Gray,
         },
         ColorMode::Monochrome => GlobePalette {
             land: Color::Reset,
             trail: Color::Reset,
             peers: [Color::Reset; 4],
             background: Color::Reset,
+            border: Color::Reset,
+            title: Color::Reset,
+            stats: Color::Reset,
         },
     }
 }
@@ -2683,6 +2713,7 @@ impl GlobeWidget {
         }
     }
 
+    /// Advance the globe by one 200 ms animation frame.
     pub fn advance_rotation(&mut self) -> bool {
         if self.paused || self.render_mode.get().pause_animation {
             return false;
@@ -2691,11 +2722,13 @@ impl GlobeWidget {
         true
     }
 
+    /// Toggle automatic rotation and return the new paused state.
     pub fn toggle_paused(&mut self) -> bool {
         self.paused = !self.paused;
         self.paused
     }
 
+    /// Return whether automatic rotation is currently paused.
     pub fn is_paused(&self) -> bool {
         self.paused
     }
@@ -2734,7 +2767,11 @@ impl GlobeWidget {
         let radius_x = radius as f64;
         let radius_y = radius as f64 / 2.0;
         let center_x = area.x as f64 + width / 2.0;
-        let center_y = area.y as f64 + height / 2.0;
+        let center_y = if area.height == 1 {
+            area.y as f64
+        } else {
+            area.y as f64 + height / 2.0
+        };
         let center = (center_x.round() as i32, center_y.round() as i32);
         let center_lng = VIEW_CENTER_LNG + self.rotation_degrees;
 
@@ -2757,6 +2794,17 @@ impl GlobeWidget {
             if mode.draw_trails {
                 draw_line(buf, center, (screen_x, screen_y), area, palette);
             }
+        }
+
+        // Paint markers after all trails so a trail cannot obscure a peer dot.
+        for peer in &self.snapshot.peers {
+            let Some((x, y, _)) =
+                project_with_depth(peer.lat, peer.lng, VIEW_CENTER_LAT, center_lng)
+            else {
+                continue;
+            };
+            let screen_x = (center_x + radius_x * x).round() as i32;
+            let screen_y = (center_y - radius_y * y).round() as i32;
             set_dot(
                 buf,
                 screen_x,
@@ -2793,7 +2841,12 @@ impl Widget for &GlobeWidget {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        panel::new(OUTER_TITLE).render(area, buf);
+        let colors = palette(color_mode());
+        panel::new(OUTER_TITLE)
+            .style(Style::default().bg(colors.background))
+            .border_style(Style::default().fg(colors.border).bg(colors.background))
+            .title_style(Style::default().fg(colors.title).bg(colors.background))
+            .render(area, buf);
 
         let inner = Rect {
             x: area.x.saturating_add(1),
@@ -2814,7 +2867,7 @@ impl Widget for &GlobeWidget {
                 stats_row,
                 self.stats_line(),
                 inner.width as usize,
-                panel::muted_style(),
+                Style::default().fg(colors.stats).bg(colors.background),
             );
             Rect {
                 x: inner.x,
@@ -2826,7 +2879,7 @@ impl Widget for &GlobeWidget {
             inner
         };
 
-        if globe_area.height >= MIN_GLOBE_HEIGHT && globe_area.width >= MIN_GLOBE_WIDTH {
+        if globe_area.width > 0 && globe_area.height > 0 {
             self.render_globe(buf, globe_area, mode);
         }
     }
@@ -2886,6 +2939,20 @@ mod tests {
     }
 
     #[test]
+    fn test_color_capability_detection_uses_safe_fallback_order() {
+        assert_eq!(color_mode_from_values(false, "xterm-direct", ""), ColorMode::TrueColor);
+        assert_eq!(color_mode_from_values(false, "screen-256color", ""), ColorMode::Ansi256);
+        assert_eq!(color_mode_from_values(false, "xterm", ""), ColorMode::Ansi16);
+        assert_eq!(color_mode_from_values(false, "", ""), ColorMode::Ansi16);
+        assert_eq!(color_mode_from_values(false, "xterm", "truecolor"), ColorMode::TrueColor);
+        assert_eq!(
+            color_mode_from_values(true, "xterm-direct", "truecolor"),
+            ColorMode::Monochrome
+        );
+        assert_eq!(color_mode_from_values(false, "dumb", "truecolor"), ColorMode::Monochrome);
+    }
+
+    #[test]
     fn test_projection_has_known_center_and_culls_backside() {
         assert_eq!(
             project(VIEW_CENTER_LAT, VIEW_CENTER_LNG, VIEW_CENTER_LAT, VIEW_CENTER_LNG),
@@ -2936,6 +3003,8 @@ mod tests {
         assert_ne!(palette(ColorMode::TrueColor).peers, palette(ColorMode::Ansi256).peers);
         assert_ne!(palette(ColorMode::Ansi256).peers, palette(ColorMode::Ansi16).peers);
         assert_eq!(palette(ColorMode::Monochrome).peers, [Color::Reset; 4]);
+        assert_eq!(palette(ColorMode::Ansi256).background, Color::Indexed(236));
+        assert_eq!(palette(ColorMode::Ansi16).background, Color::Black);
     }
 
     #[test]
@@ -2983,6 +3052,35 @@ mod tests {
         assert_eq!(widget.rotation_degrees(), 0.0);
         assert!(!widget.toggle_paused());
         assert!(widget.advance_rotation());
+    }
+
+    #[test]
+    fn test_peer_markers_are_painted_after_trails() {
+        let snapshot = snapshot_with_peers(vec![
+            LocatedPeer {
+                ip: "1.1.1.1".to_string(),
+                country: "CN".to_string(),
+                lat: VIEW_CENTER_LAT,
+                lng: VIEW_CENTER_LNG,
+            },
+            LocatedPeer {
+                ip: "2.2.2.2".to_string(),
+                country: "US".to_string(),
+                lat: VIEW_CENTER_LAT,
+                lng: VIEW_CENTER_LNG + 30.0,
+            },
+        ]);
+        let buf = render_globe_widget(snapshot, Rect::new(0, 0, 60, 20));
+        let mut peer_markers = 0;
+        for x in 1..59 {
+            for y in 1..19 {
+                if buf.get(x, y).symbol() == PEER_DOT {
+                    peer_markers += 1;
+                }
+            }
+        }
+
+        assert_eq!(peer_markers, 2);
     }
 
     #[test]
@@ -3068,6 +3166,19 @@ mod tests {
             }
         }
         assert!(land_dots > 50, "continent dot matrix should be visible: {land_dots}");
+    }
+
+    #[test]
+    fn test_tiny_area_keeps_a_static_simplified_globe() {
+        let snapshot = snapshot_with_peers(vec![LocatedPeer {
+            ip: "1.1.1.1".to_string(),
+            country: "CN".to_string(),
+            lat: VIEW_CENTER_LAT,
+            lng: VIEW_CENTER_LNG,
+        }]);
+        let buf = render_globe_widget(snapshot, Rect::new(0, 0, 10, 3));
+
+        assert_eq!(buf.get(5, 1).symbol(), PEER_DOT);
     }
 
     #[test]

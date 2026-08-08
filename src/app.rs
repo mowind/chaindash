@@ -54,10 +54,12 @@ impl App {
         true
     }
 
+    /// Advance the globe animation by one frame when it is running.
     pub fn advance_globe_rotation(&mut self) -> bool {
         self.widgets.globe.advance_rotation()
     }
 
+    /// Toggle the globe animation and request a redraw.
     pub fn toggle_globe_animation(&mut self) -> bool {
         self.widgets.globe.toggle_paused();
         true
