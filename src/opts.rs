@@ -121,6 +121,10 @@ pub struct Opts {
     #[arg(long)]
     pub debug: bool,
 
+    /// Path to the SQLite database used for peer geography persistence
+    #[arg(long, default_value = "./chaindash.db")]
+    pub db_path: String,
+
     /// Disk mount points to monitor (comma-separated)
     #[arg(long, value_delimiter = ',', default_value = "/,/opt")]
     pub disk_mount_points: Vec<String>,
@@ -201,6 +205,20 @@ mod tests {
         let opts = Opts::parse_from(["test"]);
 
         assert_eq!(opts.url, "test@ws://127.0.0.1:6789");
+    }
+
+    #[test]
+    fn test_default_db_path_is_chaindash_db() {
+        let opts = Opts::parse_from(["test"]);
+
+        assert_eq!(opts.db_path, "./chaindash.db");
+    }
+
+    #[test]
+    fn test_custom_db_path_is_accepted() {
+        let opts = Opts::parse_from(["test", "--db-path", "/tmp/peers.db"]);
+
+        assert_eq!(opts.db_path, "/tmp/peers.db");
     }
 
     #[test]

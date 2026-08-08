@@ -192,10 +192,15 @@ pub fn draw_top_row(
     widgets: &mut Widgets,
     area: Rect,
 ) {
-    let horizontal_chunks = split_aligned_columns(area);
+    let columns = split_aligned_columns(area);
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
+        .split(columns[0]);
 
-    frame.render_widget(&widgets.time, horizontal_chunks[0]);
-    frame.render_widget(&widgets.txs, horizontal_chunks[1]);
+    frame.render_widget(&widgets.time, left_rows[0]);
+    frame.render_widget(&widgets.txs, left_rows[1]);
+    frame.render_widget(&widgets.globe, columns[1]);
 }
 
 pub fn draw_bottom_section(
@@ -237,6 +242,73 @@ mod tests {
     fn test_content_row_heights_balances_tall_layouts() {
         assert_eq!(content_row_heights(40, 5), (21, 14));
         assert_eq!(content_row_heights(30, 5), (15, 10));
+    }
+
+    #[test]
+    fn test_draw_top_row_splits_left_column_vertically() {
+        use clap::Parser;
+        use ratatui::backend::TestBackend;
+
+        use crate::{
+            app::setup_app,
+            opts::Opts,
+        };
+
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--db-path",
+            ":memory:",
+        ]);
+        let mut app = setup_app(&opts);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("terminal should create");
+        terminal
+            .draw(|frame| draw_top_row(frame, &mut app.widgets, Rect::new(0, 0, 80, 20)))
+            .expect("draw should succeed");
+        let buf = terminal.backend().buffer().clone();
+
+        // Left column top: Block Time title at row 0.
+        assert_eq!(buf.get(2, 0).symbol(), "B");
+        assert_eq!(buf.get(8, 0).symbol(), "T");
+        // Left column bottom: Block Transactions title at row 10.
+        assert_eq!(buf.get(2, 10).symbol(), "B");
+        assert_eq!(buf.get(8, 10).symbol(), "T");
+        // Right column: Peer Globe title at column 40+.
+        assert_eq!(buf.get(42, 0).symbol(), "P");
+        assert_eq!(buf.get(47, 0).symbol(), "G");
+        // Panel borders separate the three panels.
+        assert_eq!(buf.get(39, 0).symbol(), "┐");
+        assert_eq!(buf.get(40, 0).symbol(), "┌");
+    }
+
+    #[test]
+    fn test_draw_top_row_shows_globe_stats_with_empty_snapshot() {
+        use clap::Parser;
+        use ratatui::backend::TestBackend;
+
+        use crate::{
+            app::setup_app,
+            opts::Opts,
+        };
+
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--db-path",
+            ":memory:",
+        ]);
+        let mut app = setup_app(&opts);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("terminal should create");
+        terminal
+            .draw(|frame| draw_top_row(frame, &mut app.widgets, Rect::new(0, 0, 80, 20)))
+            .expect("draw should succeed");
+        let buf = terminal.backend().buffer().clone();
+
+        // Globe panel inner stats row (row 18 of 20): "peers 0 / ...".
+        assert_eq!(buf.get(41, 18).symbol(), "p");
+        assert_eq!(buf.get(47, 18).symbol(), "0");
     }
 
     #[test]

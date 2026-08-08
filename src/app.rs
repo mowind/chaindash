@@ -1,15 +1,27 @@
-use crossbeam_channel::Sender;
+use std::sync::Arc;
+
+use crossbeam_channel::{
+    Receiver,
+    Sender,
+};
+use log::warn;
 
 use crate::{
     collect::{
         Data,
         SharedData,
     },
+    geo::{
+        NullPeerGeoStore,
+        PeerGeoStore,
+        SqlitePeerGeoStore,
+    },
     opts::Opts,
     sync::lock_or_panic,
     update::UpdatableWidget,
     widgets::{
         DiskListWidget,
+        GlobeWidget,
         NodeDetailWidget,
         NodeWidget,
         SystemSummaryWidget,
@@ -21,6 +33,10 @@ use crate::{
 pub struct App {
     pub widgets: Widgets,
     pub data: SharedData,
+    /// Geo store handle shared with the collector for Peer Snapshot writes.
+    pub geo_store: Arc<dyn PeerGeoStore>,
+    /// Wake channel fired by the geo store worker after each successful write.
+    pub geo_updates: Receiver<()>,
 }
 
 impl App {
@@ -30,6 +46,12 @@ impl App {
     ) {
         let mut data = lock_or_panic(&self.data);
         data.set_ui_waker(sender);
+    }
+
+    /// Refresh the Geo View Snapshot from the store and request a redraw.
+    pub fn refresh_geo_snapshot(&mut self) -> bool {
+        self.widgets.globe.update();
+        true
     }
 
     pub fn refresh_dirty_widgets(&mut self) -> bool {
@@ -151,6 +173,7 @@ pub struct Widgets {
     pub txs: TxsWidget,
     pub time: TimeWidget,
     pub node: NodeWidget,
+    pub globe: GlobeWidget,
     #[cfg(target_family = "unix")]
     pub system_summary: SystemSummaryWidget,
     #[cfg(target_family = "unix")]
@@ -160,9 +183,11 @@ pub struct Widgets {
 
 pub fn setup_app(opts: &Opts) -> App {
     let data = Data::new();
+    let (geo_store, geo_updates) = setup_geo_store(opts);
     let txs = TxsWidget::new(opts.interval, data.clone());
     let time = TimeWidget::new(opts.interval, data.clone());
     let node = NodeWidget::new(data.clone());
+    let globe = GlobeWidget::new(data.clone(), geo_store.clone());
 
     #[cfg(target_family = "unix")]
     let system_summary = SystemSummaryWidget::new(data.clone());
@@ -177,6 +202,7 @@ pub fn setup_app(opts: &Opts) -> App {
             txs,
             time,
             node,
+            globe,
             #[cfg(target_family = "unix")]
             system_summary,
             #[cfg(target_family = "unix")]
@@ -184,6 +210,28 @@ pub fn setup_app(opts: &Opts) -> App {
             node_details,
         },
         data,
+        geo_store,
+        geo_updates,
+    }
+}
+
+/// Open the SQLite worker and migration, or fall back to an unavailable store
+/// so the rest of the TUI keeps running.
+fn setup_geo_store(opts: &Opts) -> (Arc<dyn PeerGeoStore>, Receiver<()>) {
+    match SqlitePeerGeoStore::open(&opts.db_path) {
+        Ok(store) => {
+            let updates = store.updates();
+            (Arc::new(store), updates)
+        },
+        Err(err) => {
+            warn!("failed to open peer geo database {}: {err}", opts.db_path);
+            let store = NullPeerGeoStore::new(format!(
+                "peer geo database {} unavailable: {err}",
+                opts.db_path
+            ));
+            let updates = store.updates();
+            (Arc::new(store), updates)
+        },
     }
 }
 
@@ -200,7 +248,7 @@ mod tests {
     };
 
     fn create_test_opts() -> Opts {
-        Opts::parse_from(["test", "--url", "test@ws://127.0.0.1:6789"])
+        Opts::parse_from(["test", "--url", "test@ws://127.0.0.1:6789", "--db-path", ":memory:"])
     }
 
     #[cfg(target_family = "unix")]

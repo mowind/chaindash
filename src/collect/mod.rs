@@ -4,6 +4,7 @@ mod daily_snapshot;
 mod data;
 mod node_detail;
 mod node_state;
+mod peer_geo;
 #[cfg(target_family = "unix")]
 mod system_stats;
 mod types;

@@ -2,6 +2,7 @@ mod app;
 mod collect;
 mod draw;
 mod error;
+mod geo;
 mod notify;
 mod opts;
 mod sync;
@@ -293,7 +294,13 @@ async fn main() -> Result<(), ChaindashError> {
     let (ui_refresh_sender, ui_refresh_receiver) = bounded(1);
     app.install_ui_waker(ui_refresh_sender);
 
-    let collector = Arc::new(collect::Collector::new(&opts, app.data.clone())?);
+    // Startup order: SQLite worker and migration already ran in setup_app,
+    // now load the initial Geo View Snapshot before peer collection starts.
+    app.refresh_geo_snapshot();
+
+    let geo_update_receiver = app.geo_updates.clone();
+    let collector =
+        Arc::new(collect::Collector::new(&opts, app.data.clone(), app.geo_store.clone())?);
     let collector_handle = {
         let collector_clone = Arc::clone(&collector);
         tokio::spawn(async move { collect::run(collector_clone).await })
@@ -332,6 +339,13 @@ async fn main() -> Result<(), ChaindashError> {
                     break 'event_loop;
                 }
             }
+            recv(geo_update_receiver) -> _ => {
+                if app.refresh_geo_snapshot()
+                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                {
+                    break 'event_loop;
+                }
+            }
             recv(ui_event_receiver) -> message => {
                 let Ok(event) = message else {
                     // Channel closed, exit gracefully
@@ -354,6 +368,7 @@ async fn main() -> Result<(), ChaindashError> {
     collector.stop();
     terminal_guard.cleanup();
     let collector_join_result = collector_handle.await;
+    app.geo_store.shutdown();
 
     match collector_join_result {
         Ok(result) => result?,
@@ -377,7 +392,13 @@ mod tests {
     use crate::collect::DiskDetail;
 
     fn create_test_app() -> App {
-        let opts = Opts::parse_from(["test", "--url", "test@ws://127.0.0.1:6789"]);
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--db-path",
+            ":memory:",
+        ]);
         setup_app(&opts)
     }
 

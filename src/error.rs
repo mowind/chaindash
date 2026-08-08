@@ -63,4 +63,10 @@ impl From<log::SetLoggerError> for ChaindashError {
     }
 }
 
+impl From<rusqlite::Error> for ChaindashError {
+    fn from(err: rusqlite::Error) -> Self {
+        ChaindashError::Other(format!("sqlite error: {err}"))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, ChaindashError>;

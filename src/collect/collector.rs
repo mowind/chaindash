@@ -25,12 +25,14 @@ use super::{
     data::SharedData,
     node_detail::collect_node_details,
     node_state::collect_node_state,
+    peer_geo::collect_peer_geo,
 };
 use crate::{
     error::{
         ChaindashError,
         Result,
     },
+    geo::PeerGeoStore,
     notify::TelegramNotifier,
     opts::Opts,
 };
@@ -49,6 +51,7 @@ pub struct Collector {
     explorer_api_url: String,
     notifier: Option<Arc<TelegramNotifier>>,
     stop_flag: Arc<AtomicBool>,
+    geo_store: Arc<dyn PeerGeoStore>,
 }
 
 pub async fn run(collector: Arc<Collector>) -> Result<()> {
@@ -59,6 +62,7 @@ impl Collector {
     pub fn new(
         opts: &Opts,
         data: SharedData,
+        geo_store: Arc<dyn PeerGeoStore>,
     ) -> Result<Self> {
         let urls: Vec<&str> = opts.url.as_str().split(',').collect();
         let urls: Vec<(String, String)> = urls
@@ -100,6 +104,7 @@ impl Collector {
             explorer_api_url,
             notifier,
             stop_flag: Arc::new(AtomicBool::new(false)),
+            geo_store,
         })
     }
 
@@ -123,6 +128,18 @@ impl Collector {
                 .await
                 {
                     warn!("collect_node_state failed for {}: {}", name, e);
+                }
+            });
+        }
+
+        if !self.urls.is_empty() {
+            let urls = self.urls.clone();
+            let store = Arc::clone(&self.geo_store);
+            let data = self.data.clone();
+            let stop_flag = self.stop_flag.clone();
+            background_tasks.spawn(async move {
+                if let Err(e) = collect_peer_geo(urls, store, data, stop_flag).await {
+                    warn!("collect_peer_geo failed: {}", e);
                 }
             });
         }
@@ -228,15 +245,23 @@ mod tests {
             Data,
             SharedData,
         },
+        geo::{
+            testutil::FakePeerGeoStore,
+            GeoViewSnapshot,
+        },
         Opts,
     };
+
+    fn test_geo_store() -> Arc<dyn crate::geo::PeerGeoStore> {
+        Arc::new(FakePeerGeoStore::new(GeoViewSnapshot::default()))
+    }
 
     #[test]
     fn test_collector_new_invalid_url_no_at_sign() {
         let opts = Opts::parse_from(["test", "--url", "invalid_url"]);
         let data: SharedData = Arc::new(Mutex::new(Data::default()));
 
-        let result = Collector::new(&opts, data);
+        let result = Collector::new(&opts, data, test_geo_store());
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("invalid url format"));
@@ -247,7 +272,7 @@ mod tests {
         let opts = Opts::parse_from(["test", "--url", "test@ws://127.0.0.1:6789"]);
         let data: SharedData = Arc::new(Mutex::new(Data::default()));
 
-        let result = Collector::new(&opts, data);
+        let result = Collector::new(&opts, data, test_geo_store());
         assert!(result.is_ok());
     }
 
@@ -256,7 +281,7 @@ mod tests {
         let opts = Opts::parse_from(["test", "--url", "test@http://127.0.0.1:6789"]);
         let data: SharedData = Arc::new(Mutex::new(Data::default()));
 
-        let result = Collector::new(&opts, data);
+        let result = Collector::new(&opts, data, test_geo_store());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid websocket url"));
     }
@@ -270,7 +295,7 @@ mod tests {
         ]);
         let data: SharedData = Arc::new(Mutex::new(Data::default()));
 
-        let result = Collector::new(&opts, data);
+        let result = Collector::new(&opts, data, test_geo_store());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid websocket url for backup"));
     }
@@ -286,7 +311,7 @@ mod tests {
         ]);
         let data: SharedData = Arc::new(Mutex::new(Data::default()));
 
-        let result = Collector::new(&opts, data);
+        let result = Collector::new(&opts, data, test_geo_store());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -309,7 +334,7 @@ mod tests {
         ]);
         let data: SharedData = Arc::new(Mutex::new(Data::default()));
 
-        let result = Collector::new(&opts, data);
+        let result = Collector::new(&opts, data, test_geo_store());
         assert!(result.is_ok());
     }
 
