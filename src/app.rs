@@ -54,6 +54,15 @@ impl App {
         true
     }
 
+    pub fn advance_globe_rotation(&mut self) -> bool {
+        self.widgets.globe.advance_rotation()
+    }
+
+    pub fn toggle_globe_animation(&mut self) -> bool {
+        self.widgets.globe.toggle_paused();
+        true
+    }
+
     pub fn refresh_dirty_widgets(&mut self) -> bool {
         let dirty = {
             let mut data = lock_or_panic(&self.data);
