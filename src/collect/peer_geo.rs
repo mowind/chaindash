@@ -9,7 +9,6 @@ use std::{
         Arc,
         Mutex,
     },
-    time::Instant,
 };
 
 use alloy::providers::{
@@ -65,7 +64,8 @@ pub(crate) async fn collect_peer_geo(
     let pending: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let mut enrichment_tasks = JoinSet::new();
     let mut ticker = time::interval(Duration::from_secs(1));
-    let mut next_poll = Instant::now();
+    let poll_started = time::Instant::now();
+    let mut next_poll = Duration::ZERO;
 
     while !stop_flag.load(Ordering::Relaxed) {
         // Poll stop_flag every second so shutdown is not delayed by the
@@ -74,10 +74,9 @@ pub(crate) async fn collect_peer_geo(
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
-        if Instant::now() < next_poll {
+        if !poll_due(poll_started.elapsed(), &mut next_poll) {
             continue;
         }
-        next_poll = Instant::now() + PEER_POLL_INTERVAL;
 
         let mut results = Vec::new();
         for (name, url) in &urls {
@@ -132,6 +131,21 @@ pub(crate) async fn collect_peer_geo(
     Ok(())
 }
 
+/// Return whether a poll is due and schedule the next one relative to the
+/// same monotonic clock. Keeping this decision pure makes the one-minute
+/// cadence testable without sleeping.
+fn poll_due(
+    elapsed: Duration,
+    next_poll: &mut Duration,
+) -> bool {
+    if elapsed < *next_poll {
+        return false;
+    }
+
+    *next_poll = elapsed + PEER_POLL_INTERVAL;
+    true
+}
+
 /// Fetch and parse the `admin_peers` response of one Monitored Node.
 async fn fetch_admin_peers_ips(url: &str) -> Result<Vec<IpAddr>> {
     let provider = ProviderBuilder::new().connect_ws(WsConnect::new(url)).await?;
@@ -165,6 +179,17 @@ mod tests {
     #[test]
     fn test_poll_interval_is_one_minute() {
         assert_eq!(PEER_POLL_INTERVAL, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_poll_scheduler_uses_one_minute_boundaries_without_sleeping() {
+        let mut next_poll = Duration::ZERO;
+
+        assert!(poll_due(Duration::ZERO, &mut next_poll));
+        assert_eq!(next_poll, Duration::from_secs(60));
+        assert!(!poll_due(Duration::from_secs(59), &mut next_poll));
+        assert!(poll_due(Duration::from_secs(60), &mut next_poll));
+        assert_eq!(next_poll, Duration::from_secs(120));
     }
 
     #[test]

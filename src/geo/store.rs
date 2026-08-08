@@ -396,9 +396,12 @@ pub(crate) fn replace_peer_snapshot_tx(
 ) -> Result<Vec<String>> {
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM current_peers", [])?;
+    let mut unique_ips = ips.to_vec();
+    unique_ips.sort();
+    unique_ips.dedup();
     {
         let mut stmt = tx.prepare("INSERT INTO current_peers (ip, updated_at) VALUES (?1, ?2)")?;
-        for ip in ips {
+        for ip in &unique_ips {
             stmt.execute(params![ip, now])?;
         }
     }
@@ -546,6 +549,22 @@ mod tests {
         assert_eq!(snapshot.total_peers, 1);
         assert_eq!(snapshot.located_peers, 0);
         assert!(snapshot.peers.is_empty(), "no location cache entry means no plot");
+    }
+
+    #[test]
+    fn test_replace_snapshot_deduplicates_ips_at_store_boundary() {
+        let mut conn = in_memory_conn();
+        run_migrations(&mut conn).expect("migration should succeed");
+
+        replace_peer_snapshot_tx(
+            &mut conn,
+            &["2.2.2.2".to_string(), "1.1.1.1".to_string(), "2.2.2.2".to_string()],
+            100,
+        )
+        .expect("duplicate IPs should not make the snapshot write fail");
+
+        let snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
+        assert_eq!(snapshot.total_peers, 2);
     }
 
     #[test]
