@@ -296,6 +296,7 @@ async fn main() -> Result<(), ChaindashError> {
     let mut terminal_guard = TerminalGuard::new();
 
     let ticker = tick(PERIODIC_REDRAW_INTERVAL);
+    let geo_retry_ticker = tick(Duration::from_secs(1));
 
     let ui_event_receiver = setup_ui_events();
     let ctrl_c_events = setup_ctrl_c()?;
@@ -318,7 +319,11 @@ async fn main() -> Result<(), ChaindashError> {
     if let Err(err) = draw_app(&mut terminal, &mut app) {
         collector.stop();
         terminal_guard.cleanup();
-        let _ = collector_handle.await;
+        let collector_join_result = collector_handle.await;
+        app.geo_store.shutdown();
+        if let Err(join_err) = collector_join_result {
+            return Err(ChaindashError::Other(format!("collector task join error: {join_err}")));
+        }
         return Err(err);
     }
 
@@ -343,6 +348,13 @@ async fn main() -> Result<(), ChaindashError> {
                 };
 
                 if app.refresh_dirty_widgets()
+                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                {
+                    break 'event_loop;
+                }
+            }
+            recv(geo_retry_ticker) -> _ => {
+                if app.retry_geo_snapshot()
                     && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
                 {
                     break 'event_loop;

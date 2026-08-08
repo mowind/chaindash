@@ -37,6 +37,7 @@ pub struct App {
     pub geo_store: Arc<dyn PeerGeoStore>,
     /// Wake channel fired by the geo store worker after each successful write.
     pub geo_updates: Receiver<()>,
+    geo_snapshot_retry: bool,
 }
 
 impl App {
@@ -50,8 +51,17 @@ impl App {
 
     /// Refresh the Geo View Snapshot from the store and request a redraw.
     pub fn refresh_geo_snapshot(&mut self) -> bool {
-        self.widgets.globe.update();
+        self.geo_snapshot_retry = !self.widgets.globe.refresh_snapshot();
         true
+    }
+
+    /// Retry a failed Geo View Snapshot read without querying on every frame.
+    pub fn retry_geo_snapshot(&mut self) -> bool {
+        if !self.geo_snapshot_retry {
+            return false;
+        }
+
+        self.refresh_geo_snapshot()
     }
 
     /// Advance the globe animation by one frame when it is running.
@@ -223,6 +233,7 @@ pub fn setup_app(opts: &Opts) -> App {
         data,
         geo_store,
         geo_updates,
+        geo_snapshot_retry: false,
     }
 }
 

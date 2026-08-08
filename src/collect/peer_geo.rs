@@ -30,7 +30,10 @@ use super::data::{
     SharedData,
 };
 use crate::{
-    error::Result,
+    error::{
+        ChaindashError,
+        Result,
+    },
     geo::{
         peers::{
             is_enrichable,
@@ -46,6 +49,7 @@ use crate::{
 };
 
 const PEER_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Poll `admin_peers` for every Monitored Node once per minute, replace the
 /// Peer Snapshot through the store, and enrich new or stale IPs immediately.
@@ -108,7 +112,14 @@ pub(crate) async fn collect_peer_geo(
                     let pending = Arc::clone(&pending);
                     let ipinfo = Arc::clone(&ipinfo);
                     enrichment_tasks.spawn(async move {
-                        let entry = build_location_entry(&ip, ipinfo.lookup(&ip).await);
+                        let lookup = ipinfo.lookup(&ip).await;
+                        let entry = build_location_entry(&ip, lookup);
+                        if let Some(error) = entry.error.as_deref() {
+                            warn_with_status(
+                                &data,
+                                format!("IPinfo enrichment failed for {ip}: {error}"),
+                            );
+                        }
                         if let Err(err) = store.update_location_cache(vec![entry]) {
                             warn_with_status(
                                 &data,
@@ -148,8 +159,16 @@ fn poll_due(
 
 /// Fetch and parse the `admin_peers` response of one Monitored Node.
 async fn fetch_admin_peers_ips(url: &str) -> Result<Vec<IpAddr>> {
-    let provider = ProviderBuilder::new().connect_ws(WsConnect::new(url)).await?;
-    let peers: Vec<Value> = provider.client().request_noparams("admin_peers").await?;
+    let provider =
+        time::timeout(PEER_RPC_TIMEOUT, ProviderBuilder::new().connect_ws(WsConnect::new(url)))
+            .await
+            .map_err(|_| {
+                ChaindashError::Rpc(format!("admin_peers connection timed out for {url}"))
+            })??;
+    let peers: Vec<Value> =
+        time::timeout(PEER_RPC_TIMEOUT, provider.client().request_noparams("admin_peers"))
+            .await
+            .map_err(|_| ChaindashError::Rpc(format!("admin_peers request timed out for {url}")))??;
     Ok(parse_peer_ips(&peers))
 }
 
@@ -179,6 +198,11 @@ mod tests {
     #[test]
     fn test_poll_interval_is_one_minute() {
         assert_eq!(PEER_POLL_INTERVAL, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_rpc_timeout_bounds_shutdown_waits() {
+        assert_eq!(PEER_RPC_TIMEOUT, Duration::from_secs(10));
     }
 
     #[test]

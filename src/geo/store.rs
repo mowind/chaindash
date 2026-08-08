@@ -296,7 +296,7 @@ impl PeerGeoStore for SqlitePeerGeoStore {
 
 impl Drop for SqlitePeerGeoStore {
     fn drop(&mut self) {
-        let _ = self.tx.send(StoreCommand::Shutdown);
+        self.shutdown();
     }
 }
 

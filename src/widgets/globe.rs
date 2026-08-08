@@ -2743,6 +2743,22 @@ impl GlobeWidget {
         &self.snapshot
     }
 
+    /// Load the latest Geo View Snapshot and report whether the read succeeded.
+    pub(crate) fn refresh_snapshot(&mut self) -> bool {
+        match self.store.geo_view_snapshot() {
+            Ok(snapshot) => {
+                self.snapshot = snapshot;
+                true
+            },
+            Err(err) => {
+                let message = format!("geo snapshot unavailable: {err}");
+                lock_or_panic(&self.collect_data).set_status_message(StatusLevel::Warn, message);
+                self.snapshot = GeoViewSnapshot::default();
+                false
+            },
+        }
+    }
+
     fn stats_line(&self) -> String {
         format!(
             "peers {} / located {} / countries {}",
@@ -2820,14 +2836,7 @@ impl GlobeWidget {
 
 impl UpdatableWidget for GlobeWidget {
     fn update(&mut self) {
-        match self.store.geo_view_snapshot() {
-            Ok(snapshot) => self.snapshot = snapshot,
-            Err(err) => {
-                let message = format!("geo snapshot unavailable: {err}");
-                lock_or_panic(&self.collect_data).set_status_message(StatusLevel::Warn, message);
-                self.snapshot = GeoViewSnapshot::default();
-            },
-        }
+        self.refresh_snapshot();
     }
 
     fn get_update_interval(&self) -> Ratio<u64> {
@@ -3211,7 +3220,7 @@ mod tests {
         let store = Arc::new(FakePeerGeoStore::new(snapshot.clone()));
         let mut widget = GlobeWidget::new(data, store);
 
-        widget.update();
+        assert!(widget.refresh_snapshot());
 
         assert_eq!(widget.snapshot(), &snapshot);
     }
@@ -3222,7 +3231,7 @@ mod tests {
         let store: Arc<dyn PeerGeoStore> = Arc::new(FailingStore);
         let mut widget = GlobeWidget::new(data.clone(), store);
 
-        widget.update();
+        assert!(!widget.refresh_snapshot());
 
         assert_eq!(widget.snapshot(), &GeoViewSnapshot::default());
         let status = data.lock().expect("mutex poisoned").status_message();
