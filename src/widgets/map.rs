@@ -34,8 +34,12 @@ const LAND_TOP: &str = "▀";
 const LAND_BOTTOM: &str = "▄";
 const LAND_FULL: &str = "█";
 const PEER_DOT: &str = "●";
+const PEER_DIAMOND: &str = "◆";
+const PEER_SQUARE: &str = "■";
+const LEGEND_TEXT: &str = "●1 / ◆2-4 / ■5+";
 const HALF_BLOCK_MIN_WIDTH: u16 = 24;
 const HALF_BLOCK_MIN_HEIGHT: u16 = 7;
+const LEGEND_MIN_HEIGHT: u16 = 11;
 const MAP_CELL_ASPECT_RATIO: u16 = 4;
 
 const LAND_MASK_WIDTH: usize = 360;
@@ -208,6 +212,13 @@ fn peer_color(
     palette.peers[hash % palette.peers.len()]
 }
 
+fn peer_style(
+    peer: &crate::geo::snapshot::LocatedPeer,
+    palette: MapPalette,
+) -> Style {
+    Style::default().fg(peer_color(peer, palette)).bg(palette.background)
+}
+
 fn set_cell(
     buf: &mut Buffer,
     x: i32,
@@ -237,10 +248,19 @@ fn half_block_symbol(mask: u8) -> Option<&'static str> {
     }
 }
 
+fn peer_marker(count: usize) -> &'static str {
+    match count {
+        1 => PEER_DOT,
+        2..=4 => PEER_DIAMOND,
+        _ => PEER_SQUARE,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RenderMode {
     half_blocks: bool,
     show_stats: bool,
+    show_legend: bool,
 }
 
 fn render_mode(area: Rect) -> RenderMode {
@@ -248,6 +268,7 @@ fn render_mode(area: Rect) -> RenderMode {
         return RenderMode {
             half_blocks: false,
             show_stats: false,
+            show_legend: false,
         };
     }
 
@@ -255,12 +276,14 @@ fn render_mode(area: Rect) -> RenderMode {
         return RenderMode {
             half_blocks: false,
             show_stats: true,
+            show_legend: false,
         };
     }
 
     RenderMode {
         half_blocks: true,
         show_stats: true,
+        show_legend: area.height >= LEGEND_MIN_HEIGHT,
     }
 }
 
@@ -420,14 +443,27 @@ impl PeerMapWidget {
         );
     }
 
+    fn render_legend(
+        buf: &mut Buffer,
+        area: Rect,
+        colors: MapPalette,
+    ) {
+        buf.set_stringn(
+            area.x,
+            area.y,
+            LEGEND_TEXT,
+            area.width as usize,
+            Style::default().fg(colors.stats).bg(colors.background),
+        );
+    }
+
     fn render_map(
         &self,
         buf: &mut Buffer,
         area: Rect,
         mode: RenderMode,
+        colors: MapPalette,
     ) {
-        let palette = palette(color_mode());
-
         let mut land_cells = BTreeMap::new();
         for row in 0..LAND_MASK_HEIGHT {
             for column in 0..LAND_MASK_WIDTH {
@@ -458,23 +494,27 @@ impl PeerMapWidget {
             }
         }
 
-        let land_style = Style::default().fg(palette.land).bg(palette.background);
+        let land_style = Style::default().fg(colors.land).bg(colors.background);
         for ((screen_x, screen_y), mask) in land_cells {
             if let Some(symbol) = half_block_symbol(mask) {
                 set_cell(buf, screen_x, screen_y, area, symbol, land_style);
             }
         }
 
-        let mut peer_cells = BTreeMap::new();
+        let mut peer_cells =
+            BTreeMap::<(i32, i32), (&crate::geo::snapshot::LocatedPeer, usize)>::new();
         for peer in &self.snapshot.peers {
             if let Some(cell) = map_cell(peer.lat, peer.lng, area) {
-                peer_cells.entry(cell).or_insert(peer);
+                if let Some((_, count)) = peer_cells.get_mut(&cell) {
+                    *count = count.saturating_add(1);
+                } else {
+                    peer_cells.insert(cell, (peer, 1usize));
+                }
             }
         }
 
-        for ((screen_x, screen_y), peer) in peer_cells {
-            let style = Style::default().fg(peer_color(peer, palette)).bg(palette.background);
-            set_cell(buf, screen_x, screen_y, area, PEER_DOT, style);
+        for ((screen_x, screen_y), (peer, count)) in peer_cells {
+            set_cell(buf, screen_x, screen_y, area, peer_marker(count), peer_style(peer, colors));
         }
     }
 }
@@ -489,13 +529,14 @@ impl UpdatableWidget for PeerMapWidget {
     }
 }
 
-impl Widget for &PeerMapWidget {
-    fn render(
-        self,
+impl PeerMapWidget {
+    fn render_with_color_mode(
+        &self,
         area: Rect,
         buf: &mut Buffer,
+        color_mode: ColorMode,
     ) {
-        let colors = palette(color_mode());
+        let colors = palette(color_mode);
         panel::new(MAP_TITLE)
             .style(Style::default().bg(colors.background))
             .border_style(Style::default().fg(colors.border).bg(colors.background))
@@ -513,7 +554,8 @@ impl Widget for &PeerMapWidget {
         }
 
         let mode = render_mode(inner);
-        let map_area = if mode.show_stats {
+        let mut map_height = inner.height;
+        if mode.show_stats {
             let stats_row = inner.y + inner.height - 1;
             self.render_stats(
                 buf,
@@ -525,20 +567,42 @@ impl Widget for &PeerMapWidget {
                 },
                 colors,
             );
-            Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: inner.height.saturating_sub(1),
-            }
-        } else {
-            inner
-        };
-
-        let map_area = map_rect(map_area);
-        if map_area.width > 0 && map_area.height > 0 {
-            self.render_map(buf, map_area, mode);
+            map_height = map_height.saturating_sub(1);
         }
+        if mode.show_legend {
+            let legend_row = inner.y + map_height - 1;
+            PeerMapWidget::render_legend(
+                buf,
+                Rect {
+                    x: inner.x,
+                    y: legend_row,
+                    width: inner.width,
+                    height: 1,
+                },
+                colors,
+            );
+            map_height = map_height.saturating_sub(1);
+        }
+
+        let map_area = map_rect(Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: map_height,
+        });
+        if map_area.width > 0 && map_area.height > 0 {
+            self.render_map(buf, map_area, mode, colors);
+        }
+    }
+}
+
+impl Widget for &PeerMapWidget {
+    fn render(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        self.render_with_color_mode(area, buf, color_mode());
     }
 }
 
@@ -549,6 +613,7 @@ mod tests {
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
+        style::Modifier,
         widgets::Widget,
     };
 
@@ -571,6 +636,20 @@ mod tests {
         widget.update();
         let mut buf = Buffer::empty(area);
         (&widget).render(area, &mut buf);
+        buf
+    }
+
+    fn render_map_widget_in_color_mode(
+        snapshot: GeoViewSnapshot,
+        area: Rect,
+        mode: ColorMode,
+    ) -> Buffer {
+        let data = Data::new();
+        let store = Arc::new(FakePeerGeoStore::new(snapshot));
+        let mut widget = PeerMapWidget::new(data, store);
+        widget.update();
+        let mut buf = Buffer::empty(area);
+        widget.render_with_color_mode(area, &mut buf, mode);
         buf
     }
 
@@ -611,16 +690,19 @@ mod tests {
             width: area.width.saturating_sub(2),
             height: area.height.saturating_sub(2),
         };
-        let map_height = if render_mode(inner).show_stats {
-            inner.height.saturating_sub(1)
-        } else {
-            inner.height
-        };
+        let mode = render_mode(inner);
+        let mut map_height = inner.height;
+        if mode.show_stats {
+            map_height = map_height.saturating_sub(1);
+        }
+        if mode.show_legend {
+            map_height = map_height.saturating_sub(1);
+        }
 
         let mut markers = 0;
         for x in inner.x..inner.x + inner.width {
             for y in inner.y..inner.y + map_height {
-                if buf.get(x, y).symbol() == PEER_DOT {
+                if matches!(buf.get(x, y).symbol(), PEER_DOT | "◆" | "■") {
                     markers += 1;
                 }
             }
@@ -635,6 +717,9 @@ mod tests {
         assert_eq!(LAND_BOTTOM, "▄");
         assert_eq!(LAND_FULL, "█");
         assert_eq!(PEER_DOT, "●");
+        assert_eq!(PEER_DIAMOND, "◆");
+        assert_eq!(PEER_SQUARE, "■");
+        assert_eq!(LEGEND_TEXT, "●1 / ◆2-4 / ■5+");
     }
 
     #[test]
@@ -721,10 +806,17 @@ mod tests {
         let full = render_mode(Rect::new(0, 0, 50, 12));
         assert!(full.half_blocks);
         assert!(full.show_stats);
+        assert!(full.show_legend);
+
+        let normal = render_mode(Rect::new(0, 0, 50, 10));
+        assert!(normal.half_blocks);
+        assert!(normal.show_stats);
+        assert!(!normal.show_legend);
 
         let compact = render_mode(Rect::new(0, 0, 30, 8));
         assert!(!compact.half_blocks);
         assert!(compact.show_stats);
+        assert!(!compact.show_legend);
 
         let fallback = render_mode(Rect::new(0, 0, 23, 7));
         assert!(!fallback.half_blocks);
@@ -748,6 +840,67 @@ mod tests {
         assert_eq!(palette(ColorMode::Monochrome).peers, [Color::Reset; 4]);
         assert_eq!(palette(ColorMode::Ansi256).background, Color::Indexed(236));
         assert_eq!(palette(ColorMode::Ansi16).background, Color::Black);
+    }
+
+    #[test]
+    fn test_peer_marker_style_keeps_colors_and_bold_behavior_across_modes() {
+        let peer = LocatedPeer {
+            ip: "1.1.1.1".to_string(),
+            country: "AA".to_string(),
+            lat: 0.0,
+            lng: 0.0,
+        };
+        let expected_colors = [
+            (ColorMode::TrueColor, Color::Rgb(71, 220, 214)),
+            (ColorMode::Ansi256, Color::Indexed(80)),
+            (ColorMode::Ansi16, Color::Cyan),
+            (ColorMode::Monochrome, Color::Reset),
+        ];
+
+        for (mode, expected_color) in expected_colors {
+            let colors = palette(mode);
+            let style = peer_style(&peer, colors);
+
+            assert_eq!(style.fg, Some(expected_color));
+            assert_eq!(style.bg, Some(colors.background));
+            assert_eq!(style.add_modifier, Modifier::empty());
+            assert_eq!(style.sub_modifier, Modifier::empty());
+        }
+    }
+
+    #[test]
+    fn test_peer_map_renders_all_supported_color_modes() {
+        let snapshot = snapshot_with_peers(vec![LocatedPeer {
+            ip: "1.1.1.1".to_string(),
+            country: "AA".to_string(),
+            lat: 0.0,
+            lng: 0.0,
+        }]);
+        let expected_colors = [
+            (ColorMode::TrueColor, Color::Rgb(71, 220, 214)),
+            (ColorMode::Ansi256, Color::Indexed(80)),
+            (ColorMode::Ansi16, Color::Cyan),
+            (ColorMode::Monochrome, Color::Reset),
+        ];
+
+        for (mode, expected_peer_color) in expected_colors {
+            let colors = palette(mode);
+            let buf =
+                render_map_widget_in_color_mode(snapshot.clone(), Rect::new(0, 0, 60, 20), mode);
+            let marker = (0..60)
+                .flat_map(|x| (1..17).map(move |y| (x, y)))
+                .find(|&(x, y)| buf.get(x, y).symbol() == PEER_DOT)
+                .expect("single peer marker should be visible");
+            let marker_cell = buf.get(marker.0, marker.1);
+
+            assert_eq!(marker_cell.fg, expected_peer_color);
+            assert_eq!(marker_cell.bg, colors.background);
+            assert_eq!(marker_cell.modifier, Modifier::empty());
+            assert_eq!(buf.get(1, 17).fg, colors.stats);
+            assert_eq!(buf.get(1, 17).bg, colors.background);
+            assert_eq!(buf.get(0, 0).fg, colors.border);
+            assert_eq!(buf.get(2, 0).fg, colors.title);
+        }
     }
 
     #[test]
@@ -875,7 +1028,54 @@ mod tests {
         let buf = render_map_widget(snapshot, area);
 
         assert_eq!(count_peer_markers(&buf, area), 1);
-        assert_eq!(buf.get(20, 7).symbol(), PEER_DOT);
+        assert_eq!(buf.get(20, 7).symbol(), "◆");
+    }
+
+    #[test]
+    fn test_peer_position_aggregation_uses_count_buckets() {
+        for (count, expected) in [(1, "●"), (2, "◆"), (4, "◆"), (5, "■"), (9, "■")] {
+            let peers = (0..count)
+                .map(|index| LocatedPeer {
+                    ip: format!("192.0.2.{index}"),
+                    country: "CN".to_string(),
+                    lat: 0.0,
+                    lng: 0.0,
+                })
+                .collect();
+            let area = Rect::new(0, 0, 40, 16);
+            let buf = render_map_widget(snapshot_with_peers(peers), area);
+
+            assert_eq!(count_peer_markers(&buf, area), 1);
+            assert_eq!(buf.get(20, 7).symbol(), expected, "peer count: {count}");
+        }
+    }
+
+    #[test]
+    fn test_peer_map_legend_is_visible_only_when_the_map_has_room() {
+        let normal = render_map_widget(GeoViewSnapshot::default(), Rect::new(0, 0, 60, 20));
+        assert!(buffer_text(&normal, Rect::new(0, 0, 60, 20)).contains("●1 / ◆2-4 / ■5+"));
+
+        let compact = render_map_widget(GeoViewSnapshot::default(), Rect::new(0, 0, 20, 6));
+        assert!(!buffer_text(&compact, Rect::new(0, 0, 20, 6)).contains("●1 / ◆2-4 / ■5+"));
+    }
+
+    #[test]
+    fn test_peer_map_handles_minimum_drawable_dimensions() {
+        for width in 0..=4 {
+            for height in 0..=4 {
+                let area = Rect::new(0, 0, width, height);
+                let _ = render_map_widget(GeoViewSnapshot::default(), area);
+            }
+        }
+
+        let drawable = render_map_widget(GeoViewSnapshot::default(), Rect::new(0, 0, 3, 3));
+        assert_eq!(drawable.get(0, 0).symbol(), "┌");
+        assert_eq!(drawable.get(1, 1).symbol(), LAND_FULL);
+        assert_eq!(drawable.get(2, 2).symbol(), "┘");
+
+        let border_only = render_map_widget(GeoViewSnapshot::default(), Rect::new(0, 0, 2, 2));
+        assert_eq!(border_only.get(0, 0).symbol(), "┌");
+        assert_eq!(border_only.get(1, 1).symbol(), "┘");
     }
 
     #[test]
