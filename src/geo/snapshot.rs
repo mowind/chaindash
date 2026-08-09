@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 /// A peer whose cached location contains enough valid data to be plotted on
-/// the dotted globe. The UI never displays the exact coordinates.
+/// the Peer Map. The UI never displays the exact coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocatedPeer {
     pub ip: String,
@@ -11,7 +11,7 @@ pub struct LocatedPeer {
 }
 
 /// Immutable read-only view assembled from the current Peer Snapshot and the
-/// Location Cache, used for rendering the dotted globe.
+/// Location Cache, used for rendering the Peer Map.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GeoViewSnapshot {
     /// Total number of peers in the current Peer Snapshot.

@@ -228,19 +228,11 @@ fn is_shift_tab(key_event: &KeyEvent) -> bool {
         || (key_event.code == KeyCode::Tab && key_event.modifiers == KeyModifiers::SHIFT)
 }
 
-fn is_space_key(key_event: &KeyEvent) -> bool {
-    key_event.code == KeyCode::Char(' ') && key_event.modifiers.is_empty()
-}
-
 fn handle_ui_event(
     app: &mut App,
     event: Event,
 ) -> UiAction {
     match event {
-        Event::Key(key_event) if is_space_key(&key_event) => {
-            app.toggle_globe_animation();
-            UiAction::Redraw
-        },
         Event::Key(key_event) if is_shift_tab(&key_event) => {
             if app.handle_shift_tab_key() {
                 UiAction::Redraw
@@ -335,8 +327,7 @@ async fn main() -> Result<(), ChaindashError> {
                 break 'event_loop;
             }
             recv(ticker)->_ => {
-                let animation_changed = app.advance_globe_rotation();
-                if (animation_changed || app.needs_periodic_redraw())
+                if app.needs_periodic_redraw()
                     && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
                 {
                     break 'event_loop;
@@ -445,17 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_ui_event_toggles_globe_animation_with_space() {
+    fn test_handle_ui_event_ignores_space_without_map_interaction() {
         let mut app = create_test_app();
-        assert!(!app.widgets.globe.is_paused());
-
         let event = Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert!(matches!(handle_ui_event(&mut app, event), UiAction::Redraw));
-        assert!(app.widgets.globe.is_paused());
 
-        let event = Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert!(matches!(handle_ui_event(&mut app, event), UiAction::Redraw));
-        assert!(!app.widgets.globe.is_paused());
+        assert!(matches!(handle_ui_event(&mut app, event), UiAction::None));
     }
 
     #[test]

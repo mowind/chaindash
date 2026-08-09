@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    collections::BTreeMap,
     env,
     sync::Arc,
 };
@@ -29,15 +29,12 @@ use crate::{
     widgets::block as panel,
 };
 
-const OUTER_TITLE: &str = " Peer Globe ";
-const VIEW_CENTER_LAT: f64 = 20.0;
-const VIEW_CENTER_LNG: f64 = 60.0;
+const MAP_TITLE: &str = " Peer Map ";
 const LAND_DOT: &str = "·";
 const PEER_DOT: &str = "●";
-const TRAIL_DOT: &str = "·";
-const MIN_GLOBE_WIDTH: u16 = 8;
-const MIN_GLOBE_HEIGHT: u16 = 3;
-const ROTATION_DEGREES_PER_FRAME: f64 = 2.0;
+const MIN_MAP_WIDTH: u16 = 8;
+const MIN_MAP_HEIGHT: u16 = 3;
+const MAP_CELL_ASPECT_RATIO: u16 = 4;
 
 /// Embedded dotted-continent point set (4-degree grid), generated from Natural
 /// Earth 110m land. Format: (latitude, longitude) in decimal degrees.
@@ -2429,35 +2426,29 @@ const LAND_POINTS: &[(i16, i16)] = &[
     (-88, 144),
 ];
 
-/// Orthographic projection of (lat, lng) onto the unit disk, given a view
-/// center. Returns `None` for the back hemisphere (z <= 0).
+/// Equirectangular projection of `(lat, lng)` onto normalized map coordinates.
+///
+/// The map is centered on the prime meridian and spans the full longitude and
+/// latitude ranges. Longitudes outside the normal range wrap once so a peer is
+/// still rendered exactly once at the date-line boundary.
 fn project(
     lat: f64,
     lng: f64,
-    center_lat: f64,
-    center_lng: f64,
 ) -> Option<(f64, f64)> {
-    project_with_depth(lat, lng, center_lat, center_lng).map(|(x, y, _)| (x, y))
+    if !lat.is_finite() || !lng.is_finite() || !(-90.0..=90.0).contains(&lat) {
+        return None;
+    }
+
+    let longitude = normalize_longitude(lng);
+    Some(((longitude + 180.0) / 360.0, (90.0 - lat) / 180.0))
 }
 
-fn project_with_depth(
-    lat: f64,
-    lng: f64,
-    center_lat: f64,
-    center_lng: f64,
-) -> Option<(f64, f64, f64)> {
-    let delta_lng = (lng - center_lng).to_radians();
-    let (sin_lat, cos_lat) = lat.to_radians().sin_cos();
-    let (sin_center, cos_center) = center_lat.to_radians().sin_cos();
-
-    let x = cos_lat * delta_lng.sin();
-    let y = cos_center * sin_lat - sin_center * cos_lat * delta_lng.cos();
-    let z = sin_center * sin_lat + cos_center * cos_lat * delta_lng.cos();
-
-    if z <= 0.0 {
-        None
+fn normalize_longitude(lng: f64) -> f64 {
+    let wrapped = (lng + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped == -180.0 && lng > 0.0 {
+        180.0
     } else {
-        Some((x, y, z))
+        wrapped
     }
 }
 
@@ -2470,9 +2461,8 @@ enum ColorMode {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct GlobePalette {
+struct MapPalette {
     land: Color,
-    trail: Color,
     peers: [Color; 4],
     background: Color,
     border: Color,
@@ -2514,11 +2504,10 @@ fn color_mode_from_values(
     }
 }
 
-fn palette(mode: ColorMode) -> GlobePalette {
+fn palette(mode: ColorMode) -> MapPalette {
     match mode {
-        ColorMode::TrueColor => GlobePalette {
+        ColorMode::TrueColor => MapPalette {
             land: Color::Rgb(92, 111, 125),
-            trail: Color::Rgb(62, 83, 98),
             peers: [
                 Color::Rgb(71, 220, 214),
                 Color::Rgb(255, 191, 71),
@@ -2530,9 +2519,8 @@ fn palette(mode: ColorMode) -> GlobePalette {
             title: panel::PANEL_TITLE,
             stats: panel::PANEL_MUTED,
         },
-        ColorMode::Ansi256 => GlobePalette {
+        ColorMode::Ansi256 => MapPalette {
             land: Color::Indexed(245),
-            trail: Color::Indexed(240),
             peers: [
                 Color::Indexed(80),
                 Color::Indexed(220),
@@ -2544,18 +2532,16 @@ fn palette(mode: ColorMode) -> GlobePalette {
             title: Color::Indexed(252),
             stats: Color::Indexed(245),
         },
-        ColorMode::Ansi16 => GlobePalette {
+        ColorMode::Ansi16 => MapPalette {
             land: Color::DarkGray,
-            trail: Color::DarkGray,
             peers: [Color::Cyan, Color::Yellow, Color::Magenta, Color::Green],
             background: Color::Black,
             border: Color::DarkGray,
             title: Color::White,
             stats: Color::Gray,
         },
-        ColorMode::Monochrome => GlobePalette {
+        ColorMode::Monochrome => MapPalette {
             land: Color::Reset,
-            trail: Color::Reset,
             peers: [Color::Reset; 4],
             background: Color::Reset,
             border: Color::Reset,
@@ -2567,7 +2553,7 @@ fn palette(mode: ColorMode) -> GlobePalette {
 
 fn peer_color(
     peer: &crate::geo::snapshot::LocatedPeer,
-    palette: GlobePalette,
+    palette: MapPalette,
 ) -> Color {
     let key = if peer.country.is_empty() {
         peer.ip.as_bytes()
@@ -2601,141 +2587,96 @@ fn set_dot(
     cell.set_bg(background);
 }
 
-fn draw_line(
-    buf: &mut Buffer,
-    start: (i32, i32),
-    end: (i32, i32),
-    area: Rect,
-    palette: GlobePalette,
-) {
-    let (mut x, mut y) = start;
-    let dx = (end.0 - start.0).abs();
-    let sx = if start.0 < end.0 { 1 } else { -1 };
-    let dy = -(end.1 - start.1).abs();
-    let sy = if start.1 < end.1 { 1 } else { -1 };
-    let mut error = dx + dy;
-
-    loop {
-        set_dot(buf, x, y, area, TRAIL_DOT, palette.trail, palette.background);
-        if (x, y) == end {
-            break;
-        }
-        let twice_error = 2 * error;
-        if twice_error >= dy {
-            error += dy;
-            x += sx;
-        }
-        if twice_error <= dx {
-            error += dx;
-            y += sy;
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct RenderMode {
     land_stride: usize,
-    draw_trails: bool,
     show_stats: bool,
-    pause_animation: bool,
 }
 
 fn render_mode(area: Rect) -> RenderMode {
-    if area.width < MIN_GLOBE_WIDTH || area.height < MIN_GLOBE_HEIGHT {
+    if area.width < MIN_MAP_WIDTH || area.height < MIN_MAP_HEIGHT {
         return RenderMode {
             land_stride: 8,
-            draw_trails: false,
             show_stats: false,
-            pause_animation: true,
         };
     }
 
     if area.width < 24 || area.height < 7 {
         return RenderMode {
             land_stride: 4,
-            draw_trails: false,
             show_stats: false,
-            pause_animation: true,
         };
     }
 
     if area.width < 45 || area.height < 10 {
         return RenderMode {
             land_stride: 2,
-            draw_trails: false,
             show_stats: true,
-            pause_animation: false,
         };
     }
 
     RenderMode {
         land_stride: 1,
-        draw_trails: true,
         show_stats: true,
-        pause_animation: false,
     }
 }
 
-/// Animated dotted-globe panel showing the Geo View Snapshot.
+/// Static equirectangular panel showing the Geo View Snapshot.
 ///
 /// The snapshot is loaded through the `PeerGeoStore` handle on `update`;
-/// drawing and animation never query the database or external services.
-pub struct GlobeWidget {
+/// drawing never queries the database or external services.
+pub struct PeerMapWidget {
     update_interval: Ratio<u64>,
     collect_data: SharedData,
     store: Arc<dyn PeerGeoStore>,
     snapshot: GeoViewSnapshot,
-    rotation_degrees: f64,
-    paused: bool,
-    render_mode: Cell<RenderMode>,
 }
 
-impl GlobeWidget {
+fn map_rect(area: Rect) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+
+    let max_height = area.width / MAP_CELL_ASPECT_RATIO;
+    let height = area.height.min(max_height.max(1));
+    let width = area.width.min(height.saturating_mul(MAP_CELL_ASPECT_RATIO)).max(1);
+
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+fn map_cell(
+    lat: f64,
+    lng: f64,
+    area: Rect,
+) -> Option<(i32, i32)> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+
+    let (x, y) = project(lat, lng)?;
+    let screen_x = area.x as i32 + (x * area.width.saturating_sub(1) as f64).round() as i32;
+    let screen_y = area.y as i32 + (y * area.height.saturating_sub(1) as f64).round() as i32;
+    Some((screen_x, screen_y))
+}
+
+impl PeerMapWidget {
     /// Create a widget backed by `collect_data` for status reporting and
     /// `store` for Geo View Snapshot reads.
     pub fn new(
         collect_data: SharedData,
         store: Arc<dyn PeerGeoStore>,
-    ) -> GlobeWidget {
-        GlobeWidget {
+    ) -> PeerMapWidget {
+        PeerMapWidget {
             update_interval: Ratio::from_integer(0),
             collect_data,
             store,
             snapshot: GeoViewSnapshot::default(),
-            rotation_degrees: 0.0,
-            paused: false,
-            render_mode: Cell::new(RenderMode {
-                land_stride: 1,
-                draw_trails: true,
-                show_stats: true,
-                pause_animation: false,
-            }),
         }
-    }
-
-    /// Advance the globe by one 200 ms animation frame.
-    pub fn advance_rotation(&mut self) -> bool {
-        if self.paused || self.render_mode.get().pause_animation {
-            return false;
-        }
-        self.rotation_degrees = (self.rotation_degrees + ROTATION_DEGREES_PER_FRAME) % 360.0;
-        true
-    }
-
-    /// Toggle automatic rotation and return the new paused state.
-    pub fn toggle_paused(&mut self) -> bool {
-        self.paused = !self.paused;
-        self.paused
-    }
-
-    /// Return whether automatic rotation is currently paused.
-    pub fn is_paused(&self) -> bool {
-        self.paused
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rotation_degrees(&self) -> f64 {
-        self.rotation_degrees
     }
 
     #[cfg(test)]
@@ -2766,61 +2707,28 @@ impl GlobeWidget {
         )
     }
 
-    fn render_globe(
+    fn render_map(
         &self,
         buf: &mut Buffer,
         area: Rect,
         mode: RenderMode,
     ) {
-        let width = area.width as f64;
-        let height = area.height as f64;
-        let radius = (width.min(height * 2.0) / 2.0).floor() as i32;
-        if radius < 1 {
-            return;
-        }
-
         let palette = palette(color_mode());
-        let radius_x = radius as f64;
-        let radius_y = radius as f64 / 2.0;
-        let center_x = area.x as f64 + width / 2.0;
-        let center_y = if area.height == 1 {
-            area.y as f64
-        } else {
-            area.y as f64 + height / 2.0
-        };
-        let center = (center_x.round() as i32, center_y.round() as i32);
-        let center_lng = VIEW_CENTER_LNG + self.rotation_degrees;
 
         for &(lat, lng) in LAND_POINTS.iter().step_by(mode.land_stride) {
-            if let Some((x, y)) = project(lat as f64, lng as f64, VIEW_CENTER_LAT, center_lng) {
-                let screen_x = (center_x + radius_x * x).round() as i32;
-                let screen_y = (center_y - radius_y * y).round() as i32;
+            if let Some((screen_x, screen_y)) = map_cell(lat as f64, lng as f64, area) {
                 set_dot(buf, screen_x, screen_y, area, LAND_DOT, palette.land, palette.background);
             }
         }
 
+        let mut peer_cells = BTreeMap::new();
         for peer in &self.snapshot.peers {
-            let Some((x, y, _)) =
-                project_with_depth(peer.lat, peer.lng, VIEW_CENTER_LAT, center_lng)
-            else {
-                continue;
-            };
-            let screen_x = (center_x + radius_x * x).round() as i32;
-            let screen_y = (center_y - radius_y * y).round() as i32;
-            if mode.draw_trails {
-                draw_line(buf, center, (screen_x, screen_y), area, palette);
+            if let Some(cell) = map_cell(peer.lat, peer.lng, area) {
+                peer_cells.entry(cell).or_insert(peer);
             }
         }
 
-        // Paint markers after all trails so a trail cannot obscure a peer dot.
-        for peer in &self.snapshot.peers {
-            let Some((x, y, _)) =
-                project_with_depth(peer.lat, peer.lng, VIEW_CENTER_LAT, center_lng)
-            else {
-                continue;
-            };
-            let screen_x = (center_x + radius_x * x).round() as i32;
-            let screen_y = (center_y - radius_y * y).round() as i32;
+        for ((screen_x, screen_y), peer) in peer_cells {
             set_dot(
                 buf,
                 screen_x,
@@ -2834,7 +2742,7 @@ impl GlobeWidget {
     }
 }
 
-impl UpdatableWidget for GlobeWidget {
+impl UpdatableWidget for PeerMapWidget {
     fn update(&mut self) {
         self.refresh_snapshot();
     }
@@ -2844,14 +2752,14 @@ impl UpdatableWidget for GlobeWidget {
     }
 }
 
-impl Widget for &GlobeWidget {
+impl Widget for &PeerMapWidget {
     fn render(
         self,
         area: Rect,
         buf: &mut Buffer,
     ) {
         let colors = palette(color_mode());
-        panel::new(OUTER_TITLE)
+        panel::new(MAP_TITLE)
             .style(Style::default().bg(colors.background))
             .border_style(Style::default().fg(colors.border).bg(colors.background))
             .title_style(Style::default().fg(colors.title).bg(colors.background))
@@ -2868,8 +2776,7 @@ impl Widget for &GlobeWidget {
         }
 
         let mode = render_mode(inner);
-        self.render_mode.set(mode);
-        let globe_area = if mode.show_stats {
+        let map_area = if mode.show_stats {
             let stats_row = inner.y + inner.height - 1;
             buf.set_stringn(
                 inner.x,
@@ -2888,14 +2795,17 @@ impl Widget for &GlobeWidget {
             inner
         };
 
-        if globe_area.width > 0 && globe_area.height > 0 {
-            self.render_globe(buf, globe_area, mode);
+        let map_area = map_rect(map_area);
+        if map_area.width > 0 && map_area.height > 0 {
+            self.render_map(buf, map_area, mode);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
@@ -2911,13 +2821,13 @@ mod tests {
         },
     };
 
-    fn render_globe_widget(
+    fn render_map_widget(
         snapshot: GeoViewSnapshot,
         area: Rect,
     ) -> Buffer {
         let data = Data::new();
         let store = Arc::new(FakePeerGeoStore::new(snapshot));
-        let mut widget = GlobeWidget::new(data, store);
+        let mut widget = PeerMapWidget::new(data, store);
         widget.update();
         let mut buf = Buffer::empty(area);
         (&widget).render(area, &mut buf);
@@ -2939,12 +2849,26 @@ mod tests {
         }
     }
 
+    fn count_peer_markers(
+        buf: &Buffer,
+        area: Rect,
+    ) -> usize {
+        let mut markers = 0;
+        for x in area.x..area.x + area.width {
+            for y in area.y..area.y + area.height {
+                if buf.get(x, y).symbol() == PEER_DOT {
+                    markers += 1;
+                }
+            }
+        }
+        markers
+    }
+
     #[test]
-    fn test_globe_widget_title_constants() {
-        assert_eq!(OUTER_TITLE, " Peer Globe ");
+    fn test_peer_map_title_constants() {
+        assert_eq!(MAP_TITLE, " Peer Map ");
         assert_eq!(LAND_DOT, "·");
         assert_eq!(PEER_DOT, "●");
-        assert_eq!(TRAIL_DOT, "·");
     }
 
     #[test]
@@ -2962,49 +2886,42 @@ mod tests {
     }
 
     #[test]
-    fn test_projection_has_known_center_and_culls_backside() {
-        assert_eq!(
-            project(VIEW_CENTER_LAT, VIEW_CENTER_LNG, VIEW_CENTER_LAT, VIEW_CENTER_LNG),
-            Some((0.0, 0.0))
-        );
-        assert!(project(0.0, VIEW_CENTER_LNG + 180.0, VIEW_CENTER_LAT, VIEW_CENTER_LNG).is_none());
+    fn test_equirectangular_projection_covers_the_full_world_from_zero_meridian() {
+        assert_eq!(project(0.0, 0.0), Some((0.5, 0.5)));
+        assert_eq!(project(90.0, 0.0), Some((0.5, 0.0)));
+        assert_eq!(project(-90.0, 0.0), Some((0.5, 1.0)));
+        assert_eq!(project(0.0, -180.0), Some((0.0, 0.5)));
+        assert_eq!(project(0.0, 180.0), Some((1.0, 0.5)));
+        assert_eq!(project(0.0, 360.0), Some((0.5, 0.5)));
     }
 
     #[test]
-    fn test_rotation_changes_projected_longitude() {
-        let data = Data::new();
-        let store = Arc::new(FakePeerGeoStore::new(GeoViewSnapshot::default()));
-        let mut widget = GlobeWidget::new(data, store);
-        let before = project(0.0, VIEW_CENTER_LNG + 30.0, VIEW_CENTER_LAT, VIEW_CENTER_LNG);
-
-        assert!(widget.advance_rotation());
-        let after = project(
-            0.0,
-            VIEW_CENTER_LNG + 30.0,
-            VIEW_CENTER_LAT,
-            VIEW_CENTER_LNG + widget.rotation_degrees(),
-        );
-
-        assert_ne!(before, after);
-        assert_eq!(widget.rotation_degrees(), ROTATION_DEGREES_PER_FRAME);
+    fn test_projection_rejects_invalid_latitudes() {
+        assert!(project(90.1, 0.0).is_none());
+        assert!(project(-90.1, 0.0).is_none());
+        assert!(project(f64::NAN, 0.0).is_none());
+        assert!(project(0.0, f64::INFINITY).is_none());
     }
 
     #[test]
-    fn test_render_modes_degrade_density_and_pause_when_small() {
+    fn test_map_rect_preserves_terminal_aspect_and_centers_content() {
+        assert_eq!(map_rect(Rect::new(1, 2, 38, 13)), Rect::new(2, 4, 36, 9));
+        assert_eq!(map_rect(Rect::new(0, 0, 10, 3)), Rect::new(1, 0, 8, 2));
+    }
+
+    #[test]
+    fn test_render_modes_degrade_density_and_hide_stats_when_small() {
         let full = render_mode(Rect::new(0, 0, 50, 12));
         assert_eq!(full.land_stride, 1);
-        assert!(full.draw_trails);
         assert!(full.show_stats);
-        assert!(!full.pause_animation);
 
         let compact = render_mode(Rect::new(0, 0, 30, 8));
         assert_eq!(compact.land_stride, 2);
-        assert!(!compact.draw_trails);
+        assert!(compact.show_stats);
 
         let tiny = render_mode(Rect::new(0, 0, 10, 3));
         assert!(tiny.land_stride > compact.land_stride);
         assert!(!tiny.show_stats);
-        assert!(tiny.pause_animation);
     }
 
     #[test]
@@ -3017,12 +2934,13 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_snapshot_renders_panel_and_stats() {
+    fn test_empty_snapshot_renders_map_panel_and_stats() {
         let area = Rect::new(0, 0, 40, 16);
-        let buf = render_globe_widget(GeoViewSnapshot::default(), area);
+        let buf = render_map_widget(GeoViewSnapshot::default(), area);
 
         assert_eq!(buf.get(0, 0).symbol(), "┌");
         assert_eq!(buf.get(2, 0).symbol(), "P");
+        assert_eq!(buf.get(7, 0).symbol(), "M");
         assert_eq!(buf.get(39, 15).symbol(), "┘");
 
         let stats = buf.get(1, 14).symbol();
@@ -3031,145 +2949,92 @@ mod tests {
     }
 
     #[test]
-    fn test_trajectory_draws_low_brightness_line_to_peer() {
-        let area = Rect::new(0, 0, 20, 8);
-        let mut buf = Buffer::empty(area);
-        let colors = palette(ColorMode::TrueColor);
-
-        draw_line(&mut buf, (2, 4), (10, 2), area, colors);
-
-        let mut trail_cells = 0;
-        for x in 0..area.width {
-            for y in 0..area.height {
-                let cell = buf.get(x, y);
-                if cell.fg == colors.trail && cell.symbol() == TRAIL_DOT {
-                    trail_cells += 1;
-                }
-            }
-        }
-        assert!(trail_cells >= 5);
-    }
-
-    #[test]
-    fn test_paused_globe_does_not_advance_until_resumed() {
-        let data = Data::new();
-        let store = Arc::new(FakePeerGeoStore::new(GeoViewSnapshot::default()));
-        let mut widget = GlobeWidget::new(data, store);
-
-        assert!(widget.toggle_paused());
-        assert!(!widget.advance_rotation());
-        assert_eq!(widget.rotation_degrees(), 0.0);
-        assert!(!widget.toggle_paused());
-        assert!(widget.advance_rotation());
-    }
-
-    #[test]
-    fn test_peer_markers_are_painted_after_trails() {
-        let snapshot = snapshot_with_peers(vec![
-            LocatedPeer {
-                ip: "1.1.1.1".to_string(),
-                country: "CN".to_string(),
-                lat: VIEW_CENTER_LAT,
-                lng: VIEW_CENTER_LNG,
-            },
-            LocatedPeer {
-                ip: "2.2.2.2".to_string(),
-                country: "US".to_string(),
-                lat: VIEW_CENTER_LAT,
-                lng: VIEW_CENTER_LNG + 30.0,
-            },
-        ]);
-        let buf = render_globe_widget(snapshot, Rect::new(0, 0, 60, 20));
-        let mut peer_markers = 0;
-        for x in 1..59 {
-            for y in 1..19 {
-                if buf.get(x, y).symbol() == PEER_DOT {
-                    peer_markers += 1;
-                }
-            }
-        }
-
-        assert_eq!(peer_markers, 2);
-    }
-
-    #[test]
-    fn test_globe_widget_renders_peer_marker_at_view_center() {
-        let snapshot = snapshot_with_peers(vec![LocatedPeer {
-            ip: "1.1.1.1".to_string(),
-            country: "CN".to_string(),
-            lat: VIEW_CENTER_LAT,
-            lng: VIEW_CENTER_LNG,
-        }]);
-        let area = Rect::new(0, 0, 40, 16);
-        let buf = render_globe_widget(snapshot, area);
-
-        // Globe area: inner (1,1,38,14), stats at row 14, globe rows 1..14,
-        // radius = min(38, 13*2)/2 = 13, center at (20, 7.5) -> (20, 8).
-        let center_cell = buf.get(20, 8).symbol();
-        assert_eq!(center_cell, "●", "peer at view center should render at globe center");
-    }
-
-    #[test]
-    fn test_globe_widget_culls_back_hemisphere_peers() {
+    fn test_peer_map_renders_peer_at_zero_meridian_and_equator() {
         let snapshot = snapshot_with_peers(vec![LocatedPeer {
             ip: "1.1.1.1".to_string(),
             country: "CN".to_string(),
             lat: 0.0,
-            lng: VIEW_CENTER_LNG + 180.0,
+            lng: 0.0,
         }]);
-        let area = Rect::new(0, 0, 40, 16);
-        let buf = render_globe_widget(snapshot, area);
+        let buf = render_map_widget(snapshot, Rect::new(0, 0, 40, 16));
 
-        let mut dots = 0;
-        for x in 1..39 {
-            for y in 2..14 {
-                if buf.get(x, y).symbol() == "●" {
-                    dots += 1;
-                }
-            }
-        }
-        assert!(dots == 0, "back hemisphere peer must not be plotted");
+        assert_eq!(buf.get(20, 7).symbol(), PEER_DOT);
     }
 
     #[test]
-    fn test_globe_widget_overlapping_peers_render_once() {
+    fn test_peer_map_shows_peers_across_the_full_longitude_range() {
         let snapshot = snapshot_with_peers(vec![
             LocatedPeer {
                 ip: "1.1.1.1".to_string(),
-                country: "CN".to_string(),
-                lat: VIEW_CENTER_LAT,
-                lng: VIEW_CENTER_LNG,
+                country: "US".to_string(),
+                lat: 0.0,
+                lng: -179.0,
             },
             LocatedPeer {
                 ip: "2.2.2.2".to_string(),
                 country: "CN".to_string(),
-                lat: VIEW_CENTER_LAT,
-                lng: VIEW_CENTER_LNG,
+                lat: 0.0,
+                lng: 0.0,
+            },
+            LocatedPeer {
+                ip: "3.3.3.3".to_string(),
+                country: "JP".to_string(),
+                lat: 0.0,
+                lng: 179.0,
             },
         ]);
-        let area = Rect::new(0, 0, 40, 16);
-        let buf = render_globe_widget(snapshot, area);
+        let area = Rect::new(0, 0, 80, 20);
+        let buf = render_map_widget(snapshot, area);
 
-        let mut dots = 0;
-        for x in 1..39 {
-            for y in 2..14 {
-                if buf.get(x, y).symbol() == "●" {
-                    dots += 1;
-                }
-            }
-        }
-        assert_eq!(dots, 1, "overlapping peers must collapse into one dot");
+        assert_eq!(count_peer_markers(&buf, area), 3);
     }
 
     #[test]
-    fn test_globe_widget_renders_land_dots() {
+    fn test_peer_near_date_line_is_rendered_once() {
+        let snapshot = snapshot_with_peers(vec![LocatedPeer {
+            ip: "1.1.1.1".to_string(),
+            country: "US".to_string(),
+            lat: 0.0,
+            lng: 180.0,
+        }]);
+        let area = Rect::new(0, 0, 40, 16);
+        let buf = render_map_widget(snapshot, area);
+
+        assert_eq!(count_peer_markers(&buf, area), 1);
+        assert_eq!(buf.get(37, 7).symbol(), PEER_DOT);
+    }
+
+    #[test]
+    fn test_overlapping_peers_render_as_one_marker() {
+        let snapshot = snapshot_with_peers(vec![
+            LocatedPeer {
+                ip: "1.1.1.1".to_string(),
+                country: "CN".to_string(),
+                lat: 0.0,
+                lng: 0.0,
+            },
+            LocatedPeer {
+                ip: "2.2.2.2".to_string(),
+                country: "CN".to_string(),
+                lat: 0.0,
+                lng: 0.0,
+            },
+        ]);
+        let area = Rect::new(0, 0, 40, 16);
+        let buf = render_map_widget(snapshot, area);
+
+        assert_eq!(count_peer_markers(&buf, area), 1);
+    }
+
+    #[test]
+    fn test_peer_map_renders_land_dots() {
         let area = Rect::new(0, 0, 60, 20);
-        let buf = render_globe_widget(GeoViewSnapshot::default(), area);
+        let buf = render_map_widget(GeoViewSnapshot::default(), area);
 
         let mut land_dots = 0;
         for x in 1..59 {
             for y in 1..19 {
-                if buf.get(x, y).symbol() == "·" {
+                if buf.get(x, y).symbol() == LAND_DOT {
                     land_dots += 1;
                 }
             }
@@ -3178,47 +3043,48 @@ mod tests {
     }
 
     #[test]
-    fn test_tiny_area_keeps_a_static_simplified_globe() {
+    fn test_tiny_area_keeps_a_static_downsampled_map() {
         let snapshot = snapshot_with_peers(vec![LocatedPeer {
             ip: "1.1.1.1".to_string(),
             country: "CN".to_string(),
-            lat: VIEW_CENTER_LAT,
-            lng: VIEW_CENTER_LNG,
+            lat: 0.0,
+            lng: 0.0,
         }]);
-        let buf = render_globe_widget(snapshot, Rect::new(0, 0, 10, 3));
+        let buf = render_map_widget(snapshot, Rect::new(0, 0, 10, 3));
 
         assert_eq!(buf.get(5, 1).symbol(), PEER_DOT);
+        assert_ne!(buf.get(1, 1).symbol(), "p", "stats should be hidden when space is tight");
     }
 
     #[test]
-    fn test_globe_widget_handles_tiny_area() {
+    fn test_peer_map_handles_tiny_area() {
         let area = Rect::new(0, 0, 10, 3);
-        let buf = render_globe_widget(GeoViewSnapshot::default(), area);
+        let buf = render_map_widget(GeoViewSnapshot::default(), area);
 
         assert_eq!(buf.get(0, 0).symbol(), "┌");
         assert_eq!(buf.get(9, 2).symbol(), "┘");
     }
 
     #[test]
-    fn test_globe_widget_update_interval_is_zero() {
+    fn test_peer_map_update_interval_is_zero() {
         let data = Data::new();
         let store = Arc::new(FakePeerGeoStore::new(GeoViewSnapshot::default()));
-        let widget = GlobeWidget::new(data, store);
+        let widget = PeerMapWidget::new(data, store);
 
         assert_eq!(widget.get_update_interval(), Ratio::from_integer(0));
     }
 
     #[test]
-    fn test_globe_widget_update_loads_snapshot() {
+    fn test_peer_map_update_loads_snapshot() {
         let data = Data::new();
         let snapshot = snapshot_with_peers(vec![LocatedPeer {
             ip: "1.1.1.1".to_string(),
             country: "CN".to_string(),
-            lat: VIEW_CENTER_LAT,
-            lng: VIEW_CENTER_LNG,
+            lat: 0.0,
+            lng: 0.0,
         }]);
         let store = Arc::new(FakePeerGeoStore::new(snapshot.clone()));
-        let mut widget = GlobeWidget::new(data, store);
+        let mut widget = PeerMapWidget::new(data, store);
 
         assert!(widget.refresh_snapshot());
 
@@ -3226,10 +3092,10 @@ mod tests {
     }
 
     #[test]
-    fn test_globe_widget_update_reports_read_failure() {
+    fn test_peer_map_update_reports_read_failure() {
         let data = Data::new();
         let store: Arc<dyn PeerGeoStore> = Arc::new(FailingStore);
-        let mut widget = GlobeWidget::new(data.clone(), store);
+        let mut widget = PeerMapWidget::new(data.clone(), store);
 
         assert!(!widget.refresh_snapshot());
 

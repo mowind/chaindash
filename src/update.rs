@@ -32,7 +32,7 @@ pub fn update_widgets(
         &mut widgets.time,
         &mut widgets.node,
         &mut widgets.node_details,
-        &mut widgets.globe,
+        &mut widgets.peer_map,
     ];
 
     #[cfg(target_family = "unix")]

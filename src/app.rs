@@ -21,9 +21,9 @@ use crate::{
     update::UpdatableWidget,
     widgets::{
         DiskListWidget,
-        GlobeWidget,
         NodeDetailWidget,
         NodeWidget,
+        PeerMapWidget,
         SystemSummaryWidget,
         TimeWidget,
         TxsWidget,
@@ -51,7 +51,7 @@ impl App {
 
     /// Refresh the Geo View Snapshot from the store and request a redraw.
     pub fn refresh_geo_snapshot(&mut self) -> bool {
-        self.geo_snapshot_retry = !self.widgets.globe.refresh_snapshot();
+        self.geo_snapshot_retry = !self.widgets.peer_map.refresh_snapshot();
         true
     }
 
@@ -62,17 +62,6 @@ impl App {
         }
 
         self.refresh_geo_snapshot()
-    }
-
-    /// Advance the globe animation by one frame when it is running.
-    pub fn advance_globe_rotation(&mut self) -> bool {
-        self.widgets.globe.advance_rotation()
-    }
-
-    /// Toggle the globe animation and request a redraw.
-    pub fn toggle_globe_animation(&mut self) -> bool {
-        self.widgets.globe.toggle_paused();
-        true
     }
 
     pub fn refresh_dirty_widgets(&mut self) -> bool {
@@ -194,7 +183,8 @@ pub struct Widgets {
     pub txs: TxsWidget,
     pub time: TimeWidget,
     pub node: NodeWidget,
-    pub globe: GlobeWidget,
+    /// The static Peer Map widget rendered in the dashboard's top-right panel.
+    pub peer_map: PeerMapWidget,
     #[cfg(target_family = "unix")]
     pub system_summary: SystemSummaryWidget,
     #[cfg(target_family = "unix")]
@@ -208,7 +198,7 @@ pub fn setup_app(opts: &Opts) -> App {
     let txs = TxsWidget::new(opts.interval, data.clone());
     let time = TimeWidget::new(opts.interval, data.clone());
     let node = NodeWidget::new(data.clone());
-    let globe = GlobeWidget::new(data.clone(), geo_store.clone());
+    let peer_map = PeerMapWidget::new(data.clone(), geo_store.clone());
 
     #[cfg(target_family = "unix")]
     let system_summary = SystemSummaryWidget::new(data.clone());
@@ -223,7 +213,7 @@ pub fn setup_app(opts: &Opts) -> App {
             txs,
             time,
             node,
-            globe,
+            peer_map,
             #[cfg(target_family = "unix")]
             system_summary,
             #[cfg(target_family = "unix")]
