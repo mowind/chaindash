@@ -5,9 +5,12 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::Style,
+    text::{
+        Line,
+        Span,
+    },
     widgets::Widget,
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::{
     collect::{
@@ -29,8 +32,8 @@ const UNKNOWN_COUNTRY_FLAG: &str = "🌐";
 const UNKNOWN_COUNTRY_CODE: &str = "--";
 const CONTENT_ROW_COUNT: usize = 4;
 const SUMMARY_ROW_INDEX: usize = CONTENT_ROW_COUNT - 1;
-const MAX_KNOWN_COUNTRIES_WITHOUT_UNKNOWN: usize = 3;
-const MAX_KNOWN_COUNTRIES_WITH_UNKNOWN: usize = 2;
+const COUNTRY_COLUMN_GAP: usize = 2;
+const MAX_COUNTRY_COLUMNS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CountryRowMode {
@@ -76,11 +79,46 @@ fn country_row_widths(
     country_code: &str,
     peer_count: usize,
 ) -> (usize, usize) {
-    let count_width = peer_count.to_string().width();
-    let code_width = country_code.width();
-    let full_width = flag.width() + 1 + code_width + 1 + count_width;
-    let code_only_width = code_width + 1 + count_width;
+    let count = peer_count.to_string();
+    let full_width = Line::from(vec![
+        Span::raw(flag),
+        Span::raw(" "),
+        Span::raw(country_code),
+        Span::raw(" ["),
+        Span::raw(count.as_str()),
+        Span::raw("]"),
+    ])
+    .width();
+    let code_only_width = Line::from(vec![
+        Span::raw(country_code),
+        Span::raw(" ["),
+        Span::raw(count.as_str()),
+        Span::raw("]"),
+    ])
+    .width();
     (full_width, code_only_width)
+}
+
+fn country_row_line<'a>(row: &CountryRow<'a>) -> Line<'a> {
+    let count = row.peer_count.to_string();
+    match row.mode {
+        CountryRowMode::FlagAndCode => Line::from(vec![
+            Span::styled(row.flag, row.code_style),
+            Span::styled(" ", row.code_style),
+            Span::styled(row.country_code, row.code_style),
+            Span::styled(" [", row.count_style),
+            Span::styled(count, row.count_style),
+            Span::styled("]", row.count_style),
+        ]),
+        CountryRowMode::CodeAndCount => Line::from(vec![
+            Span::styled(row.country_code, row.code_style),
+            Span::styled(" [", row.count_style),
+            Span::styled(count, row.count_style),
+            Span::styled("]", row.count_style),
+        ]),
+        CountryRowMode::SummaryOnly => Line::default(),
+    }
+    .style(Style::default().bg(panel::PANEL_BG))
 }
 
 fn render_country_row(
@@ -92,8 +130,6 @@ fn render_country_row(
         return;
     }
 
-    let count = row.peer_count.to_string();
-    let count_width = count.width();
     let (full_width, code_only_width) =
         country_row_widths(row.flag, row.country_code, row.peer_count);
     let row_width = match row.mode {
@@ -106,25 +142,7 @@ fn render_country_row(
         return;
     }
 
-    match row.mode {
-        CountryRowMode::FlagAndCode => {
-            let flag_width = row.flag.width();
-            buf.set_string(area.x, area.y, row.flag, row.code_style);
-            buf.set_string(
-                area.x + flag_width as u16 + 1,
-                area.y,
-                row.country_code,
-                row.code_style,
-            );
-        },
-        CountryRowMode::CodeAndCount => {
-            buf.set_string(area.x, area.y, row.country_code, row.code_style);
-        },
-        CountryRowMode::SummaryOnly => return,
-    }
-
-    let count_x = area.x + area.width - count_width as u16;
-    buf.set_string(count_x, area.y, count, row.count_style);
+    country_row_line(&row).render(area, buf);
 }
 
 fn summary_texts(
@@ -174,9 +192,9 @@ fn render_summary(
 
     let (full, compact) =
         summary_texts(known_country_count, hidden_known_country_count, total_peer_count);
-    let text = if full.width() <= area.width as usize {
+    let text = if Line::from(full.as_str()).width() <= area.width as usize {
         full
-    } else if compact.width() <= area.width as usize {
+    } else if Line::from(compact.as_str()).width() <= area.width as usize {
         compact
     } else {
         return;
@@ -206,6 +224,18 @@ fn render_known_country_row(
             count_style,
         },
     );
+}
+
+fn country_column_count(
+    area_width: usize,
+    column_width: usize,
+) -> usize {
+    if column_width == 0 {
+        return 1;
+    }
+
+    ((area_width + COUNTRY_COLUMN_GAP) / (column_width + COUNTRY_COLUMN_GAP))
+        .clamp(1, MAX_COUNTRY_COLUMNS)
 }
 
 impl PeerCountriesWidget {
@@ -298,27 +328,28 @@ impl PeerCountriesWidget {
         } else {
             content_rows
         };
+        let row_mode = self.country_row_mode(area.width as usize);
+        let column_width = self.country_row_width(row_mode);
+        let column_count = country_column_count(area.width as usize, column_width);
+        let data_capacity = data_rows.saturating_mul(column_count);
         let unknown_present = usize::from(self.snapshot.unknown_country_count > 0);
-        let max_known_rows = if unknown_present > 0 {
-            MAX_KNOWN_COUNTRIES_WITH_UNKNOWN
-        } else {
-            MAX_KNOWN_COUNTRIES_WITHOUT_UNKNOWN
-        };
-        let known_rows_limit = max_known_rows.min(data_rows.saturating_sub(unknown_present));
-        let row_mode = self.country_row_mode(area.width as usize, known_rows_limit);
+        let known_rows_limit = data_capacity.saturating_sub(unknown_present);
         let known_rows = if row_mode == CountryRowMode::SummaryOnly {
             0
         } else {
             self.snapshot.country_counts.len().min(known_rows_limit)
         };
 
-        for (row, country) in self.snapshot.country_counts.iter().take(known_rows).enumerate() {
+        for (index, country) in self.snapshot.country_counts.iter().take(known_rows).enumerate() {
+            let row = index / column_count;
+            let column = index % column_count;
+            let x = area.x + (column * (column_width + COUNTRY_COLUMN_GAP)) as u16;
             render_known_country_row(
                 buf,
                 Rect {
-                    x: area.x,
+                    x,
                     y: area.y + row as u16,
-                    width: area.width,
+                    width: (area.right() - x).min(column_width as u16),
                     height: 1,
                 },
                 country,
@@ -329,12 +360,16 @@ impl PeerCountriesWidget {
         }
 
         if unknown_present > 0 && row_mode != CountryRowMode::SummaryOnly {
+            let index = known_rows;
+            let row = index / column_count;
+            let column = index % column_count;
+            let x = area.x + (column * (column_width + COUNTRY_COLUMN_GAP)) as u16;
             render_country_row(
                 buf,
                 Rect {
-                    x: area.x,
-                    y: area.y + known_rows as u16,
-                    width: area.width,
+                    x,
+                    y: area.y + row as u16,
+                    width: (area.right() - x).min(column_width as u16),
                     height: 1,
                 },
                 CountryRow {
@@ -365,15 +400,11 @@ impl PeerCountriesWidget {
         }
     }
 
-    fn country_row_mode(
-        &self,
-        area_width: usize,
-        known_rows_limit: usize,
-    ) -> CountryRowMode {
+    fn country_widths(&self) -> (usize, usize) {
         let mut full_width = 0;
         let mut code_only_width = 0;
 
-        for country in self.snapshot.country_counts.iter().take(known_rows_limit) {
+        for country in &self.snapshot.country_counts {
             let (country_full_width, country_code_only_width) = country_row_widths(
                 &country_flag(&country.country_code),
                 &country.country_code,
@@ -393,12 +424,33 @@ impl PeerCountriesWidget {
             code_only_width = code_only_width.max(unknown_code_only_width);
         }
 
+        (full_width, code_only_width)
+    }
+
+    fn country_row_mode(
+        &self,
+        area_width: usize,
+    ) -> CountryRowMode {
+        let (full_width, code_only_width) = self.country_widths();
+
         if full_width > 0 && area_width >= full_width {
             CountryRowMode::FlagAndCode
         } else if code_only_width > 0 && area_width >= code_only_width {
             CountryRowMode::CodeAndCount
         } else {
             CountryRowMode::SummaryOnly
+        }
+    }
+
+    fn country_row_width(
+        &self,
+        mode: CountryRowMode,
+    ) -> usize {
+        let (full_width, code_only_width) = self.country_widths();
+        match mode {
+            CountryRowMode::FlagAndCode => full_width,
+            CountryRowMode::CodeAndCount => code_only_width,
+            CountryRowMode::SummaryOnly => 0,
         }
     }
 }
@@ -561,19 +613,39 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_countries_panel_summarizes_hidden_known_countries() {
+    fn test_peer_countries_panel_uses_multiple_columns_for_known_countries() {
         let area = Rect::new(0, 0, 32, 6);
         let buf = render_widget(
             snapshot_with_countries(vec![("CN", 4), ("US", 3), ("DE", 2), ("JP", 1)], 0),
             area,
         );
 
-        let text = buffer_text(&buf, area);
-        assert!(text.contains("CN"));
-        assert!(text.contains("US"));
-        assert!(text.contains("DE"));
-        assert!(!text.contains("JP"));
-        assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "+1 country · 10 peers");
+        let content = content_area(area);
+        let column_width = country_row_widths("🇨🇳", "CN", 4).0;
+        let second_column_x = content.x + (column_width + COUNTRY_COLUMN_GAP) as u16;
+        assert_eq!(buf.get(second_column_x, content.y).symbol(), "🇺🇸");
+        assert_eq!(buf.get(content.x, content.y + 1).symbol(), "🇩🇪");
+        assert_eq!(buf.get(second_column_x, content.y + 1).symbol(), "🇯🇵");
+        assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "4 countries · 10 peers");
+    }
+
+    #[test]
+    fn test_peer_countries_panel_caps_columns_at_five() {
+        let area = Rect::new(0, 0, 100, 6);
+        let buf = render_widget(
+            snapshot_with_countries(
+                vec![("CN", 6), ("US", 5), ("DE", 4), ("JP", 3), ("FR", 2), ("FI", 1)],
+                0,
+            ),
+            area,
+        );
+
+        let content = content_area(area);
+        let column_width = country_row_widths("🇨🇳", "CN", 6).0;
+        let column_step = (column_width + COUNTRY_COLUMN_GAP) as u16;
+        assert_eq!(buf.get(content.x + 4 * column_step, content.y).symbol(), "🇫🇷");
+        assert_eq!(buf.get(content.x, content.y + 1).symbol(), "🇫🇮");
+        assert_eq!(buf.get(content.x + 5 * column_step, content.y).symbol(), " ");
     }
 
     #[test]
@@ -600,7 +672,9 @@ mod tests {
 
         assert_eq!(buf.get(content.x, content.y).symbol(), "C");
         assert_eq!(buf.get(content.x + 1, content.y).symbol(), "N");
-        assert_eq!(buf.get(content.x + content.width - 1, content.y).symbol(), "5");
+        assert_eq!(buf.get(content.x + 3, content.y).symbol(), "[");
+        assert_eq!(buf.get(content.x + 4, content.y).symbol(), "5");
+        assert_eq!(buf.get(content.x + 5, content.y).symbol(), "]");
         assert!(!content_line(&buf, area, 0).contains("🇨🇳"));
     }
 
@@ -616,17 +690,18 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_countries_panel_keeps_unknown_country_after_two_known_rows() {
+    fn test_peer_countries_panel_uses_multiple_columns_with_unknown_peers() {
         let area = Rect::new(0, 0, 32, 6);
         let buf =
             render_widget(snapshot_with_countries(vec![("CN", 4), ("US", 3), ("DE", 2)], 1), area);
 
-        let text = buffer_text(&buf, area);
-        assert!(text.contains("CN"));
-        assert!(text.contains("US"));
-        assert!(text.contains("🌐"));
-        assert!(!text.contains("DE"));
-        assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "+1 country · 10 peers");
+        let content = content_area(area);
+        let column_width = country_row_widths("🇨🇳", "CN", 4).0;
+        let second_column_x = content.x + (column_width + COUNTRY_COLUMN_GAP) as u16;
+        assert_eq!(buf.get(second_column_x, content.y).symbol(), "🇺🇸");
+        assert_eq!(buf.get(content.x, content.y + 1).symbol(), "🇩🇪");
+        assert_eq!(buf.get(second_column_x, content.y + 1).symbol(), "🌐");
+        assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "3 countries · 10 peers");
     }
 
     #[test]
@@ -637,9 +712,30 @@ mod tests {
 
         assert_eq!(buf.get(content.x, content.y).symbol(), "🇨🇳");
         assert_eq!(buf.get(content.x + 3, content.y).symbol(), "C");
-        assert_eq!(buf.get(content.x + content.width - 2, content.y).symbol(), "1");
-        assert_eq!(buf.get(content.x + content.width - 1, content.y).symbol(), "2");
+        assert_eq!(buf.get(content.x + 4, content.y).symbol(), "N");
+        assert_eq!(buf.get(content.x + 6, content.y).symbol(), "[");
+        assert_eq!(buf.get(content.x + 7, content.y).symbol(), "1");
+        assert_eq!(buf.get(content.x + 8, content.y).symbol(), "2");
+        assert_eq!(buf.get(content.x + 9, content.y).symbol(), "]");
         assert_eq!(buf.get(area.right() - 1, content.y).symbol(), "│");
+    }
+
+    #[test]
+    fn test_peer_countries_panel_aligns_codes_after_flag_spans() {
+        let area = Rect::new(0, 0, 12, 6);
+        let buf =
+            render_widget(snapshot_with_countries(vec![("DE", 4), ("FI", 3), ("FR", 2)], 0), area);
+        let content = content_area(area);
+
+        for (row, (code, count)) in [("DE", "4"), ("FI", "3"), ("FR", "2")].iter().enumerate() {
+            let y = content.y + row as u16;
+            assert_eq!(buf.get(content.x + 2, y).symbol(), " ");
+            assert_eq!(buf.get(content.x + 3, y).symbol(), &code[0..1]);
+            assert_eq!(buf.get(content.x + 4, y).symbol(), &code[1..2]);
+            assert_eq!(buf.get(content.x + 6, y).symbol(), "[");
+            assert_eq!(buf.get(content.x + 7, y).symbol(), *count);
+            assert_eq!(buf.get(content.x + 8, y).symbol(), "]");
+        }
     }
 
     #[test]
@@ -647,11 +743,13 @@ mod tests {
         let area = Rect::new(0, 0, 32, 6);
         let buf = render_widget(snapshot_with_countries(vec![("CN", 2)], 3), area);
         let content = content_area(area);
+        let column_width = country_row_widths("🇨🇳", "CN", 2).0;
+        let second_column_x = content.x + (column_width + COUNTRY_COLUMN_GAP) as u16;
 
         assert_eq!(buf.get(content.x + 3, content.y).fg, panel::CONTENT_HIGHLIGHT);
-        assert_eq!(buf.get(content.x + content.width - 1, content.y).fg, panel::METRIC_PRIMARY);
-        assert_eq!(buf.get(content.x + 3, content.y + 1).fg, panel::PANEL_MUTED);
-        assert_eq!(buf.get(content.x + content.width - 1, content.y + 1).fg, panel::PANEL_MUTED);
+        assert_eq!(buf.get(content.x + 7, content.y).fg, panel::METRIC_PRIMARY);
+        assert_eq!(buf.get(second_column_x + 3, content.y).fg, panel::PANEL_MUTED);
+        assert_eq!(buf.get(second_column_x + 7, content.y).fg, panel::PANEL_MUTED);
         assert_eq!(buf.get(content.x, content.y + SUMMARY_ROW_INDEX as u16).fg, panel::PANEL_MUTED,);
     }
 

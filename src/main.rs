@@ -42,7 +42,12 @@ use crossterm::{
         KeyModifiers,
     },
     execute,
-    terminal,
+    terminal::{
+        self,
+        BeginSynchronizedUpdate,
+        EndSynchronizedUpdate,
+    },
+    ExecutableCommand,
 };
 use draw::draw;
 use error::ChaindashError;
@@ -50,10 +55,7 @@ use log::error;
 use num_rational::Ratio;
 use opts::Opts;
 use ratatui::{
-    backend::{
-        Backend,
-        CrosstermBackend,
-    },
+    backend::CrosstermBackend,
     Terminal,
 };
 use sync::lock_or_panic;
@@ -179,8 +181,8 @@ fn setup_panic_hook() {
     }));
 }
 
-fn draw_app<B: Backend>(
-    terminal: &mut Terminal<B>,
+fn draw_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
 ) -> error::Result<()> {
     {
@@ -188,7 +190,13 @@ fn draw_app<B: Backend>(
         data.expire_status_message_if_needed();
     }
 
-    draw(terminal, app)
+    terminal.backend_mut().execute(BeginSynchronizedUpdate)?;
+    let draw_result = draw(terminal, app);
+    let end_result = terminal.backend_mut().execute(EndSynchronizedUpdate);
+
+    draw_result?;
+    end_result?;
+    Ok(())
 }
 
 enum UiAction {
@@ -197,8 +205,8 @@ enum UiAction {
     Exit,
 }
 
-fn draw_or_capture_exit<B: Backend>(
-    terminal: &mut Terminal<B>,
+fn draw_or_capture_exit(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     exit_error: &mut Option<ChaindashError>,
 ) -> bool {

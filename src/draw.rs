@@ -34,6 +34,7 @@ use crate::{
 };
 
 const AUXILIARY_ROW_HEIGHT: u16 = 6;
+const MIN_PANEL_HEIGHT: u16 = 3;
 
 pub fn draw<B: Backend>(
     terminal: &mut Terminal<B>,
@@ -174,11 +175,13 @@ fn draw_widgets_for_mode(
 ) {
     let rows = split_dashboard_rows(area, AUXILIARY_ROW_HEIGHT);
 
-    match mode {
-        #[cfg(target_family = "unix")]
-        DashboardMode::Unix => draw_system_row_split(frame, widgets, rows.auxiliary),
-        #[cfg(any(not(target_family = "unix"), test))]
-        DashboardMode::NonUnix => frame.render_widget(&widgets.peer_countries, rows.auxiliary),
+    if rows.auxiliary.height >= MIN_PANEL_HEIGHT {
+        match mode {
+            #[cfg(target_family = "unix")]
+            DashboardMode::Unix => draw_system_row_split(frame, widgets, rows.auxiliary),
+            #[cfg(any(not(target_family = "unix"), test))]
+            DashboardMode::NonUnix => frame.render_widget(&widgets.peer_countries, rows.auxiliary),
+        }
     }
 
     draw_top_row(frame, widgets, rows.charts);
@@ -232,6 +235,10 @@ pub fn draw_top_row(
     widgets: &mut Widgets,
     area: Rect,
 ) {
+    if area.height < MIN_PANEL_HEIGHT {
+        return;
+    }
+
     let columns = split_equal_columns(area);
 
     frame.render_widget(&widgets.time, columns[0]);
@@ -244,6 +251,10 @@ pub fn draw_bottom_section(
     widgets: &mut Widgets,
     area: Rect,
 ) {
+    if area.height < MIN_PANEL_HEIGHT {
+        return;
+    }
+
     let horizontal_chunks = split_equal_columns(area);
 
     frame.render_widget(&widgets.node, horizontal_chunks[0]);
@@ -429,6 +440,83 @@ mod tests {
         assert_eq!(buf.get(62, 27).symbol(), "N");
         assert_eq!(buf.get(59, 27).symbol(), "┐");
         assert_eq!(buf.get(60, 27).symbol(), "┌");
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_draw_widgets_hides_incomplete_lower_rows_on_short_terminal() {
+        use clap::Parser;
+        use ratatui::backend::TestBackend;
+
+        use crate::{
+            app::setup_app,
+            opts::Opts,
+        };
+
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--db-path",
+            ":memory:",
+        ]);
+        for (height, chart_symbol, bottom_row) in [(7, " ", None), (11, "B", Some(9))] {
+            let mut app = setup_app(&opts);
+            let area = Rect::new(0, 0, 120, height);
+            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
+                .expect("terminal should create");
+
+            terminal
+                .draw(|frame| draw_widgets(frame, &mut app.widgets, area))
+                .expect("draw should succeed");
+            let buf = terminal.backend().buffer().clone();
+
+            assert_eq!(buf.get(2, 0).symbol(), "S");
+            assert_eq!(buf.get(2, 6).symbol(), chart_symbol);
+            if let Some(bottom_row) = bottom_row {
+                assert_eq!(buf.get(2, bottom_row).symbol(), " ");
+            }
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_status_bar_expiry_reflows_short_dashboard_without_stale_cells() {
+        use clap::Parser;
+        use ratatui::backend::TestBackend;
+
+        use crate::{
+            app::setup_app,
+            opts::Opts,
+        };
+
+        let opts = Opts::parse_from([
+            "test",
+            "--url",
+            "test@ws://127.0.0.1:6789",
+            "--db-path",
+            ":memory:",
+        ]);
+        let mut app = setup_app(&opts);
+        app.data.lock().expect("mutex poisoned").set_status_message(StatusLevel::Info, "connected");
+        let mut terminal =
+            Terminal::new(TestBackend::new(200, 10)).expect("terminal should create");
+
+        draw(&mut terminal, &mut app).expect("draw with status should succeed");
+        assert_eq!(terminal.backend().buffer().get(2, 0).symbol(), "S");
+        assert_eq!(terminal.backend().buffer().get(2, 3).symbol(), "S");
+
+        app.data.lock().expect("mutex poisoned").clear_status_message();
+        draw(&mut terminal, &mut app).expect("draw after status expiry should succeed");
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(buf.get(2, 0).symbol(), "S");
+        assert_eq!(buf.get(0, 0).symbol(), "┌");
+        for y in 6..10 {
+            for x in 0..200 {
+                assert_eq!(buf.get(x, y).symbol(), " ", "stale cell at ({x}, {y})");
+            }
+        }
     }
 
     #[test]
