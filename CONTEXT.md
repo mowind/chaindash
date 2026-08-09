@@ -21,9 +21,13 @@ The persisted per-IP enrichment data used to associate a peer with its country a
 _Avoid_: peer snapshot.
 
 **Geo View Snapshot**:
-The read-only view assembled from the current peer snapshot and location cache for rendering the dotted globe.
+The read-only view assembled from the current peer snapshot and location cache for rendering the Peer Map.
 _Avoid_: raw SQLite rows, collector state.
 
+**Peer Map**:
+The flat world map that presents Located Peers by country and approximate map position.
+_Avoid_: Peer Globe, dotted globe.
+
 **Located Peer**:
-A peer whose cached location contains enough valid data to be plotted on the dotted globe.
+A peer whose cached location contains enough valid data to be plotted on the Peer Map.
 _Avoid_: precise geolocation; the UI does not expose exact coordinates.
