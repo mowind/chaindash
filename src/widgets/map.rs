@@ -665,6 +665,7 @@ mod tests {
             located_peers: located,
             unique_countries: countries,
             peers,
+            ..GeoViewSnapshot::default()
         }
     }
 

@@ -23,7 +23,7 @@ use crate::{
         DiskListWidget,
         NodeDetailWidget,
         NodeWidget,
-        PeerMapWidget,
+        PeerCountriesWidget,
         SystemSummaryWidget,
         TimeWidget,
         TxsWidget,
@@ -51,7 +51,7 @@ impl App {
 
     /// Refresh the Geo View Snapshot from the store and request a redraw.
     pub fn refresh_geo_snapshot(&mut self) -> bool {
-        self.geo_snapshot_retry = !self.widgets.peer_map.refresh_snapshot();
+        self.geo_snapshot_retry = !self.widgets.peer_countries.refresh_snapshot();
         true
     }
 
@@ -183,8 +183,9 @@ pub struct Widgets {
     pub txs: TxsWidget,
     pub time: TimeWidget,
     pub node: NodeWidget,
-    /// The static Peer Map widget rendered in the dashboard's top-right panel.
-    pub peer_map: PeerMapWidget,
+    /// The static Peer Country Distribution widget rendered in the dashboard's
+    /// top-right geographic panel.
+    pub peer_countries: PeerCountriesWidget,
     #[cfg(target_family = "unix")]
     pub system_summary: SystemSummaryWidget,
     #[cfg(target_family = "unix")]
@@ -198,7 +199,7 @@ pub fn setup_app(opts: &Opts) -> App {
     let txs = TxsWidget::new(opts.interval, data.clone());
     let time = TimeWidget::new(opts.interval, data.clone());
     let node = NodeWidget::new(data.clone());
-    let peer_map = PeerMapWidget::new(data.clone(), geo_store.clone());
+    let peer_countries = PeerCountriesWidget::new(data.clone(), geo_store.clone());
 
     #[cfg(target_family = "unix")]
     let system_summary = SystemSummaryWidget::new(data.clone());
@@ -213,7 +214,7 @@ pub fn setup_app(opts: &Opts) -> App {
             txs,
             time,
             node,
-            peer_map,
+            peer_countries,
             #[cfg(target_family = "unix")]
             system_summary,
             #[cfg(target_family = "unix")]

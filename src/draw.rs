@@ -200,7 +200,7 @@ pub fn draw_top_row(
 
     frame.render_widget(&widgets.time, left_rows[0]);
     frame.render_widget(&widgets.txs, left_rows[1]);
-    frame.render_widget(&widgets.peer_map, columns[1]);
+    frame.render_widget(&widgets.peer_countries, columns[1]);
 }
 
 pub fn draw_bottom_section(
@@ -274,16 +274,16 @@ mod tests {
         // Left column bottom: Block Transactions title at row 10.
         assert_eq!(buf.get(2, 10).symbol(), "B");
         assert_eq!(buf.get(8, 10).symbol(), "T");
-        // Right column: Peer Map title at column 40+.
+        // Right column: Peer Countries title at column 40+.
         assert_eq!(buf.get(42, 0).symbol(), "P");
-        assert_eq!(buf.get(47, 0).symbol(), "M");
+        assert_eq!(buf.get(47, 0).symbol(), "C");
         // Panel borders separate the three panels.
         assert_eq!(buf.get(39, 0).symbol(), "┐");
         assert_eq!(buf.get(40, 0).symbol(), "┌");
     }
 
     #[test]
-    fn test_draw_top_row_shows_map_stats_with_empty_snapshot() {
+    fn test_draw_top_row_shows_peer_countries_with_empty_snapshot() {
         use clap::Parser;
         use ratatui::backend::TestBackend;
 
@@ -306,9 +306,9 @@ mod tests {
             .expect("draw should succeed");
         let buf = terminal.backend().buffer().clone();
 
-        // Peer Map panel inner stats row (row 18 of 20): "peers 0 / ...".
-        assert_eq!(buf.get(41, 18).symbol(), "p");
-        assert_eq!(buf.get(47, 18).symbol(), "0");
+        // Peer Countries panel inner content starts at column 41 and row 1.
+        assert_eq!(buf.get(41, 1).symbol(), "N");
+        assert_eq!(buf.get(42, 1).symbol(), "o");
     }
 
     #[test]

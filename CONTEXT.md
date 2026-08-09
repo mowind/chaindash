@@ -17,17 +17,21 @@ The most recent successful, merged and IP-deduplicated set of peers across all m
 _Avoid_: peer history, peer cache.
 
 **Location Cache**:
-The persisted per-IP enrichment data used to associate a peer with its country and optional internal map position.
-_Avoid_: peer snapshot.
+The persisted per-IP enrichment data used to associate a peer with its country and optional geographic coordinates.
+_Avoid_: peer snapshot, peer country distribution.
 
 **Geo View Snapshot**:
-The read-only view assembled from the current peer snapshot and location cache for rendering the Peer Map.
+The read-only geographic view assembled from the current peer snapshot and location cache for dashboard presentation.
 _Avoid_: raw SQLite rows, collector state.
 
-**Peer Map**:
-The flat world map that presents Located Peers by country and approximate map position.
-_Avoid_: Peer Globe, dotted globe.
+**Country Code**:
+A normalized uppercase two-letter country identifier associated with a peer. Missing or invalid values are classified as Unknown Country.
+_Avoid_: country name, arbitrary provider country string.
 
-**Located Peer**:
-A peer whose cached location contains enough valid data to be plotted on the Peer Map.
-_Avoid_: precise geolocation; the UI does not expose exact coordinates.
+**Unknown Country**:
+The classification for a peer that has no valid Country Code, regardless of why enrichment data is unavailable.
+_Avoid_: unlocated peer, enrichment failure.
+
+**Peer Country Distribution**:
+The grouping of the current Peer Snapshot by Country Code. Each IP-deduplicated peer is counted once, including peers classified as Unknown Country.
+_Avoid_: Peer Map, monitored node distribution, geographic location.

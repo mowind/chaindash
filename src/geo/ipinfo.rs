@@ -3,7 +3,10 @@ use std::time::Duration;
 use reqwest::Client;
 use serde_json::Value;
 
-use super::snapshot::parse_loc;
+use super::snapshot::{
+    normalize_country_code,
+    parse_loc,
+};
 use crate::error::{
     ChaindashError,
     Result,
@@ -60,17 +63,19 @@ impl IpInfoClient {
 
 /// Parse an IPinfo `/{ip}/json` response body.
 ///
-/// Returns `Ok(None)` when the response contains no usable data (missing or
-/// invalid `country` and `loc`). Malformed JSON is an error.
+/// Returns `Ok(None)` when the response contains neither a non-empty `country`
+/// field nor valid coordinates. A non-empty invalid `country` remains a
+/// successful cache result so its enrichment refresh cadence is preserved.
+/// Malformed JSON is an error.
 pub(crate) fn parse_ipinfo_response(body: &str) -> Result<Option<IpInfoEntry>> {
     let value: Value = serde_json::from_str(body)?;
 
-    let country = value
+    let raw_country = value
         .get("country")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|country| !country.is_empty())
-        .map(str::to_string);
+        .filter(|country| !country.is_empty());
+    let country = raw_country.and_then(normalize_country_code);
 
     let loc = value
         .get("loc")
@@ -79,7 +84,7 @@ pub(crate) fn parse_ipinfo_response(body: &str) -> Result<Option<IpInfoEntry>> {
         .filter(|loc| parse_loc(loc).is_some())
         .map(str::to_string);
 
-    if country.is_none() && loc.is_none() {
+    if raw_country.is_none() && loc.is_none() {
         return Ok(None);
     }
 
@@ -113,6 +118,37 @@ mod tests {
 
         assert_eq!(entry.country.as_deref(), Some("US"));
         assert_eq!(entry.loc, None);
+    }
+
+    #[test]
+    fn test_parse_ipinfo_response_normalizes_country_code() {
+        let entry = parse_ipinfo_response(r#"{"ip": "1.1.1.1", "country": " cn "}"#)
+            .unwrap()
+            .expect("entry should exist");
+
+        assert_eq!(entry.country.as_deref(), Some("CN"));
+    }
+
+    #[test]
+    fn test_parse_ipinfo_response_keeps_nonempty_invalid_country_as_unknown_success() {
+        let entry = parse_ipinfo_response(r#"{"ip": "1.1.1.1", "country": "USA"}"#)
+            .unwrap()
+            .expect("nonempty country response should remain cacheable");
+
+        assert_eq!(entry.country, None);
+        assert_eq!(entry.loc, None);
+    }
+
+    #[test]
+    fn test_parse_ipinfo_response_rejects_invalid_country_but_keeps_valid_loc() {
+        let entry = parse_ipinfo_response(
+            r#"{"ip": "1.1.1.1", "country": "USA", "loc": "37.751,-97.822"}"#,
+        )
+        .unwrap()
+        .expect("valid coordinates should keep the entry");
+
+        assert_eq!(entry.country, None);
+        assert_eq!(entry.loc.as_deref(), Some("37.751,-97.822"));
     }
 
     #[test]

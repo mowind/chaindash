@@ -129,7 +129,7 @@ pub trait PeerGeoStore: Send + Sync + std::fmt::Debug {
     ) -> Result<()>;
 
     /// Request an owned Geo View Snapshot built from the current Peer Snapshot
-    /// joined to the Location Cache.
+    /// joined to the Location Cache, including the Peer Country Distribution.
     fn geo_view_snapshot(&self) -> Result<GeoViewSnapshot>;
 
     /// Wake channel that fires after every successful write commit.
@@ -459,7 +459,7 @@ pub(crate) fn update_location_cache_tx(
 }
 
 /// Build the Geo View Snapshot by joining the Peer Snapshot to the Location
-/// Cache. Read failures propagate to the caller, which renders an empty panel.
+/// Cache. Read failures propagate to the caller so the UI can report them.
 pub(crate) fn build_geo_view_snapshot(conn: &mut Connection) -> Result<GeoViewSnapshot> {
     let mut stmt = conn.prepare(
         "SELECT p.ip, COALESCE(l.country, ''), COALESCE(l.loc, '')
@@ -548,6 +548,7 @@ mod tests {
         let snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
         assert_eq!(snapshot.total_peers, 1);
         assert_eq!(snapshot.located_peers, 0);
+        assert_eq!(snapshot.unknown_country_count, 1);
         assert!(snapshot.peers.is_empty(), "no location cache entry means no plot");
     }
 
@@ -623,6 +624,31 @@ mod tests {
         let fresh = replace_peer_snapshot_tx(&mut conn, &["1.1.1.1".to_string()], now + 60)
             .expect("replace should succeed");
         assert!(fresh.is_empty(), "cache younger than 24h must not need refresh");
+
+        let stale =
+            replace_peer_snapshot_tx(&mut conn, &["1.1.1.1".to_string()], now + 24 * 60 * 60 + 1)
+                .expect("replace should succeed");
+        assert_eq!(stale, vec!["1.1.1.1".to_string()]);
+    }
+
+    #[test]
+    fn test_unknown_country_cache_entry_keeps_refresh_cadence() {
+        let mut conn = in_memory_conn();
+        run_migrations(&mut conn).expect("migration should succeed");
+
+        let now = 1_700_000_000;
+        replace_peer_snapshot_tx(&mut conn, &["1.1.1.1".to_string()], now)
+            .expect("replace should succeed");
+        update_location_cache_tx(
+            &mut conn,
+            &[LocationEntry::success("1.1.1.1".to_string(), None, None)],
+            now,
+        )
+        .expect("unknown country update should succeed");
+
+        let fresh = replace_peer_snapshot_tx(&mut conn, &["1.1.1.1".to_string()], now + 60)
+            .expect("replace should succeed");
+        assert!(fresh.is_empty(), "unknown country cache should honor the 24h TTL");
 
         let stale =
             replace_peer_snapshot_tx(&mut conn, &["1.1.1.1".to_string()], now + 24 * 60 * 60 + 1)
@@ -724,6 +750,56 @@ mod tests {
         assert_eq!(snapshot.total_peers, 1);
         assert_eq!(snapshot.located_peers, 0);
         assert_eq!(snapshot.unique_countries, 0);
+        assert_eq!(snapshot.unknown_country_count, 1);
+    }
+
+    #[test]
+    fn test_geo_view_snapshot_aggregates_full_peer_snapshot() {
+        let store =
+            SqlitePeerGeoStore::open_in_memory_with_clock(test_clock()).expect("store should open");
+
+        store
+            .replace_peer_snapshot(vec![
+                "1.1.1.1".to_string(),
+                "2.2.2.2".to_string(),
+                "3.3.3.3".to_string(),
+                "4.4.4.4".to_string(),
+                "1.1.1.1".to_string(),
+            ])
+            .expect("snapshot replacement should succeed");
+        store
+            .update_location_cache(vec![
+                LocationEntry::success("1.1.1.1".to_string(), Some(" cn ".to_string()), None),
+                LocationEntry::success("2.2.2.2".to_string(), Some("US".to_string()), None),
+                LocationEntry::success("3.3.3.3".to_string(), Some("invalid".to_string()), None),
+                LocationEntry::success(
+                    "4.4.4.4".to_string(),
+                    Some("US".to_string()),
+                    Some("39.9042,116.4074".to_string()),
+                ),
+            ])
+            .expect("location cache update should succeed");
+
+        let snapshot = store.geo_view_snapshot().expect("snapshot should succeed");
+
+        assert_eq!(snapshot.total_peers, 4);
+        assert_eq!(snapshot.located_peers, 1);
+        assert_eq!(snapshot.unknown_country_count, 1);
+        assert_eq!(
+            snapshot
+                .country_counts
+                .iter()
+                .map(|country| (country.country_code.as_str(), country.peer_count))
+                .collect::<Vec<_>>(),
+            vec![("US", 2), ("CN", 1)]
+        );
+        assert_eq!(
+            snapshot.country_counts.iter().map(|country| country.peer_count).sum::<usize>()
+                + snapshot.unknown_country_count,
+            snapshot.total_peers
+        );
+
+        store.shutdown();
     }
 
     #[test]
@@ -748,6 +824,9 @@ mod tests {
         assert_eq!(snapshot.total_peers, 1);
         assert_eq!(snapshot.located_peers, 1);
         assert_eq!(snapshot.unique_countries, 1);
+        assert_eq!(snapshot.unknown_country_count, 0);
+        assert_eq!(snapshot.country_counts[0].country_code, "CN");
+        assert_eq!(snapshot.country_counts[0].peer_count, 1);
         assert_eq!(snapshot.peers[0].ip, "1.1.1.1");
 
         store.shutdown();

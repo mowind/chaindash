@@ -1,5 +1,6 @@
 pub(crate) mod block;
 mod chart;
+mod countries;
 #[cfg(target_family = "unix")]
 mod disk_list;
 pub(crate) mod helpers;
@@ -16,7 +17,7 @@ pub use self::disk_list::DiskListWidget;
 #[cfg(target_family = "unix")]
 pub use self::system_summary::SystemSummaryWidget;
 pub use self::{
-    map::PeerMapWidget,
+    countries::PeerCountriesWidget,
     node::NodeWidget,
     node_detail::NodeDetailWidget,
     time::TimeWidget,

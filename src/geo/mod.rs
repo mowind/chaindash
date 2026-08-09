@@ -8,7 +8,10 @@ pub(crate) use self::{
         IpInfoClient,
         IpInfoEntry,
     },
-    snapshot::GeoViewSnapshot,
+    snapshot::{
+        CountryCount,
+        GeoViewSnapshot,
+    },
     store::{
         LocationEntry,
         NullPeerGeoStore,
