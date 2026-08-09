@@ -716,6 +716,9 @@ mod tests {
         assert_eq!(snapshot.total_peers, 1);
         assert_eq!(snapshot.located_peers, 1);
         assert_eq!(snapshot.peers[0].country, "CN");
+        assert_eq!(snapshot.country_counts.len(), 1);
+        assert_eq!(snapshot.country_counts[0].country_code, "CN");
+        assert_eq!(snapshot.country_counts[0].peer_count, 1);
 
         let (country, loc, refreshed_at, last_error): (String, String, i64, String) = conn
             .query_row(
@@ -729,6 +732,39 @@ mod tests {
         assert_eq!(loc, "39.9042,116.4074");
         assert_eq!(refreshed_at, now);
         assert_eq!(last_error, "timeout");
+    }
+
+    #[test]
+    fn test_successful_enrichment_moves_peer_from_unknown_to_known_country() {
+        let mut conn = in_memory_conn();
+        run_migrations(&mut conn).expect("migration should succeed");
+
+        let now = 1_700_000_000;
+        replace_peer_snapshot_tx(&mut conn, &["1.1.1.1".to_string()], now)
+            .expect("replace should succeed");
+        update_location_cache_tx(
+            &mut conn,
+            &[LocationEntry::success("1.1.1.1".to_string(), None, None)],
+            now,
+        )
+        .expect("unknown enrichment should succeed");
+
+        let unknown_snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
+        assert_eq!(unknown_snapshot.unknown_country_count, 1);
+        assert!(unknown_snapshot.country_counts.is_empty());
+
+        update_location_cache_tx(
+            &mut conn,
+            &[LocationEntry::success("1.1.1.1".to_string(), Some(" us ".to_string()), None)],
+            now + 60,
+        )
+        .expect("known enrichment should succeed");
+
+        let known_snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
+        assert_eq!(known_snapshot.unknown_country_count, 0);
+        assert_eq!(known_snapshot.country_counts.len(), 1);
+        assert_eq!(known_snapshot.country_counts[0].country_code, "US");
+        assert_eq!(known_snapshot.country_counts[0].peer_count, 1);
     }
 
     #[test]

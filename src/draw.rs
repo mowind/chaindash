@@ -336,6 +336,7 @@ mod tests {
             ":memory:",
         ]);
         let mut app = setup_app(&opts);
+        assert!(app.refresh_geo_snapshot());
         let area = Rect::new(0, 0, 120, 30);
         let rows = split_dashboard_rows(area, AUXILIARY_ROW_HEIGHT);
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))

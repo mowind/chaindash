@@ -37,6 +37,7 @@ pub struct PeerCountriesWidget {
     collect_data: SharedData,
     store: Arc<dyn PeerGeoStore>,
     snapshot: GeoViewSnapshot,
+    snapshot_loaded: bool,
 }
 
 fn country_flag(country_code: &str) -> String {
@@ -115,6 +116,7 @@ impl PeerCountriesWidget {
             collect_data,
             store,
             snapshot: GeoViewSnapshot::default(),
+            snapshot_loaded: false,
         }
     }
 
@@ -124,16 +126,20 @@ impl PeerCountriesWidget {
     }
 
     /// Load the latest Geo View Snapshot and report whether the read succeeded.
+    ///
+    /// A failed read leaves the last successfully loaded snapshot intact so a
+    /// transient database error cannot clear useful Peer Country Distribution
+    /// data from the panel.
     pub(crate) fn refresh_snapshot(&mut self) -> bool {
         match self.store.geo_view_snapshot() {
             Ok(snapshot) => {
                 self.snapshot = snapshot;
+                self.snapshot_loaded = true;
                 true
             },
             Err(err) => {
                 let message = format!("geo snapshot unavailable: {err}");
                 lock_or_panic(&self.collect_data).set_status_message(StatusLevel::Warn, message);
-                self.snapshot = GeoViewSnapshot::default();
                 false
             },
         }
@@ -145,6 +151,17 @@ impl PeerCountriesWidget {
         area: Rect,
     ) {
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        if !self.snapshot_loaded {
+            buf.set_stringn(
+                area.x,
+                area.y,
+                "Geo data unavailable",
+                area.width as usize,
+                panel::muted_style(),
+            );
             return;
         }
 
@@ -234,7 +251,10 @@ mod tests {
     use crate::{
         collect::Data,
         geo::{
-            testutil::FakePeerGeoStore,
+            testutil::{
+                FakePeerGeoStore,
+                ScriptedPeerGeoStore,
+            },
             CountryCount,
         },
     };
@@ -270,8 +290,15 @@ mod tests {
         let store = Arc::new(FakePeerGeoStore::new(snapshot));
         let mut widget = PeerCountriesWidget::new(data, store);
         widget.update();
+        render_current_widget(&widget, area)
+    }
+
+    fn render_current_widget(
+        widget: &PeerCountriesWidget,
+        area: Rect,
+    ) -> Buffer {
         let mut buf = Buffer::empty(area);
-        (&widget).render(area, &mut buf);
+        widget.render(area, &mut buf);
         buf
     }
 
@@ -323,6 +350,17 @@ mod tests {
     }
 
     #[test]
+    fn test_peer_countries_panel_renders_all_unknown_peers_as_unknown_country() {
+        let area = Rect::new(0, 0, 32, 6);
+        let text = buffer_text(&render_widget(snapshot_with_countries(vec![], 3), area), area);
+
+        assert!(!text.contains("No peers"));
+        assert!(text.contains("🌐"));
+        assert!(text.contains("--"));
+        assert!(text.contains("3"));
+    }
+
+    #[test]
     fn test_peer_countries_panel_reserves_space_for_unknown_row() {
         let area = Rect::new(0, 0, 32, 4);
         let text = buffer_text(
@@ -356,51 +394,72 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_countries_update_reports_read_failure() {
+    fn test_peer_countries_initial_read_failure_renders_unavailable() {
         let data = Data::new();
-        let store: Arc<dyn PeerGeoStore> = Arc::new(FailingStore);
+        let store = ScriptedPeerGeoStore::new(vec![Err("db broken".to_string())]);
         let mut widget = PeerCountriesWidget::new(data.clone(), store);
 
         assert!(!widget.refresh_snapshot());
         assert_eq!(widget.snapshot(), &GeoViewSnapshot::default());
-        assert!(data.lock().expect("mutex poisoned").status_message().is_some());
+
+        let area = Rect::new(0, 0, 32, 6);
+        let text = buffer_text(&render_current_widget(&widget, area), area);
+        assert!(text.contains("Geo data unavailable"));
+        assert!(!text.contains("No peers"));
+
+        let status = data
+            .lock()
+            .expect("mutex poisoned")
+            .status_message()
+            .expect("read failure should set a status message");
+        assert_eq!(status.level, StatusLevel::Warn);
     }
 
-    struct FailingStore;
+    #[test]
+    fn test_peer_countries_read_failure_preserves_last_successful_snapshot() {
+        let data = Data::new();
+        let first = snapshot_with_countries(vec![("CN", 2)], 1);
+        let store = ScriptedPeerGeoStore::new(vec![
+            Ok(first.clone()),
+            Err("transient read failure".to_string()),
+        ]);
+        let mut widget = PeerCountriesWidget::new(data.clone(), store);
 
-    impl std::fmt::Debug for FailingStore {
-        fn fmt(
-            &self,
-            f: &mut std::fmt::Formatter<'_>,
-        ) -> std::fmt::Result {
-            f.write_str("FailingStore")
-        }
+        assert!(widget.refresh_snapshot());
+        assert!(!widget.refresh_snapshot());
+        assert_eq!(widget.snapshot(), &first);
+
+        let area = Rect::new(0, 0, 32, 6);
+        let text = buffer_text(&render_current_widget(&widget, area), area);
+        assert!(text.contains("CN"));
+        assert!(text.contains("--"));
+        assert!(!text.contains("Geo data unavailable"));
+
+        let status = data
+            .lock()
+            .expect("mutex poisoned")
+            .status_message()
+            .expect("read failure should set a status message");
+        assert_eq!(status.level, StatusLevel::Warn);
     }
 
-    impl PeerGeoStore for FailingStore {
-        fn replace_peer_snapshot(
-            &self,
-            _ips: Vec<String>,
-        ) -> crate::error::Result<Vec<String>> {
-            Err(crate::error::ChaindashError::Other("db broken".to_string()))
-        }
+    #[test]
+    fn test_peer_countries_retry_replaces_retained_snapshot_after_recovery() {
+        let data = Data::new();
+        let first = snapshot_with_countries(vec![("CN", 1)], 0);
+        let recovered = snapshot_with_countries(vec![("US", 3)], 0);
+        let store = ScriptedPeerGeoStore::new(vec![
+            Ok(first.clone()),
+            Err("transient read failure".to_string()),
+            Ok(recovered.clone()),
+        ]);
+        let mut widget = PeerCountriesWidget::new(data, store.clone());
 
-        fn update_location_cache(
-            &self,
-            _entries: Vec<crate::geo::LocationEntry>,
-        ) -> crate::error::Result<()> {
-            Err(crate::error::ChaindashError::Other("db broken".to_string()))
-        }
-
-        fn geo_view_snapshot(&self) -> crate::error::Result<GeoViewSnapshot> {
-            Err(crate::error::ChaindashError::Other("db broken".to_string()))
-        }
-
-        fn updates(&self) -> crossbeam_channel::Receiver<()> {
-            let (_tx, rx) = crossbeam_channel::bounded(1);
-            rx
-        }
-
-        fn shutdown(&self) {}
+        assert!(widget.refresh_snapshot());
+        assert!(!widget.refresh_snapshot());
+        assert_eq!(widget.snapshot(), &first);
+        assert!(widget.refresh_snapshot());
+        assert_eq!(widget.snapshot(), &recovered);
+        assert_eq!(store.read_count(), 3);
     }
 }

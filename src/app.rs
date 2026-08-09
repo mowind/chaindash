@@ -257,6 +257,12 @@ mod tests {
     use super::*;
     use crate::{
         collect::DiskDetail,
+        geo::{
+            testutil::ScriptedPeerGeoStore,
+            CountryCount,
+            GeoViewSnapshot,
+        },
+        widgets::PeerCountriesWidget,
         Opts,
     };
 
@@ -280,12 +286,56 @@ mod tests {
         }
     }
 
+    fn country_snapshot(
+        country_code: &str,
+        peer_count: usize,
+    ) -> GeoViewSnapshot {
+        GeoViewSnapshot {
+            total_peers: peer_count,
+            unique_countries: 1,
+            country_counts: vec![CountryCount {
+                country_code: country_code.to_string(),
+                peer_count,
+            }],
+            ..GeoViewSnapshot::default()
+        }
+    }
+
     #[test]
     fn test_setup_app_creates_app_with_widgets() {
         let opts = create_test_opts();
         let app = setup_app(&opts);
 
         assert_eq!(app.data.lock().expect("mutex poisoned").cur_block_number(), 0);
+    }
+
+    #[test]
+    fn test_geo_snapshot_retry_only_reads_after_failure_and_recovers() {
+        let opts = create_test_opts();
+        let mut app = setup_app(&opts);
+        let first = country_snapshot("CN", 1);
+        let recovered = country_snapshot("US", 2);
+        let store = ScriptedPeerGeoStore::new(vec![
+            Ok(first.clone()),
+            Err("transient read failure".to_string()),
+            Ok(recovered.clone()),
+        ]);
+        app.widgets.peer_countries = PeerCountriesWidget::new(app.data.clone(), store.clone());
+
+        assert!(app.refresh_geo_snapshot());
+        assert_eq!(store.read_count(), 1);
+        assert!(!app.retry_geo_snapshot(), "successful reads should not arm retries");
+        assert_eq!(store.read_count(), 1);
+
+        assert!(app.refresh_geo_snapshot());
+        assert_eq!(store.read_count(), 2);
+        assert_eq!(app.widgets.peer_countries.snapshot(), &first);
+
+        assert!(app.retry_geo_snapshot());
+        assert_eq!(store.read_count(), 3);
+        assert_eq!(app.widgets.peer_countries.snapshot(), &recovered);
+        assert!(!app.retry_geo_snapshot(), "a recovered read should clear retries");
+        assert_eq!(store.read_count(), 3);
     }
 
     #[test]
