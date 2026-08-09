@@ -462,14 +462,13 @@ pub(crate) fn update_location_cache_tx(
 /// Cache. Read failures propagate to the caller so the UI can report them.
 pub(crate) fn build_geo_view_snapshot(conn: &mut Connection) -> Result<GeoViewSnapshot> {
     let mut stmt = conn.prepare(
-        "SELECT p.ip, COALESCE(l.country, ''), COALESCE(l.loc, '')
+        "SELECT p.ip, COALESCE(l.country, '')
          FROM current_peers p
          LEFT JOIN location_cache l ON l.ip = p.ip
          ORDER BY p.ip",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-    })?;
+    let rows =
+        stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
     let rows: std::result::Result<Vec<_>, _> = rows.collect();
     Ok(assemble_snapshot(&rows?))
 }
@@ -547,9 +546,8 @@ mod tests {
 
         let snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
         assert_eq!(snapshot.total_peers, 1);
-        assert_eq!(snapshot.located_peers, 0);
+        assert_eq!(snapshot.unique_countries, 0);
         assert_eq!(snapshot.unknown_country_count, 1);
-        assert!(snapshot.peers.is_empty(), "no location cache entry means no plot");
     }
 
     #[test]
@@ -714,8 +712,6 @@ mod tests {
 
         let snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
         assert_eq!(snapshot.total_peers, 1);
-        assert_eq!(snapshot.located_peers, 1);
-        assert_eq!(snapshot.peers[0].country, "CN");
         assert_eq!(snapshot.country_counts.len(), 1);
         assert_eq!(snapshot.country_counts[0].country_code, "CN");
         assert_eq!(snapshot.country_counts[0].peer_count, 1);
@@ -768,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_only_entry_is_not_plotted() {
+    fn test_error_only_entry_is_unknown_country() {
         let mut conn = in_memory_conn();
         run_migrations(&mut conn).expect("migration should succeed");
 
@@ -784,7 +780,6 @@ mod tests {
 
         let snapshot = build_geo_view_snapshot(&mut conn).expect("snapshot should build");
         assert_eq!(snapshot.total_peers, 1);
-        assert_eq!(snapshot.located_peers, 0);
         assert_eq!(snapshot.unique_countries, 0);
         assert_eq!(snapshot.unknown_country_count, 1);
     }
@@ -819,7 +814,6 @@ mod tests {
         let snapshot = store.geo_view_snapshot().expect("snapshot should succeed");
 
         assert_eq!(snapshot.total_peers, 4);
-        assert_eq!(snapshot.located_peers, 1);
         assert_eq!(snapshot.unknown_country_count, 1);
         assert_eq!(
             snapshot
@@ -858,12 +852,10 @@ mod tests {
 
         let snapshot = store.geo_view_snapshot().expect("snapshot should succeed");
         assert_eq!(snapshot.total_peers, 1);
-        assert_eq!(snapshot.located_peers, 1);
         assert_eq!(snapshot.unique_countries, 1);
         assert_eq!(snapshot.unknown_country_count, 0);
         assert_eq!(snapshot.country_counts[0].country_code, "CN");
         assert_eq!(snapshot.country_counts[0].peer_count, 1);
-        assert_eq!(snapshot.peers[0].ip, "1.1.1.1");
 
         store.shutdown();
     }
@@ -915,7 +907,7 @@ mod tests {
             .expect("reopen should succeed");
         let snapshot = reopened.geo_view_snapshot().expect("snapshot should load");
         assert_eq!(snapshot.total_peers, 1);
-        assert_eq!(snapshot.peers[0].country, "CN");
+        assert_eq!(snapshot.country_counts[0].country_code, "CN");
         reopened.shutdown();
 
         let _ = std::fs::remove_file(&path);

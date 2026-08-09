@@ -3,10 +3,7 @@ use std::time::Duration;
 use reqwest::Client;
 use serde_json::Value;
 
-use super::snapshot::{
-    normalize_country_code,
-    parse_loc,
-};
+use super::snapshot::normalize_country_code;
 use crate::error::{
     ChaindashError,
     Result,
@@ -59,6 +56,19 @@ impl IpInfoClient {
         let body = response.text().await?;
         parse_ipinfo_response(&body)
     }
+}
+
+fn parse_loc(loc: &str) -> Option<(f64, f64)> {
+    let (lat, lng) = loc.split_once(',')?;
+    let lat = lat.trim().parse::<f64>().ok()?;
+    let lng = lng.trim().parse::<f64>().ok()?;
+    if !lat.is_finite() || !lng.is_finite() {
+        return None;
+    }
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+        return None;
+    }
+    Some((lat, lng))
 }
 
 /// Parse an IPinfo `/{ip}/json` response body.

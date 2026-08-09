@@ -20,7 +20,6 @@ WORKDIR /workspace
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY data/land_mask.bin ./data/land_mask.bin
 
 RUN cargo build --release --locked
 

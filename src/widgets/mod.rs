@@ -4,7 +4,6 @@ mod countries;
 #[cfg(target_family = "unix")]
 mod disk_list;
 pub(crate) mod helpers;
-mod map;
 mod node;
 mod node_detail;
 #[cfg(target_family = "unix")]

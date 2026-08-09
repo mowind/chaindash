@@ -467,7 +467,6 @@ mod tests {
             unique_countries: country_counts.len(),
             country_counts,
             unknown_country_count,
-            ..GeoViewSnapshot::default()
         }
     }
 

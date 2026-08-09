@@ -149,7 +149,7 @@ Server:
     current_peers -> Location Cache -> Geo View Snapshot
 
 WebUI:
-    读取 Geo View Snapshot 并绘制地图
+    读取 Geo View Snapshot 并展示 Peer Country Distribution
 ```
 
 ## 6. 目标架构
@@ -655,15 +655,15 @@ Geo 处理迁移到 Server：
 与当前实现保持一致的语义：
 
 - 某次采集失败时保留上一次成功的 Peer Snapshot；
-- enrichment 失败时保留以前的成功位置；
-- 只绘制有合法坐标的 Located Peer；
+- enrichment 失败时保留以前的成功 Country Code 和可选坐标；
+- Peer Country Distribution 统计所有当前 Peer，无法归类的 Peer 计入 Unknown Country；
 - UI 不执行 SQL；
 - UI 不直接调用 ipinfo.io；
 - 不对不可 enrichment 的内网地址进行公开地理查询。
 
 隐私选项：
 
-- Server 默认只向普通 WebUI 用户返回国家和地图点；
+- Server 默认只向普通 WebUI 用户返回 Country Code 和 Peer Country Distribution；
 - 精确 IP 展示应由权限控制；
 - 可以配置是否保存原始 Peer IP；
 - 内网 IP、保留地址和无效地址不进入公网 Geo enrichment。
@@ -882,7 +882,7 @@ TUI -> Server API/WebSocket -> Server state
 - 被监控节点详情；
 - 系统资源；
 - 区块和交易状态；
-- Peer 地图；
+- Peer Country Distribution；
 - WebSocket 实时更新。
 
 这一阶段不实现 WebUI 修改配置和告警规则，先验证展示闭环。
@@ -1016,7 +1016,7 @@ MVP 暂不实现：
 - Agent 断开后 Server 能在预期时间内标记 Offline；
 - Agent 恢复后状态能自动恢复；
 - WebUI 能查看节点、系统和 Peer 数据；
-- Peer 地图不因单次 Geo 查询失败而清空已有位置。
+- Peer Country Distribution 不因单次 Geo 查询失败而清空已有数据。
 
 ### 数据一致性
 

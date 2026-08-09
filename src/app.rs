@@ -297,7 +297,7 @@ mod tests {
                 country_code: country_code.to_string(),
                 peer_count,
             }],
-            ..GeoViewSnapshot::default()
+            unknown_country_count: 0,
         }
     }
 
