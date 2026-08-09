@@ -258,6 +258,20 @@ impl PeerCountriesWidget {
 
         if self.snapshot.total_peers == 0 {
             buf.set_stringn(area.x, area.y, "No peers", area.width as usize, panel::muted_style());
+            if area.height as usize > SUMMARY_ROW_INDEX {
+                render_summary(
+                    buf,
+                    Rect {
+                        x: area.x,
+                        y: area.y + SUMMARY_ROW_INDEX as u16,
+                        width: area.width,
+                        height: 1,
+                    },
+                    0,
+                    0,
+                    0,
+                );
+            }
             return;
         }
 
@@ -652,12 +666,11 @@ mod tests {
 
     #[test]
     fn test_peer_countries_panel_renders_successful_empty_snapshot_as_no_peers() {
-        let text = buffer_text(
-            &render_widget(GeoViewSnapshot::default(), Rect::new(0, 0, 24, 6)),
-            Rect::new(0, 0, 24, 6),
-        );
+        let area = Rect::new(0, 0, 24, 6);
+        let buf = render_widget(GeoViewSnapshot::default(), area);
 
-        assert!(text.contains("No peers"));
+        assert!(buffer_text(&buf, area).contains("No peers"));
+        assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "0 countries · 0 peers");
     }
 
     #[test]
