@@ -30,13 +30,10 @@ use crate::{
 };
 
 const MAP_TITLE: &str = " Peer Map ";
-const LAND_FALLBACK: &str = "░";
 const LAND_TOP: &str = "▀";
 const LAND_BOTTOM: &str = "▄";
 const LAND_FULL: &str = "█";
 const PEER_DOT: &str = "●";
-const MIN_MAP_WIDTH: u16 = 8;
-const MIN_MAP_HEIGHT: u16 = 3;
 const HALF_BLOCK_MIN_WIDTH: u16 = 24;
 const HALF_BLOCK_MIN_HEIGHT: u16 = 7;
 const MAP_CELL_ASPECT_RATIO: u16 = 4;
@@ -44,6 +41,8 @@ const MAP_CELL_ASPECT_RATIO: u16 = 4;
 const LAND_MASK_WIDTH: usize = 360;
 const LAND_MASK_HEIGHT: usize = 180;
 const LAND_MASK_BYTES: usize = LAND_MASK_WIDTH * LAND_MASK_HEIGHT / 8;
+const MAX_MAP_WIDTH: u16 = LAND_MASK_WIDTH as u16;
+const MAX_MAP_HEIGHT: u16 = MAX_MAP_WIDTH / MAP_CELL_ASPECT_RATIO;
 
 /// Natural Earth 1:110m land rasterized to one bit per one-degree cell.
 ///
@@ -240,23 +239,13 @@ fn half_block_symbol(mask: u8) -> Option<&'static str> {
 
 #[derive(Debug, Clone, Copy)]
 struct RenderMode {
-    land_stride: usize,
     half_blocks: bool,
     show_stats: bool,
 }
 
 fn render_mode(area: Rect) -> RenderMode {
-    if area.width < MIN_MAP_WIDTH || area.height < MIN_MAP_HEIGHT {
-        return RenderMode {
-            land_stride: 8,
-            half_blocks: false,
-            show_stats: false,
-        };
-    }
-
     if area.width < HALF_BLOCK_MIN_WIDTH || area.height < HALF_BLOCK_MIN_HEIGHT {
         return RenderMode {
-            land_stride: 4,
             half_blocks: false,
             show_stats: false,
         };
@@ -264,14 +253,12 @@ fn render_mode(area: Rect) -> RenderMode {
 
     if area.width < 45 || area.height < 10 {
         return RenderMode {
-            land_stride: 2,
             half_blocks: false,
             show_stats: true,
         };
     }
 
     RenderMode {
-        land_stride: 1,
         half_blocks: true,
         show_stats: true,
     }
@@ -293,9 +280,11 @@ fn map_rect(area: Rect) -> Rect {
         return area;
     }
 
-    let max_height = area.width / MAP_CELL_ASPECT_RATIO;
-    let height = area.height.min(max_height.max(1));
-    let width = area.width.min(height.saturating_mul(MAP_CELL_ASPECT_RATIO)).max(1);
+    let available_width = area.width.min(MAX_MAP_WIDTH);
+    let available_height = area.height.min(MAX_MAP_HEIGHT);
+    let max_height = available_width / MAP_CELL_ASPECT_RATIO;
+    let height = available_height.min(max_height.max(1));
+    let width = available_width.min(height.saturating_mul(MAP_CELL_ASPECT_RATIO)).max(1);
 
     Rect {
         x: area.x + (area.width - width) / 2,
@@ -320,22 +309,57 @@ fn map_cell(
     Some((screen_x, screen_y))
 }
 
-fn map_subcell(
-    lat: f64,
-    lng: f64,
+fn target_index(
+    coordinate: f64,
+    count: usize,
+) -> usize {
+    if count <= 1 {
+        return 0;
+    }
+
+    (coordinate * (count - 1) as f64).round().clamp(0.0, (count - 1) as f64) as usize
+}
+
+/// Return the target indices touched by a one-degree source cell.
+///
+/// The source cell's extent may straddle a target boundary, so both endpoint
+/// indices are included instead of sampling only the cell center. `map_rect`
+/// keeps target resolution at or below the one-degree source mask, which bounds
+/// this range to the source cell and at most one adjacent target index.
+fn target_index_range(
+    minimum: f64,
+    maximum: f64,
+    count: usize,
+) -> (usize, usize) {
+    let first = target_index(minimum, count);
+    let last = target_index(maximum, count);
+    (first.min(last), first.max(last))
+}
+fn land_cell_target_ranges(
+    row: usize,
+    column: usize,
     area: Rect,
-) -> Option<(i32, i32, bool)> {
+    half_blocks: bool,
+) -> Option<((usize, usize), (usize, usize))> {
     if area.width == 0 || area.height == 0 {
         return None;
     }
 
-    let (x, y) = project(lat, lng)?;
-    let screen_x = area.x as i32 + (x * area.width.saturating_sub(1) as f64).round() as i32;
-    let subpixel_height = area.height.saturating_mul(2);
-    let subpixel_y = (y * subpixel_height.saturating_sub(1) as f64).round() as i32;
-    let screen_y = area.y as i32 + subpixel_y / 2;
-    let upper = subpixel_y % 2 == 0;
-    Some((screen_x, screen_y, upper))
+    let (lat, lng) = land_cell_coordinates(row, column);
+    let x_min = project(lat, lng - 0.5)?.0;
+    let x_max = project(lat, lng + 0.5)?.0;
+    let y_min = project(lat - 0.5, lng)?.1;
+    let y_max = project(lat + 0.5, lng)?.1;
+    let vertical_subcells = if half_blocks {
+        usize::from(area.height).saturating_mul(2)
+    } else {
+        usize::from(area.height)
+    };
+
+    Some((
+        target_index_range(x_min.min(x_max), x_min.max(x_max), usize::from(area.width)),
+        target_index_range(y_min.min(y_max), y_min.max(y_max), vertical_subcells),
+    ))
 }
 
 impl PeerMapWidget {
@@ -404,39 +428,40 @@ impl PeerMapWidget {
     ) {
         let palette = palette(color_mode());
 
-        if mode.half_blocks {
-            let mut land_cells = BTreeMap::new();
-            for row in (0..LAND_MASK_HEIGHT).step_by(mode.land_stride) {
-                for column in (0..LAND_MASK_WIDTH).step_by(mode.land_stride) {
-                    if !land_mask_cell(row, column) {
-                        continue;
-                    }
-                    let (lat, lng) = land_cell_coordinates(row, column);
-                    if let Some((screen_x, screen_y, upper)) = map_subcell(lat, lng, area) {
-                        let mask = land_cells.entry((screen_x, screen_y)).or_insert(0);
-                        *mask |= if upper { 1 } else { 2 };
+        let mut land_cells = BTreeMap::new();
+        for row in 0..LAND_MASK_HEIGHT {
+            for column in 0..LAND_MASK_WIDTH {
+                if !land_mask_cell(row, column) {
+                    continue;
+                }
+                let Some(((x_start, x_end), (y_start, y_end))) =
+                    land_cell_target_ranges(row, column, area, mode.half_blocks)
+                else {
+                    continue;
+                };
+                for target_x in x_start..=x_end {
+                    for target_y in y_start..=y_end {
+                        let screen_x = area.x as i32 + target_x as i32;
+                        let screen_y = if mode.half_blocks {
+                            area.y as i32 + (target_y / 2) as i32
+                        } else {
+                            area.y as i32 + target_y as i32
+                        };
+                        if mode.half_blocks {
+                            let mask = land_cells.entry((screen_x, screen_y)).or_insert(0);
+                            *mask |= if target_y % 2 == 0 { 1 } else { 2 };
+                        } else {
+                            land_cells.entry((screen_x, screen_y)).or_insert(3);
+                        }
                     }
                 }
             }
+        }
 
-            let land_style = Style::default().fg(palette.land).bg(palette.background);
-            for ((screen_x, screen_y), mask) in land_cells {
-                if let Some(symbol) = half_block_symbol(mask) {
-                    set_cell(buf, screen_x, screen_y, area, symbol, land_style);
-                }
-            }
-        } else {
-            let land_style = Style::default().fg(palette.land).bg(palette.background);
-            for row in (0..LAND_MASK_HEIGHT).step_by(mode.land_stride) {
-                for column in (0..LAND_MASK_WIDTH).step_by(mode.land_stride) {
-                    if !land_mask_cell(row, column) {
-                        continue;
-                    }
-                    let (lat, lng) = land_cell_coordinates(row, column);
-                    if let Some((screen_x, screen_y)) = map_cell(lat, lng, area) {
-                        set_cell(buf, screen_x, screen_y, area, LAND_FALLBACK, land_style);
-                    }
-                }
+        let land_style = Style::default().fg(palette.land).bg(palette.background);
+        for ((screen_x, screen_y), mask) in land_cells {
+            if let Some(symbol) = half_block_symbol(mask) {
+                set_cell(buf, screen_x, screen_y, area, symbol, land_style);
             }
         }
 
@@ -606,7 +631,6 @@ mod tests {
     #[test]
     fn test_peer_map_title_constants() {
         assert_eq!(MAP_TITLE, " Peer Map ");
-        assert_eq!(LAND_FALLBACK, "░");
         assert_eq!(LAND_TOP, "▀");
         assert_eq!(LAND_BOTTOM, "▄");
         assert_eq!(LAND_FULL, "█");
@@ -674,31 +698,43 @@ mod tests {
     fn test_map_rect_preserves_terminal_aspect_and_centers_content() {
         assert_eq!(map_rect(Rect::new(1, 2, 38, 13)), Rect::new(2, 4, 36, 9));
         assert_eq!(map_rect(Rect::new(0, 0, 10, 3)), Rect::new(1, 0, 8, 2));
+        assert_eq!(map_rect(Rect::new(0, 0, 400, 100)), Rect::new(20, 5, 360, 90));
     }
 
     #[test]
-    fn test_render_modes_degrade_density_and_hide_stats_when_small() {
+    fn test_compact_land_extent_reaches_adjacent_target_cell() {
+        assert!(land_mask_cell(6, 142));
+        let widget_area = Rect::new(0, 0, 30, 8);
+        let map_area = map_rect(Rect::new(1, 1, 28, 5));
+        assert_eq!(map_area, Rect::new(5, 1, 20, 5));
+
+        let (lat, lng) = land_cell_coordinates(6, 142);
+        assert_eq!(map_cell(lat, lng, map_area), Some((13, 1)));
+
+        let buf = render_map_widget(GeoViewSnapshot::default(), widget_area);
+        assert_eq!(buf.get(12, 1).symbol(), LAND_FULL);
+        assert_eq!(buf.get(13, 1).symbol(), LAND_FULL);
+    }
+
+    #[test]
+    fn test_render_modes_preserve_half_blocks_and_hide_stats_when_small() {
         let full = render_mode(Rect::new(0, 0, 50, 12));
-        assert_eq!(full.land_stride, 1);
+        assert!(full.half_blocks);
         assert!(full.show_stats);
 
         let compact = render_mode(Rect::new(0, 0, 30, 8));
-        assert_eq!(compact.land_stride, 2);
         assert!(!compact.half_blocks);
         assert!(compact.show_stats);
 
         let fallback = render_mode(Rect::new(0, 0, 23, 7));
-        assert_eq!(fallback.land_stride, 4);
         assert!(!fallback.half_blocks);
         assert!(!fallback.show_stats);
 
         let tiny = render_mode(Rect::new(0, 0, 10, 3));
-        assert_eq!(tiny.land_stride, 4);
         assert!(!tiny.half_blocks);
         assert!(!tiny.show_stats);
 
         let minimal = render_mode(Rect::new(0, 0, 7, 2));
-        assert_eq!(minimal.land_stride, 8);
         assert!(!minimal.half_blocks);
         assert!(!minimal.show_stats);
     }
@@ -720,6 +756,14 @@ mod tests {
         let buf = render_map_widget(GeoViewSnapshot::default(), area);
 
         assert_eq!(buffer_text(&buf, area), include_str!("map_snapshot.txt"));
+    }
+
+    #[test]
+    fn test_compact_map_snapshot() {
+        let area = Rect::new(0, 0, 20, 6);
+        let buf = render_map_widget(GeoViewSnapshot::default(), area);
+
+        assert_eq!(buffer_text(&buf, area), include_str!("map_compact_snapshot.txt"));
     }
 
     #[test]
@@ -865,14 +909,34 @@ mod tests {
     }
 
     #[test]
-    fn test_tiny_map_uses_single_cell_land_fallback() {
+    fn test_compact_peer_marker_overlays_land_cell() {
+        let (lat, lng) = land_cell_coordinates(89, 200);
+        let snapshot = snapshot_with_peers(vec![LocatedPeer {
+            ip: "1.1.1.1".to_string(),
+            country: "US".to_string(),
+            lat,
+            lng,
+        }]);
+        let area = Rect::new(0, 0, 20, 6);
+        let buf = render_map_widget(snapshot, area);
+        let map_area = map_rect(Rect::new(1, 1, 18, 4));
+        let (x, y) = map_cell(lat, lng, map_area).expect("land point should project");
+
+        assert_eq!(buf.get(x as u16, y as u16).symbol(), PEER_DOT);
+    }
+
+    #[test]
+    fn test_compact_map_aggregates_land_into_full_cells() {
         let buf = render_map_widget(GeoViewSnapshot::default(), Rect::new(0, 0, 20, 6));
-        let fallback_cells = (1..19)
+        let land_cells = (1..19)
             .flat_map(|x| (1..5).map(move |y| (x, y)))
-            .filter(|&(x, y)| buf.get(x, y).symbol() == LAND_FALLBACK)
+            .filter(|&(x, y)| buf.get(x, y).symbol() == LAND_FULL)
             .count();
 
-        assert!(fallback_cells > 0);
+        assert!(land_cells > 0);
+        assert!((1..19)
+            .flat_map(|x| (1..5).map(move |y| (x, y)))
+            .all(|(x, y)| buf.get(x, y).symbol() != "░"));
     }
 
     #[test]
