@@ -39,6 +39,15 @@ enum CountryRowMode {
     SummaryOnly,
 }
 
+struct CountryRow<'a> {
+    flag: &'a str,
+    country_code: &'a str,
+    peer_count: usize,
+    mode: CountryRowMode,
+    code_style: Style,
+    count_style: Style,
+}
+
 /// Static Peer Country Distribution panel backed by an owned Geo View Snapshot.
 ///
 /// The snapshot is loaded through the `PeerGeoStore` handle on `update`; drawing
@@ -77,21 +86,17 @@ fn country_row_widths(
 fn render_country_row(
     buf: &mut Buffer,
     area: Rect,
-    flag: &str,
-    country_code: &str,
-    peer_count: usize,
-    mode: CountryRowMode,
-    code_style: Style,
-    count_style: Style,
+    row: CountryRow<'_>,
 ) {
-    if area.width == 0 || area.height == 0 || mode == CountryRowMode::SummaryOnly {
+    if area.width == 0 || area.height == 0 || row.mode == CountryRowMode::SummaryOnly {
         return;
     }
 
-    let count = peer_count.to_string();
+    let count = row.peer_count.to_string();
     let count_width = count.width();
-    let (full_width, code_only_width) = country_row_widths(flag, country_code, peer_count);
-    let row_width = match mode {
+    let (full_width, code_only_width) =
+        country_row_widths(row.flag, row.country_code, row.peer_count);
+    let row_width = match row.mode {
         CountryRowMode::FlagAndCode => full_width,
         CountryRowMode::CodeAndCount => code_only_width,
         CountryRowMode::SummaryOnly => return,
@@ -101,20 +106,25 @@ fn render_country_row(
         return;
     }
 
-    match mode {
+    match row.mode {
         CountryRowMode::FlagAndCode => {
-            let flag_width = flag.width();
-            buf.set_string(area.x, area.y, flag, code_style);
-            buf.set_string(area.x + flag_width as u16 + 1, area.y, country_code, code_style);
+            let flag_width = row.flag.width();
+            buf.set_string(area.x, area.y, row.flag, row.code_style);
+            buf.set_string(
+                area.x + flag_width as u16 + 1,
+                area.y,
+                row.country_code,
+                row.code_style,
+            );
         },
         CountryRowMode::CodeAndCount => {
-            buf.set_string(area.x, area.y, country_code, code_style);
+            buf.set_string(area.x, area.y, row.country_code, row.code_style);
         },
         CountryRowMode::SummaryOnly => return,
     }
 
     let count_x = area.x + area.width - count_width as u16;
-    buf.set_string(count_x, area.y, count, count_style);
+    buf.set_string(count_x, area.y, count, row.count_style);
 }
 
 fn summary_texts(
@@ -183,15 +193,18 @@ fn render_known_country_row(
     code_style: Style,
     count_style: Style,
 ) {
+    let flag = country_flag(&country.country_code);
     render_country_row(
         buf,
         area,
-        &country_flag(&country.country_code),
-        country.country_code.as_str(),
-        country.peer_count,
-        mode,
-        code_style,
-        count_style,
+        CountryRow {
+            flag: &flag,
+            country_code: country.country_code.as_str(),
+            peer_count: country.peer_count,
+            mode,
+            code_style,
+            count_style,
+        },
     );
 }
 
@@ -324,12 +337,14 @@ impl PeerCountriesWidget {
                     width: area.width,
                     height: 1,
                 },
-                UNKNOWN_COUNTRY_FLAG,
-                UNKNOWN_COUNTRY_CODE,
-                self.snapshot.unknown_country_count,
-                row_mode,
-                unknown_style,
-                unknown_style,
+                CountryRow {
+                    flag: UNKNOWN_COUNTRY_FLAG,
+                    country_code: UNKNOWN_COUNTRY_CODE,
+                    peer_count: self.snapshot.unknown_country_count,
+                    mode: row_mode,
+                    code_style: unknown_style,
+                    count_style: unknown_style,
+                },
             );
         }
 
