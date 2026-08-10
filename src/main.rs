@@ -55,7 +55,10 @@ use log::error;
 use num_rational::Ratio;
 use opts::Opts;
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{
+        Backend,
+        CrosstermBackend,
+    },
     Terminal,
 };
 use sync::lock_or_panic;
@@ -181,17 +184,48 @@ fn setup_panic_hook() {
     }));
 }
 
+#[derive(Default)]
+struct DrawState {
+    status_bar_visible: Option<bool>,
+}
+
+impl DrawState {
+    fn status_bar_visibility_changed(
+        &mut self,
+        visible: bool,
+    ) -> bool {
+        self.status_bar_visible.replace(visible).is_some_and(|previous| previous != visible)
+    }
+}
+
+fn invalidate_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+    let area = terminal.size()?.into();
+    terminal.resize(area)
+}
+
 fn draw_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
+    draw_state: &mut DrawState,
 ) -> error::Result<()> {
-    {
+    let status_bar_visible = {
         let mut data = lock_or_panic(&app.data);
         data.expire_status_message_if_needed();
-    }
+        data.status_message().is_some()
+    };
+    let clear_before_draw = draw_state.status_bar_visibility_changed(status_bar_visible);
 
     terminal.backend_mut().execute(BeginSynchronizedUpdate)?;
-    let draw_result = draw(terminal, app);
+    let draw_result = if clear_before_draw {
+        // Terminal::clear queries the cursor position, which can time out through tmux or SSH.
+        // Resizing to the current fullscreen area clears the viewport and resets Ratatui's buffer
+        // without issuing a cursor-position query.
+        invalidate_terminal(terminal)
+            .map_err(|err| ChaindashError::Terminal(err.to_string()))
+            .and_then(|()| draw(terminal, app))
+    } else {
+        draw(terminal, app)
+    };
     let end_result = terminal.backend_mut().execute(EndSynchronizedUpdate);
 
     draw_result?;
@@ -208,9 +242,10 @@ enum UiAction {
 fn draw_or_capture_exit(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
+    draw_state: &mut DrawState,
     exit_error: &mut Option<ChaindashError>,
 ) -> bool {
-    if let Err(err) = draw_app(terminal, app) {
+    if let Err(err) = draw_app(terminal, app, draw_state) {
         error!("绘制界面失败: {err}");
         *exit_error = Some(err);
         true
@@ -316,7 +351,8 @@ async fn main() -> Result<(), ChaindashError> {
     };
 
     update_widgets(&mut app.widgets, Ratio::from_integer(0));
-    if let Err(err) = draw_app(&mut terminal, &mut app) {
+    let mut draw_state = DrawState::default();
+    if let Err(err) = draw_app(&mut terminal, &mut app, &mut draw_state) {
         collector.stop();
         terminal_guard.cleanup();
         let collector_join_result = collector_handle.await;
@@ -336,7 +372,12 @@ async fn main() -> Result<(), ChaindashError> {
             }
             recv(ticker)->_ => {
                 if app.needs_periodic_redraw()
-                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                    && draw_or_capture_exit(
+                        &mut terminal,
+                        &mut app,
+                        &mut draw_state,
+                        &mut exit_error,
+                    )
                 {
                     break 'event_loop;
                 }
@@ -347,21 +388,36 @@ async fn main() -> Result<(), ChaindashError> {
                 };
 
                 if app.refresh_dirty_widgets()
-                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                    && draw_or_capture_exit(
+                        &mut terminal,
+                        &mut app,
+                        &mut draw_state,
+                        &mut exit_error,
+                    )
                 {
                     break 'event_loop;
                 }
             }
             recv(geo_retry_ticker) -> _ => {
                 if app.retry_geo_snapshot()
-                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                    && draw_or_capture_exit(
+                        &mut terminal,
+                        &mut app,
+                        &mut draw_state,
+                        &mut exit_error,
+                    )
                 {
                     break 'event_loop;
                 }
             }
             recv(geo_update_receiver) -> _ => {
                 if app.refresh_geo_snapshot()
-                    && draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error)
+                    && draw_or_capture_exit(
+                        &mut terminal,
+                        &mut app,
+                        &mut draw_state,
+                        &mut exit_error,
+                    )
                 {
                     break 'event_loop;
                 }
@@ -375,7 +431,12 @@ async fn main() -> Result<(), ChaindashError> {
                 match handle_ui_event(&mut app, event) {
                     UiAction::None => {}
                     UiAction::Redraw => {
-                        if draw_or_capture_exit(&mut terminal, &mut app, &mut exit_error) {
+                        if draw_or_capture_exit(
+                            &mut terminal,
+                            &mut app,
+                            &mut draw_state,
+                            &mut exit_error,
+                        ) {
                             break 'event_loop;
                         }
                     }
@@ -404,9 +465,24 @@ async fn main() -> Result<(), ChaindashError> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::{
+        io,
+        time::Instant,
+    };
 
     use clap::Parser;
+    use ratatui::{
+        backend::{
+            Backend,
+            ClearType,
+            WindowSize,
+        },
+        buffer::Cell,
+        layout::{
+            Position,
+            Size,
+        },
+    };
 
     use super::*;
     use crate::collect::DiskDetail;
@@ -420,6 +496,88 @@ mod tests {
             ":memory:",
         ]);
         setup_app(&opts)
+    }
+
+    struct NoCursorQueryBackend {
+        size: Size,
+        cursor: Position,
+        clear_count: usize,
+    }
+
+    impl NoCursorQueryBackend {
+        fn new(
+            width: u16,
+            height: u16,
+        ) -> Self {
+            Self {
+                size: Size::new(width, height),
+                cursor: Position::ORIGIN,
+                clear_count: 0,
+            }
+        }
+    }
+
+    impl Backend for NoCursorQueryBackend {
+        type Error = io::Error;
+
+        fn draw<'a, I>(
+            &mut self,
+            content: I,
+        ) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            for _ in content {}
+            Ok(())
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "cursor query is unsupported"))
+        }
+
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.cursor = position.into();
+            Ok(())
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.clear_count += 1;
+            Ok(())
+        }
+
+        fn clear_region(
+            &mut self,
+            _clear_type: ClearType,
+        ) -> Result<(), Self::Error> {
+            self.clear_count += 1;
+            Ok(())
+        }
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            Ok(self.size)
+        }
+
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+            Ok(WindowSize {
+                columns_rows: self.size,
+                pixels: Size::default(),
+            })
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
     }
 
     #[cfg(target_family = "unix")]
@@ -441,6 +599,28 @@ mod tests {
     #[test]
     fn test_periodic_redraw_interval_is_200_milliseconds() {
         assert_eq!(PERIODIC_REDRAW_INTERVAL, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn test_draw_state_requests_clear_only_when_status_bar_visibility_changes() {
+        let mut draw_state = DrawState::default();
+
+        assert!(!draw_state.status_bar_visibility_changed(false));
+        assert!(!draw_state.status_bar_visibility_changed(false));
+        assert!(draw_state.status_bar_visibility_changed(true));
+        assert!(!draw_state.status_bar_visibility_changed(true));
+        assert!(draw_state.status_bar_visibility_changed(false));
+    }
+
+    #[test]
+    fn test_terminal_invalidation_does_not_query_cursor_position() {
+        let backend = NoCursorQueryBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal should create");
+
+        invalidate_terminal(&mut terminal)
+            .expect("terminal should invalidate without cursor query");
+
+        assert_eq!(terminal.backend().clear_count, 1);
     }
 
     #[test]

@@ -56,7 +56,7 @@ pub fn draw<B: Backend>(
             let layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints(constraints)
-                .split(frame.size());
+                .split(frame.area());
 
             let mut main_area_index = 0;
             if let Some(ref message) = status_message {
@@ -316,17 +316,17 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
 
         // Block Time and Block Transactions use equal-width, full-height columns.
-        assert_eq!(buf.get(2, 0).symbol(), "B");
-        assert_eq!(buf.get(8, 0).symbol(), "T");
-        assert_eq!(buf.get(9, 0).symbol(), "i");
-        assert_eq!(buf.get(42, 0).symbol(), "B");
-        assert_eq!(buf.get(48, 0).symbol(), "T");
-        assert_eq!(buf.get(49, 0).symbol(), "r");
-        assert_eq!(buf.get(0, 19).symbol(), "└");
-        assert_eq!(buf.get(40, 19).symbol(), "└");
+        assert_eq!(buf[(2, 0)].symbol(), "B");
+        assert_eq!(buf[(8, 0)].symbol(), "T");
+        assert_eq!(buf[(9, 0)].symbol(), "i");
+        assert_eq!(buf[(42, 0)].symbol(), "B");
+        assert_eq!(buf[(48, 0)].symbol(), "T");
+        assert_eq!(buf[(49, 0)].symbol(), "r");
+        assert_eq!(buf[(0, 19)].symbol(), "└");
+        assert_eq!(buf[(40, 19)].symbol(), "└");
         // Panel borders separate the two equal-width charts.
-        assert_eq!(buf.get(39, 0).symbol(), "┐");
-        assert_eq!(buf.get(40, 0).symbol(), "┌");
+        assert_eq!(buf[(39, 0)].symbol(), "┐");
+        assert_eq!(buf[(40, 0)].symbol(), "┌");
     }
 
     #[test]
@@ -362,14 +362,14 @@ mod tests {
         assert_eq!(rows.auxiliary, Rect::new(0, 0, 120, 6));
         assert_eq!(rows.charts, Rect::new(0, 6, 120, 14));
         assert_eq!(rows.bottom, Rect::new(0, 20, 120, 10));
-        assert_eq!(buf.get(2, 0).symbol(), "P");
-        assert_eq!(buf.get(1, 1).symbol(), "N");
-        assert_eq!(buf.get(2, 6).symbol(), "B");
-        assert_eq!(buf.get(9, 6).symbol(), "i");
-        assert_eq!(buf.get(62, 6).symbol(), "B");
-        assert_eq!(buf.get(69, 6).symbol(), "r");
-        assert_eq!(buf.get(2, 20).symbol(), "N");
-        assert_eq!(buf.get(62, 20).symbol(), "N");
+        assert_eq!(buf[(2, 0)].symbol(), "P");
+        assert_eq!(buf[(1, 1)].symbol(), "N");
+        assert_eq!(buf[(2, 6)].symbol(), "B");
+        assert_eq!(buf[(9, 6)].symbol(), "i");
+        assert_eq!(buf[(62, 6)].symbol(), "B");
+        assert_eq!(buf[(69, 6)].symbol(), "r");
+        assert_eq!(buf[(2, 20)].symbol(), "N");
+        assert_eq!(buf[(62, 20)].symbol(), "N");
     }
 
     #[test]
@@ -421,25 +421,25 @@ mod tests {
         assert_eq!(rows.bottom, Rect::new(0, 27, 120, 13));
 
         // Unix system strip: System Stats 50%, Disk Details 25%, Peer Countries 25%.
-        assert_eq!(buf.get(2, 0).symbol(), "S");
-        assert_eq!(buf.get(62, 0).symbol(), "D");
-        assert_eq!(buf.get(92, 0).symbol(), "P");
-        assert_eq!(buf.get(59, 0).symbol(), "┐");
-        assert_eq!(buf.get(60, 0).symbol(), "┌");
-        assert_eq!(buf.get(89, 0).symbol(), "┐");
-        assert_eq!(buf.get(90, 0).symbol(), "┌");
+        assert_eq!(buf[(2, 0)].symbol(), "S");
+        assert_eq!(buf[(62, 0)].symbol(), "D");
+        assert_eq!(buf[(92, 0)].symbol(), "P");
+        assert_eq!(buf[(59, 0)].symbol(), "┐");
+        assert_eq!(buf[(60, 0)].symbol(), "┌");
+        assert_eq!(buf[(89, 0)].symbol(), "┐");
+        assert_eq!(buf[(90, 0)].symbol(), "┌");
 
         // Block charts fill the row side by side, with the unchanged bottom split below them.
-        assert_eq!(buf.get(2, 6).symbol(), "B");
-        assert_eq!(buf.get(9, 6).symbol(), "i");
-        assert_eq!(buf.get(62, 6).symbol(), "B");
-        assert_eq!(buf.get(69, 6).symbol(), "r");
-        assert_eq!(buf.get(0, 26).symbol(), "└");
-        assert_eq!(buf.get(60, 26).symbol(), "└");
-        assert_eq!(buf.get(2, 27).symbol(), "N");
-        assert_eq!(buf.get(62, 27).symbol(), "N");
-        assert_eq!(buf.get(59, 27).symbol(), "┐");
-        assert_eq!(buf.get(60, 27).symbol(), "┌");
+        assert_eq!(buf[(2, 6)].symbol(), "B");
+        assert_eq!(buf[(9, 6)].symbol(), "i");
+        assert_eq!(buf[(62, 6)].symbol(), "B");
+        assert_eq!(buf[(69, 6)].symbol(), "r");
+        assert_eq!(buf[(0, 26)].symbol(), "└");
+        assert_eq!(buf[(60, 26)].symbol(), "└");
+        assert_eq!(buf[(2, 27)].symbol(), "N");
+        assert_eq!(buf[(62, 27)].symbol(), "N");
+        assert_eq!(buf[(59, 27)].symbol(), "┐");
+        assert_eq!(buf[(60, 27)].symbol(), "┌");
     }
 
     #[cfg(target_family = "unix")]
@@ -471,10 +471,10 @@ mod tests {
                 .expect("draw should succeed");
             let buf = terminal.backend().buffer().clone();
 
-            assert_eq!(buf.get(2, 0).symbol(), "S");
-            assert_eq!(buf.get(2, 6).symbol(), chart_symbol);
+            assert_eq!(buf[(2, 0)].symbol(), "S");
+            assert_eq!(buf[(2, 6)].symbol(), chart_symbol);
             if let Some(bottom_row) = bottom_row {
-                assert_eq!(buf.get(2, bottom_row).symbol(), " ");
+                assert_eq!(buf[(2, bottom_row)].symbol(), " ");
             }
         }
     }
@@ -503,18 +503,18 @@ mod tests {
             Terminal::new(TestBackend::new(200, 10)).expect("terminal should create");
 
         draw(&mut terminal, &mut app).expect("draw with status should succeed");
-        assert_eq!(terminal.backend().buffer().get(2, 0).symbol(), "S");
-        assert_eq!(terminal.backend().buffer().get(2, 3).symbol(), "S");
+        assert_eq!(terminal.backend().buffer()[(2, 0)].symbol(), "S");
+        assert_eq!(terminal.backend().buffer()[(2, 3)].symbol(), "S");
 
         app.data.lock().expect("mutex poisoned").clear_status_message();
         draw(&mut terminal, &mut app).expect("draw after status expiry should succeed");
         let buf = terminal.backend().buffer();
 
-        assert_eq!(buf.get(2, 0).symbol(), "S");
-        assert_eq!(buf.get(0, 0).symbol(), "┌");
+        assert_eq!(buf[(2, 0)].symbol(), "S");
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
         for y in 6..10 {
             for x in 0..200 {
-                assert_eq!(buf.get(x, y).symbol(), " ", "stale cell at ({x}, {y})");
+                assert_eq!(buf[(x, y)].symbol(), " ", "stale cell at ({x}, {y})");
             }
         }
     }
@@ -544,36 +544,36 @@ mod tests {
         draw(&mut terminal, &mut app).expect("draw should succeed");
         let buf = terminal.backend().buffer().clone();
 
-        assert_eq!(buf.get(0, 2).symbol(), "└");
-        assert_eq!(buf.get(0, 3).symbol(), "┌");
+        assert_eq!(buf[(0, 2)].symbol(), "└");
+        assert_eq!(buf[(0, 3)].symbol(), "┌");
         #[cfg(target_family = "unix")]
-        assert_eq!(buf.get(2, 3).symbol(), "S");
+        assert_eq!(buf[(2, 3)].symbol(), "S");
         #[cfg(not(target_family = "unix"))]
-        assert_eq!(buf.get(2, 3).symbol(), "P");
+        assert_eq!(buf[(2, 3)].symbol(), "P");
     }
 
     #[test]
     fn test_status_bar_uses_standard_panel_border_and_title() {
         let buf = render_status_bar_buffer(StatusLevel::Info, "synced");
 
-        assert_eq!(buf.get(0, 0).symbol(), "┌");
-        assert_eq!(buf.get(47, 2).symbol(), "┘");
-        assert_eq!(buf.get(0, 0).fg, block::PANEL_BORDER);
-        assert_eq!(buf.get(2, 0).symbol(), "S");
-        assert_eq!(buf.get(2, 0).fg, block::PANEL_TITLE);
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(47, 2)].symbol(), "┘");
+        assert_eq!(buf[(0, 0)].fg, block::PANEL_BORDER);
+        assert_eq!(buf[(2, 0)].symbol(), "S");
+        assert_eq!(buf[(2, 0)].fg, block::PANEL_TITLE);
     }
 
     #[test]
     fn test_status_bar_highlights_badge_without_tinting_message_body() {
         let buf = render_status_bar_buffer(StatusLevel::Warn, "disk alert");
 
-        assert_eq!(buf.get(2, 1).symbol(), "W");
-        assert_eq!(buf.get(2, 1).fg, block::PANEL_BG);
-        assert_eq!(buf.get(2, 1).bg, block::ACCENT_WARN);
-        assert_eq!(buf.get(8, 1).symbol(), "•");
-        assert_eq!(buf.get(8, 1).fg, block::ACCENT_WARN);
-        assert_eq!(buf.get(10, 1).symbol(), "d");
-        assert_eq!(buf.get(10, 1).fg, block::PANEL_TEXT);
-        assert_eq!(buf.get(10, 1).bg, block::PANEL_BG);
+        assert_eq!(buf[(2, 1)].symbol(), "W");
+        assert_eq!(buf[(2, 1)].fg, block::PANEL_BG);
+        assert_eq!(buf[(2, 1)].bg, block::ACCENT_WARN);
+        assert_eq!(buf[(8, 1)].symbol(), "•");
+        assert_eq!(buf[(8, 1)].fg, block::ACCENT_WARN);
+        assert_eq!(buf[(10, 1)].symbol(), "d");
+        assert_eq!(buf[(10, 1)].fg, block::PANEL_TEXT);
+        assert_eq!(buf[(10, 1)].bg, block::PANEL_BG);
     }
 }

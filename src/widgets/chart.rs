@@ -264,7 +264,7 @@ pub fn clear_area(
 ) {
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf.get_mut(x, y).set_symbol(" ").set_style(style);
+            buf[(x, y)].set_symbol(" ").set_style(style);
         }
     }
 }
@@ -357,7 +357,7 @@ pub fn render_bottom_band_dotted_plot(
             if filled_rows > 0 {
                 let is_crest = filled_units > cell_start && filled_units <= cell_start + 4;
                 let style = if is_crest { crest_style } else { fill_style };
-                buf.get_mut(x, y).set_symbol(braille_fill_symbol(filled_rows)).set_style(style);
+                buf[(x, y)].set_symbol(braille_fill_symbol(filled_rows)).set_style(style);
             }
         }
     }
@@ -472,14 +472,14 @@ pub fn render_right_aligned_labeled_box(
 
     for y in top_y..=bottom_y {
         for x in box_x..box_x + total_width {
-            buf.get_mut(x, y).set_symbol(" ").set_style(options.background_style);
+            buf[(x, y)].set_symbol(" ").set_style(options.background_style);
         }
     }
 
-    buf.get_mut(box_x, top_y).set_symbol("╭").set_style(options.frame_style);
-    buf.get_mut(box_x + total_width - 1, top_y).set_symbol("╮").set_style(options.frame_style);
+    buf[(box_x, top_y)].set_symbol("╭").set_style(options.frame_style);
+    buf[(box_x + total_width - 1, top_y)].set_symbol("╮").set_style(options.frame_style);
     for x in box_x + 1..box_x + total_width - 1 {
-        buf.get_mut(x, top_y).set_symbol("─").set_style(options.frame_style);
+        buf[(x, top_y)].set_symbol("─").set_style(options.frame_style);
     }
 
     let title_text = format!(" {} ", options.title);
@@ -489,8 +489,8 @@ pub fn render_right_aligned_labeled_box(
 
     for (index, (label, label_style, value_segments)) in rows.iter().enumerate() {
         let y = top_y + index as u16 + 1;
-        buf.get_mut(box_x, y).set_symbol("│").set_style(options.frame_style);
-        buf.get_mut(box_x + total_width - 1, y).set_symbol("│").set_style(options.frame_style);
+        buf[(box_x, y)].set_symbol("│").set_style(options.frame_style);
+        buf[(box_x + total_width - 1, y)].set_symbol("│").set_style(options.frame_style);
 
         buf.set_stringn(content_x, y, label, label_width as usize, *label_style);
 
@@ -507,10 +507,10 @@ pub fn render_right_aligned_labeled_box(
         }
     }
 
-    buf.get_mut(box_x, bottom_y).set_symbol("╰").set_style(options.frame_style);
-    buf.get_mut(box_x + total_width - 1, bottom_y).set_symbol("╯").set_style(options.frame_style);
+    buf[(box_x, bottom_y)].set_symbol("╰").set_style(options.frame_style);
+    buf[(box_x + total_width - 1, bottom_y)].set_symbol("╯").set_style(options.frame_style);
     for x in box_x + 1..box_x + total_width - 1 {
-        buf.get_mut(x, bottom_y).set_symbol("─").set_style(options.frame_style);
+        buf[(x, bottom_y)].set_symbol("─").set_style(options.frame_style);
     }
 
     true
@@ -679,14 +679,14 @@ pub fn render_right_aligned_text_lines(
 
         let y = area.y + y_offset;
         for x in box_x..box_x + total_width {
-            buf.get_mut(x, y).set_symbol(" ").set_style(Style::default());
+            buf[(x, y)].set_symbol(" ").set_style(Style::default());
         }
 
         if has_frame {
             let (left, right) = inline_frame_symbols(index, lines.len());
             let frame_style = Style::default().fg(Color::DarkGray);
-            buf.get_mut(box_x, y).set_symbol(left).set_style(frame_style);
-            buf.get_mut(box_x + total_width - 1, y).set_symbol(right).set_style(frame_style);
+            buf[(box_x, y)].set_symbol(left).set_style(frame_style);
+            buf[(box_x + total_width - 1, y)].set_symbol(right).set_style(frame_style);
         }
 
         let text_width = display_width(text).min(content_width as usize) as u16;
@@ -763,14 +763,14 @@ pub fn render_right_aligned_segment_grid(
 
         let y = area.y + y_offset;
         for x in box_x..box_x + total_width {
-            buf.get_mut(x, y).set_symbol(" ").set_style(block::content_style());
+            buf[(x, y)].set_symbol(" ").set_style(block::content_style());
         }
 
         if has_frame {
             let (left, right) = inline_frame_symbols(row_index, rows.len());
             let frame_style = Style::default().fg(INFO_FRAME_COLOR).bg(block::PANEL_BG);
-            buf.get_mut(box_x, y).set_symbol(left).set_style(frame_style);
-            buf.get_mut(box_x + total_width - 1, y).set_symbol(right).set_style(frame_style);
+            buf[(box_x, y)].set_symbol(left).set_style(frame_style);
+            buf[(box_x + total_width - 1, y)].set_symbol(right).set_style(frame_style);
         }
 
         let mut cursor_x = content_x + content_width as u16;
@@ -849,14 +849,14 @@ pub fn render_right_aligned_text_grid(
 
         let y = area.y + y_offset;
         for x in box_x..box_x + total_width {
-            buf.get_mut(x, y).set_symbol(" ").set_style(Style::default());
+            buf[(x, y)].set_symbol(" ").set_style(Style::default());
         }
 
         if has_frame {
             let (left, right) = inline_frame_symbols(row_index, rows.len());
             let frame_style = Style::default().fg(Color::DarkGray);
-            buf.get_mut(box_x, y).set_symbol(left).set_style(frame_style);
-            buf.get_mut(box_x + total_width - 1, y).set_symbol(right).set_style(frame_style);
+            buf[(box_x, y)].set_symbol(left).set_style(frame_style);
+            buf[(box_x + total_width - 1, y)].set_symbol(right).set_style(frame_style);
         }
 
         let mut cursor_x = content_x + content_width as u16;
@@ -906,10 +906,10 @@ mod tests {
 
         clear_area(&mut buf, area, style);
 
-        assert_eq!(buf.get(0, 0).symbol(), " ");
-        assert_eq!(buf.get(2, 1).symbol(), " ");
-        assert_eq!(buf.get(0, 0).fg, Color::Green);
-        assert_eq!(buf.get(2, 1).fg, Color::Green);
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(2, 1)].symbol(), " ");
+        assert_eq!(buf[(0, 0)].fg, Color::Green);
+        assert_eq!(buf[(2, 1)].fg, Color::Green);
     }
 
     #[test]
@@ -1013,10 +1013,10 @@ mod tests {
         );
 
         assert_eq!(plot_area, Rect::new(5, 0, 7, 4));
-        assert_eq!(buf.get(0, 0).symbol(), "2");
-        assert_eq!(buf.get(0, 0).fg, AXIS_LABEL_COLOR);
-        assert_eq!(buf.get(3, 0).symbol(), "s");
-        assert_eq!(buf.get(3, 3).symbol(), "0");
+        assert_eq!(buf[(0, 0)].symbol(), "2");
+        assert_eq!(buf[(0, 0)].fg, AXIS_LABEL_COLOR);
+        assert_eq!(buf[(3, 0)].symbol(), "s");
+        assert_eq!(buf[(3, 3)].symbol(), "0");
     }
 
     #[test]
@@ -1026,7 +1026,7 @@ mod tests {
         let plot_area = render_left_axis_labels(&mut buf, area, "9999", "0", Style::default());
 
         assert_eq!(plot_area, area);
-        assert_eq!(buf.get(0, 0).symbol(), " ");
+        assert_eq!(buf[(0, 0)].symbol(), " ");
     }
 
     #[test]
@@ -1045,10 +1045,10 @@ mod tests {
             Style::default().fg(Color::Cyan),
         );
 
-        assert_eq!(buf.get(2, 3).fg, Color::Magenta);
-        assert_eq!(buf.get(2, 2).fg, Color::Cyan);
-        assert_eq!(buf.get(2, 1).symbol(), " ");
-        assert_eq!(buf.get(2, 0).symbol(), " ");
+        assert_eq!(buf[(2, 3)].fg, Color::Magenta);
+        assert_eq!(buf[(2, 2)].fg, Color::Cyan);
+        assert_eq!(buf[(2, 1)].symbol(), " ");
+        assert_eq!(buf[(2, 0)].symbol(), " ");
     }
 
     #[test]
@@ -1081,15 +1081,15 @@ mod tests {
         let rendered = render_right_aligned_labeled_box(&mut buf, area, &rows, &options);
 
         assert!(rendered);
-        assert_eq!(buf.get(10, 1).symbol(), "╭");
-        assert_eq!(buf.get(10, 1).fg, INFO_FRAME_COLOR);
-        assert_eq!(buf.get(15, 1).symbol(), "o");
-        assert_eq!(buf.get(15, 1).fg, block::PANEL_TITLE);
-        assert_eq!(buf.get(11, 2).symbol(), "n");
-        assert_eq!(buf.get(20, 2).symbol(), "5");
-        assert_eq!(buf.get(17, 3).symbol(), "1");
-        assert_eq!(buf.get(17, 3).fg, block::CONTENT_HIGHLIGHT);
-        assert_eq!(buf.get(24, 4).symbol(), "╯");
+        assert_eq!(buf[(10, 1)].symbol(), "╭");
+        assert_eq!(buf[(10, 1)].fg, INFO_FRAME_COLOR);
+        assert_eq!(buf[(15, 1)].symbol(), "o");
+        assert_eq!(buf[(15, 1)].fg, block::PANEL_TITLE);
+        assert_eq!(buf[(11, 2)].symbol(), "n");
+        assert_eq!(buf[(20, 2)].symbol(), "5");
+        assert_eq!(buf[(17, 3)].symbol(), "1");
+        assert_eq!(buf[(17, 3)].fg, block::CONTENT_HIGHLIGHT);
+        assert_eq!(buf[(24, 4)].symbol(), "╯");
     }
 
     #[test]
@@ -1156,11 +1156,11 @@ mod tests {
         let lines = vec![("ABC".to_string(), Style::default())];
         render_right_aligned_text_lines(&mut buf, area, 1, &lines);
 
-        assert_eq!(buf.get(4, 1).symbol(), "[");
-        assert_eq!(buf.get(5, 1).symbol(), "A");
-        assert_eq!(buf.get(6, 1).symbol(), "B");
-        assert_eq!(buf.get(7, 1).symbol(), "C");
-        assert_eq!(buf.get(8, 1).symbol(), "]");
+        assert_eq!(buf[(4, 1)].symbol(), "[");
+        assert_eq!(buf[(5, 1)].symbol(), "A");
+        assert_eq!(buf[(6, 1)].symbol(), "B");
+        assert_eq!(buf[(7, 1)].symbol(), "C");
+        assert_eq!(buf[(8, 1)].symbol(), "]");
     }
 
     #[test]
@@ -1173,13 +1173,13 @@ mod tests {
 
         render_right_aligned_text_lines(&mut buf, area, 1, &lines);
 
-        assert_eq!(buf.get(5, 1).symbol(), "┌");
-        assert_eq!(buf.get(6, 1).symbol(), "L");
-        assert_eq!(buf.get(9, 1).symbol(), "G");
-        assert_eq!(buf.get(10, 1).symbol(), "┐");
-        assert_eq!(buf.get(6, 2).symbol(), " ");
-        assert_eq!(buf.get(9, 2).symbol(), "S");
-        assert_eq!(buf.get(10, 2).symbol(), "┘");
+        assert_eq!(buf[(5, 1)].symbol(), "┌");
+        assert_eq!(buf[(6, 1)].symbol(), "L");
+        assert_eq!(buf[(9, 1)].symbol(), "G");
+        assert_eq!(buf[(10, 1)].symbol(), "┐");
+        assert_eq!(buf[(6, 2)].symbol(), " ");
+        assert_eq!(buf[(9, 2)].symbol(), "S");
+        assert_eq!(buf[(10, 2)].symbol(), "┘");
     }
 
     #[test]
@@ -1193,18 +1193,18 @@ mod tests {
 
         render_right_aligned_text_grid(&mut buf, area, 1, &rows, 2);
 
-        assert_eq!(buf.get(7, 1).symbol(), "┌");
-        assert_eq!(buf.get(10, 1).symbol(), "A");
-        assert_eq!(buf.get(11, 1).symbol(), "1");
-        assert_eq!(buf.get(14, 1).symbol(), "B");
-        assert_eq!(buf.get(17, 1).symbol(), "2");
-        assert_eq!(buf.get(18, 1).symbol(), "┐");
-        assert_eq!(buf.get(7, 2).symbol(), "└");
-        assert_eq!(buf.get(8, 2).symbol(), "A");
-        assert_eq!(buf.get(11, 2).symbol(), "3");
-        assert_eq!(buf.get(16, 2).symbol(), "B");
-        assert_eq!(buf.get(17, 2).symbol(), "4");
-        assert_eq!(buf.get(18, 2).symbol(), "┘");
+        assert_eq!(buf[(7, 1)].symbol(), "┌");
+        assert_eq!(buf[(10, 1)].symbol(), "A");
+        assert_eq!(buf[(11, 1)].symbol(), "1");
+        assert_eq!(buf[(14, 1)].symbol(), "B");
+        assert_eq!(buf[(17, 1)].symbol(), "2");
+        assert_eq!(buf[(18, 1)].symbol(), "┐");
+        assert_eq!(buf[(7, 2)].symbol(), "└");
+        assert_eq!(buf[(8, 2)].symbol(), "A");
+        assert_eq!(buf[(11, 2)].symbol(), "3");
+        assert_eq!(buf[(16, 2)].symbol(), "B");
+        assert_eq!(buf[(17, 2)].symbol(), "4");
+        assert_eq!(buf[(18, 2)].symbol(), "┘");
     }
 
     #[test]
@@ -1218,20 +1218,20 @@ mod tests {
 
         render_right_aligned_text_grid(&mut buf, area, 1, &rows, 2);
 
-        assert_eq!(buf.get(3, 1).symbol(), "┌");
-        assert_eq!(buf.get(6, 1).symbol(), "A");
-        assert_eq!(buf.get(7, 1).symbol(), "1");
-        assert_eq!(buf.get(8, 1).symbol(), "┐");
-        assert_eq!(buf.get(3, 2).symbol(), "│");
-        assert_eq!(buf.get(4, 2).symbol(), "B");
-        assert_eq!(buf.get(7, 2).symbol(), "2");
-        assert_eq!(buf.get(8, 2).symbol(), "│");
-        assert_eq!(buf.get(3, 3).symbol(), "│");
-        assert_eq!(buf.get(4, 3).symbol(), "A");
-        assert_eq!(buf.get(7, 3).symbol(), "3");
-        assert_eq!(buf.get(3, 4).symbol(), "└");
-        assert_eq!(buf.get(6, 4).symbol(), "B");
-        assert_eq!(buf.get(7, 4).symbol(), "4");
-        assert_eq!(buf.get(8, 4).symbol(), "┘");
+        assert_eq!(buf[(3, 1)].symbol(), "┌");
+        assert_eq!(buf[(6, 1)].symbol(), "A");
+        assert_eq!(buf[(7, 1)].symbol(), "1");
+        assert_eq!(buf[(8, 1)].symbol(), "┐");
+        assert_eq!(buf[(3, 2)].symbol(), "│");
+        assert_eq!(buf[(4, 2)].symbol(), "B");
+        assert_eq!(buf[(7, 2)].symbol(), "2");
+        assert_eq!(buf[(8, 2)].symbol(), "│");
+        assert_eq!(buf[(3, 3)].symbol(), "│");
+        assert_eq!(buf[(4, 3)].symbol(), "A");
+        assert_eq!(buf[(7, 3)].symbol(), "3");
+        assert_eq!(buf[(3, 4)].symbol(), "└");
+        assert_eq!(buf[(6, 4)].symbol(), "B");
+        assert_eq!(buf[(7, 4)].symbol(), "4");
+        assert_eq!(buf[(8, 4)].symbol(), "┘");
     }
 }

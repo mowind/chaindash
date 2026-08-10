@@ -1036,9 +1036,9 @@ mod tests {
 
         (&widget).render(area, &mut buf);
 
-        assert_eq!(buf.get(1, 1).symbol(), "N");
-        assert_eq!(buf.get(1, 1).fg, block::PANEL_MUTED);
-        assert_eq!(buf.get(1, 1).bg, block::PANEL_BG);
+        assert_eq!(buf[(1, 1)].symbol(), "N");
+        assert_eq!(buf[(1, 1)].fg, block::PANEL_MUTED);
+        assert_eq!(buf[(1, 1)].bg, block::PANEL_BG);
     }
 
     #[test]

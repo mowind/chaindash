@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    env,
+    sync::Arc,
+};
 
 use num_rational::Ratio;
 use ratatui::{
@@ -61,6 +64,26 @@ pub struct PeerCountriesWidget {
     store: Arc<dyn PeerGeoStore>,
     snapshot: GeoViewSnapshot,
     snapshot_loaded: bool,
+    show_country_flags: bool,
+}
+
+fn terminal_name_supports_country_flags(term: &str) -> bool {
+    let term = term.to_ascii_lowercase();
+    !term.starts_with("tmux") && !term.starts_with("screen")
+}
+
+fn terminal_supports_country_flags() -> bool {
+    // tmux rewrites Regional Indicator graphemes with cursor corrections that some downstream
+    // terminals interpret at a different width. Docker builds bake in the same fallback because
+    // containers cannot observe the host's TMUX environment unless the launcher propagates it.
+    if cfg!(feature = "ascii-countries")
+        || env::var_os("TMUX").is_some()
+        || env::var_os("CHAINDASH_ASCII_COUNTRIES").is_some()
+    {
+        return false;
+    }
+
+    env::var("TERM").map_or(true, |term| terminal_name_supports_country_flags(&term))
 }
 
 fn country_flag(country_code: &str) -> String {
@@ -245,12 +268,21 @@ impl PeerCountriesWidget {
         collect_data: SharedData,
         store: Arc<dyn PeerGeoStore>,
     ) -> PeerCountriesWidget {
+        Self::with_country_flags(collect_data, store, terminal_supports_country_flags())
+    }
+
+    fn with_country_flags(
+        collect_data: SharedData,
+        store: Arc<dyn PeerGeoStore>,
+        show_country_flags: bool,
+    ) -> PeerCountriesWidget {
         PeerCountriesWidget {
             update_interval: Ratio::from_integer(0),
             collect_data,
             store,
             snapshot: GeoViewSnapshot::default(),
             snapshot_loaded: false,
+            show_country_flags,
         }
     }
 
@@ -433,7 +465,7 @@ impl PeerCountriesWidget {
     ) -> CountryRowMode {
         let (full_width, code_only_width) = self.country_widths();
 
-        if full_width > 0 && area_width >= full_width {
+        if self.show_country_flags && full_width > 0 && area_width >= full_width {
             CountryRowMode::FlagAndCode
         } else if code_only_width > 0 && area_width >= code_only_width {
             CountryRowMode::CodeAndCount
@@ -526,9 +558,17 @@ mod tests {
         snapshot: GeoViewSnapshot,
         area: Rect,
     ) -> Buffer {
+        render_widget_with_country_flags(snapshot, area, true)
+    }
+
+    fn render_widget_with_country_flags(
+        snapshot: GeoViewSnapshot,
+        area: Rect,
+        show_country_flags: bool,
+    ) -> Buffer {
         let data = Data::new();
         let store = Arc::new(FakePeerGeoStore::new(snapshot));
-        let mut widget = PeerCountriesWidget::new(data, store);
+        let mut widget = PeerCountriesWidget::with_country_flags(data, store, show_country_flags);
         widget.update();
         render_current_widget(&widget, area)
     }
@@ -548,7 +588,7 @@ mod tests {
     ) -> String {
         (area.y..area.y + area.height)
             .map(|y| {
-                (area.x..area.x + area.width).map(|x| buf.get(x, y).symbol()).collect::<String>()
+                (area.x..area.x + area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -564,13 +604,94 @@ mod tests {
         row: usize,
     ) -> String {
         let area = content_area(outer_area);
-        (area.x..area.x + area.width).map(|x| buf.get(x, area.y + row as u16).symbol()).collect()
+        (area.x..area.x + area.width).map(|x| buf[(x, area.y + row as u16)].symbol()).collect()
     }
 
     #[test]
     fn test_country_flag_is_generated_from_country_code() {
         assert_eq!(country_flag("CN"), "🇨🇳");
         assert_eq!(country_flag("US"), "🇺🇸");
+    }
+
+    #[test]
+    fn test_widget_uses_terminal_country_flag_support() {
+        let data = Data::new();
+        let store = Arc::new(FakePeerGeoStore::new(GeoViewSnapshot::default()));
+        let widget = PeerCountriesWidget::new(data, store);
+
+        assert_eq!(widget.show_country_flags, terminal_supports_country_flags());
+    }
+
+    #[test]
+    fn test_tmux_terminal_names_disable_country_flags() {
+        assert!(!terminal_name_supports_country_flags("tmux-256color"));
+        assert!(!terminal_name_supports_country_flags("screen"));
+        assert!(!terminal_name_supports_country_flags("screen-256color"));
+        assert!(terminal_name_supports_country_flags("xterm-256color"));
+    }
+
+    #[cfg(feature = "ascii-countries")]
+    #[test]
+    fn test_ascii_country_build_disables_country_flags() {
+        let area = Rect::new(0, 0, 40, 8);
+        let data = Data::new();
+        let store = Arc::new(FakePeerGeoStore::new(snapshot_with_countries(vec![("SG", 6)], 2)));
+        let mut widget = PeerCountriesWidget::new(data, store);
+        widget.update();
+        let text = buffer_text(&render_current_widget(&widget, area), area);
+
+        assert!(!terminal_supports_country_flags());
+        assert!(text.contains("SG [6]"));
+        assert!(text.contains("-- [2]"));
+        assert!(!text.contains("🇸🇬"));
+        assert!(!text.contains(UNKNOWN_COUNTRY_FLAG));
+    }
+
+    #[test]
+    fn test_country_flags_are_omitted_in_tmux_compatible_mode() {
+        let area = Rect::new(0, 0, 40, 8);
+        let buf = render_widget_with_country_flags(
+            snapshot_with_countries(vec![("SG", 6)], 2),
+            area,
+            false,
+        );
+        let text = buffer_text(&buf, area);
+        let content = content_area(area);
+
+        assert!(text.contains("SG [6]"));
+        assert!(text.contains("-- [2]"));
+        assert!(!text.contains("🇸🇬"));
+        assert!(!text.contains(UNKNOWN_COUNTRY_FLAG));
+        assert_eq!(buf[(area.x, content.y)].symbol(), "│");
+        assert_eq!(buf[(area.right() - 1, content.y)].symbol(), "│");
+        assert_eq!(buf[(area.x, content.y + 1)].symbol(), "│");
+        assert_eq!(buf[(area.right() - 1, content.y + 1)].symbol(), "│");
+    }
+
+    #[test]
+    fn test_country_flag_diff_handles_trailing_cell_updates() {
+        let area = Rect::new(0, 0, 3, 1);
+        let flag = country_flag("GB");
+
+        let mut styled_blanks = Buffer::empty(area);
+        styled_blanks.set_style(area, Style::default().fg(panel::PANEL_MUTED));
+        let mut flag_buffer = Buffer::empty(area);
+        flag_buffer.set_string(0, 0, &flag, Style::default().bg(panel::PANEL_BG));
+
+        let draw_updates = styled_blanks.diff_iter(&flag_buffer).collect::<Vec<_>>();
+        assert!(draw_updates.iter().any(|(x, y, _)| (*x, *y) == (0, 0)));
+        assert!(
+            !draw_updates.iter().any(|(x, y, _)| (*x, *y) == (1, 0)),
+            "a hidden trailing-cell update can shift the terminal cursor",
+        );
+
+        let mut code_buffer = Buffer::empty(area);
+        code_buffer.set_string(0, 0, "G", Style::default());
+        let clear_updates = flag_buffer.diff_iter(&code_buffer).collect::<Vec<_>>();
+        assert!(
+            clear_updates.iter().any(|(x, y, _)| (*x, *y) == (1, 0)),
+            "an uncovered trailing cell must be refreshed",
+        );
     }
 
     #[test]
@@ -623,9 +744,9 @@ mod tests {
         let content = content_area(area);
         let column_width = country_row_widths("🇨🇳", "CN", 4).0;
         let second_column_x = content.x + (column_width + COUNTRY_COLUMN_GAP) as u16;
-        assert_eq!(buf.get(second_column_x, content.y).symbol(), "🇺🇸");
-        assert_eq!(buf.get(content.x, content.y + 1).symbol(), "🇩🇪");
-        assert_eq!(buf.get(second_column_x, content.y + 1).symbol(), "🇯🇵");
+        assert_eq!(buf[(second_column_x, content.y)].symbol(), "🇺🇸");
+        assert_eq!(buf[(content.x, content.y + 1)].symbol(), "🇩🇪");
+        assert_eq!(buf[(second_column_x, content.y + 1)].symbol(), "🇯🇵");
         assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "4 countries · 10 peers");
     }
 
@@ -643,9 +764,9 @@ mod tests {
         let content = content_area(area);
         let column_width = country_row_widths("🇨🇳", "CN", 6).0;
         let column_step = (column_width + COUNTRY_COLUMN_GAP) as u16;
-        assert_eq!(buf.get(content.x + 4 * column_step, content.y).symbol(), "🇫🇷");
-        assert_eq!(buf.get(content.x, content.y + 1).symbol(), "🇫🇮");
-        assert_eq!(buf.get(content.x + 5 * column_step, content.y).symbol(), " ");
+        assert_eq!(buf[(content.x + 4 * column_step, content.y)].symbol(), "🇫🇷");
+        assert_eq!(buf[(content.x, content.y + 1)].symbol(), "🇫🇮");
+        assert_eq!(buf[(content.x + 5 * column_step, content.y)].symbol(), " ");
     }
 
     #[test]
@@ -670,11 +791,11 @@ mod tests {
         let buf = render_widget(snapshot_with_countries(vec![("CN", 5)], 0), area);
         let content = content_area(area);
 
-        assert_eq!(buf.get(content.x, content.y).symbol(), "C");
-        assert_eq!(buf.get(content.x + 1, content.y).symbol(), "N");
-        assert_eq!(buf.get(content.x + 3, content.y).symbol(), "[");
-        assert_eq!(buf.get(content.x + 4, content.y).symbol(), "5");
-        assert_eq!(buf.get(content.x + 5, content.y).symbol(), "]");
+        assert_eq!(buf[(content.x, content.y)].symbol(), "C");
+        assert_eq!(buf[(content.x + 1, content.y)].symbol(), "N");
+        assert_eq!(buf[(content.x + 3, content.y)].symbol(), "[");
+        assert_eq!(buf[(content.x + 4, content.y)].symbol(), "5");
+        assert_eq!(buf[(content.x + 5, content.y)].symbol(), "]");
         assert!(!content_line(&buf, area, 0).contains("🇨🇳"));
     }
 
@@ -686,7 +807,7 @@ mod tests {
 
         assert_eq!(content_line(&buf, area, 0).trim(), "");
         assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "");
-        assert_eq!(buf.get(area.right() - 1, content.y).symbol(), "│");
+        assert_eq!(buf[(area.right() - 1, content.y)].symbol(), "│");
     }
 
     #[test]
@@ -698,9 +819,9 @@ mod tests {
         let content = content_area(area);
         let column_width = country_row_widths("🇨🇳", "CN", 4).0;
         let second_column_x = content.x + (column_width + COUNTRY_COLUMN_GAP) as u16;
-        assert_eq!(buf.get(second_column_x, content.y).symbol(), "🇺🇸");
-        assert_eq!(buf.get(content.x, content.y + 1).symbol(), "🇩🇪");
-        assert_eq!(buf.get(second_column_x, content.y + 1).symbol(), "🌐");
+        assert_eq!(buf[(second_column_x, content.y)].symbol(), "🇺🇸");
+        assert_eq!(buf[(content.x, content.y + 1)].symbol(), "🇩🇪");
+        assert_eq!(buf[(second_column_x, content.y + 1)].symbol(), "🌐");
         assert_eq!(content_line(&buf, area, SUMMARY_ROW_INDEX).trim(), "3 countries · 10 peers");
     }
 
@@ -710,14 +831,14 @@ mod tests {
         let buf = render_widget(snapshot_with_countries(vec![("CN", 12)], 0), area);
         let content = content_area(area);
 
-        assert_eq!(buf.get(content.x, content.y).symbol(), "🇨🇳");
-        assert_eq!(buf.get(content.x + 3, content.y).symbol(), "C");
-        assert_eq!(buf.get(content.x + 4, content.y).symbol(), "N");
-        assert_eq!(buf.get(content.x + 6, content.y).symbol(), "[");
-        assert_eq!(buf.get(content.x + 7, content.y).symbol(), "1");
-        assert_eq!(buf.get(content.x + 8, content.y).symbol(), "2");
-        assert_eq!(buf.get(content.x + 9, content.y).symbol(), "]");
-        assert_eq!(buf.get(area.right() - 1, content.y).symbol(), "│");
+        assert_eq!(buf[(content.x, content.y)].symbol(), "🇨🇳");
+        assert_eq!(buf[(content.x + 3, content.y)].symbol(), "C");
+        assert_eq!(buf[(content.x + 4, content.y)].symbol(), "N");
+        assert_eq!(buf[(content.x + 6, content.y)].symbol(), "[");
+        assert_eq!(buf[(content.x + 7, content.y)].symbol(), "1");
+        assert_eq!(buf[(content.x + 8, content.y)].symbol(), "2");
+        assert_eq!(buf[(content.x + 9, content.y)].symbol(), "]");
+        assert_eq!(buf[(area.right() - 1, content.y)].symbol(), "│");
     }
 
     #[test]
@@ -729,12 +850,12 @@ mod tests {
 
         for (row, (code, count)) in [("DE", "4"), ("FI", "3"), ("FR", "2")].iter().enumerate() {
             let y = content.y + row as u16;
-            assert_eq!(buf.get(content.x + 2, y).symbol(), " ");
-            assert_eq!(buf.get(content.x + 3, y).symbol(), &code[0..1]);
-            assert_eq!(buf.get(content.x + 4, y).symbol(), &code[1..2]);
-            assert_eq!(buf.get(content.x + 6, y).symbol(), "[");
-            assert_eq!(buf.get(content.x + 7, y).symbol(), *count);
-            assert_eq!(buf.get(content.x + 8, y).symbol(), "]");
+            assert_eq!(buf[(content.x + 2, y)].symbol(), " ");
+            assert_eq!(buf[(content.x + 3, y)].symbol(), &code[0..1]);
+            assert_eq!(buf[(content.x + 4, y)].symbol(), &code[1..2]);
+            assert_eq!(buf[(content.x + 6, y)].symbol(), "[");
+            assert_eq!(buf[(content.x + 7, y)].symbol(), *count);
+            assert_eq!(buf[(content.x + 8, y)].symbol(), "]");
         }
     }
 
@@ -746,11 +867,11 @@ mod tests {
         let column_width = country_row_widths("🇨🇳", "CN", 2).0;
         let second_column_x = content.x + (column_width + COUNTRY_COLUMN_GAP) as u16;
 
-        assert_eq!(buf.get(content.x + 3, content.y).fg, panel::CONTENT_HIGHLIGHT);
-        assert_eq!(buf.get(content.x + 7, content.y).fg, panel::METRIC_PRIMARY);
-        assert_eq!(buf.get(second_column_x + 3, content.y).fg, panel::PANEL_MUTED);
-        assert_eq!(buf.get(second_column_x + 7, content.y).fg, panel::PANEL_MUTED);
-        assert_eq!(buf.get(content.x, content.y + SUMMARY_ROW_INDEX as u16).fg, panel::PANEL_MUTED,);
+        assert_eq!(buf[(content.x + 3, content.y)].fg, panel::CONTENT_HIGHLIGHT);
+        assert_eq!(buf[(content.x + 7, content.y)].fg, panel::METRIC_PRIMARY);
+        assert_eq!(buf[(second_column_x + 3, content.y)].fg, panel::PANEL_MUTED);
+        assert_eq!(buf[(second_column_x + 7, content.y)].fg, panel::PANEL_MUTED);
+        assert_eq!(buf[(content.x, content.y + SUMMARY_ROW_INDEX as u16)].fg, panel::PANEL_MUTED,);
     }
 
     #[test]

@@ -21,7 +21,7 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-RUN cargo build --release --locked
+RUN cargo build --release --locked --features ascii-countries
 
 FROM scratch AS artifact
 

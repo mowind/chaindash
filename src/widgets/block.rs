@@ -86,37 +86,37 @@ mod tests {
     fn test_block_renders_borders_with_expected_color() {
         let buf = render_block(" Test ");
 
-        assert_eq!(buf.get(0, 0).symbol(), "┌");
-        assert_eq!(buf.get(19, 0).symbol(), "┐");
-        assert_eq!(buf.get(0, 4).symbol(), "└");
-        assert_eq!(buf.get(19, 4).symbol(), "┘");
-        assert_eq!(buf.get(0, 0).fg, PANEL_BORDER);
-        assert_eq!(buf.get(19, 4).fg, PANEL_BORDER);
-        assert_eq!(buf.get(1, 1).bg, PANEL_BG);
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(19, 0)].symbol(), "┐");
+        assert_eq!(buf[(0, 4)].symbol(), "└");
+        assert_eq!(buf[(19, 4)].symbol(), "┘");
+        assert_eq!(buf[(0, 0)].fg, PANEL_BORDER);
+        assert_eq!(buf[(19, 4)].fg, PANEL_BORDER);
+        assert_eq!(buf[(1, 1)].bg, PANEL_BG);
     }
 
     #[test]
     fn test_block_renders_title_text_with_title_color() {
         let buf = render_block(" Node ");
 
-        assert_eq!(buf.get(1, 0).symbol(), " ");
-        assert_eq!(buf.get(2, 0).symbol(), "N");
-        assert_eq!(buf.get(3, 0).symbol(), "o");
-        assert_eq!(buf.get(4, 0).symbol(), "d");
-        assert_eq!(buf.get(5, 0).symbol(), "e");
-        assert_eq!(buf.get(2, 0).fg, PANEL_TITLE);
-        assert_eq!(buf.get(5, 0).fg, PANEL_TITLE);
-        assert_eq!(buf.get(2, 0).bg, PANEL_BG);
+        assert_eq!(buf[(1, 0)].symbol(), " ");
+        assert_eq!(buf[(2, 0)].symbol(), "N");
+        assert_eq!(buf[(3, 0)].symbol(), "o");
+        assert_eq!(buf[(4, 0)].symbol(), "d");
+        assert_eq!(buf[(5, 0)].symbol(), "e");
+        assert_eq!(buf[(2, 0)].fg, PANEL_TITLE);
+        assert_eq!(buf[(5, 0)].fg, PANEL_TITLE);
+        assert_eq!(buf[(2, 0)].bg, PANEL_BG);
     }
 
     #[test]
     fn test_block_with_empty_title_keeps_top_border() {
         let buf = render_block("");
 
-        assert_eq!(buf.get(0, 0).symbol(), "┌");
-        assert_eq!(buf.get(1, 0).symbol(), "─");
-        assert_eq!(buf.get(18, 0).symbol(), "─");
-        assert_eq!(buf.get(19, 0).symbol(), "┐");
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(1, 0)].symbol(), "─");
+        assert_eq!(buf[(18, 0)].symbol(), "─");
+        assert_eq!(buf[(19, 0)].symbol(), "┐");
     }
 
     #[test]

@@ -100,6 +100,8 @@ cargo run -- \
 ./run.sh main@wss://openapi2.platon.network/rpc
 ```
 
+在 tmux 中运行时，程序会自动使用固定宽度的国家码，避免国旗 emoji 的终端宽度差异造成残影。`build.sh` 生成的 Docker 构建产物默认启用该兼容模式；手动运行其他镜像时可传入 `-e CHAINDASH_ASCII_COUNTRIES=1`。
+
 ## 参数说明
 
 | 参数 | 默认值 | 说明 |
